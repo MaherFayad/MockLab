@@ -71,13 +71,45 @@ async function loadChromium() {
 }
 
 /**
+ * The demo's status pill, READ from the demo rather than copied into this file. A copy
+ * is what went wrong before: one row of the walk table below said `5px 12px` while the
+ * demo says `padding: 0.3125rem 0.875rem` (5px 14px), so its label ("the demo's own
+ * pill CSS") was false and its ratio (2.57x) was a number about nothing.
+ */
+const DEMO_INDEX = path.resolve(HERE, '..', '..', 'companion', 'src', 'demo', 'index.html');
+
+function demoPillGeometry() {
+  const css = fs.readFileSync(DEMO_INDEX, 'utf8');
+  const block = /#status-pill\s*\{([^}]*)\}/.exec(css);
+  assert.ok(block, `#status-pill is no longer a rule in ${DEMO_INDEX}`);
+  const value = (prop) => {
+    const found = new RegExp(prop + ':\\s*([^;}]+)').exec(block[1]);
+    assert.ok(found, `the demo's #status-pill no longer sets ${prop}`);
+    return found[1].trim().split(/\s+/).map((token) => {
+      const rem = /^([\d.]+)rem$/.exec(token);
+      const px = /^([\d.]+)px$/.exec(token);
+      assert.ok(rem || px, `#status-pill's ${prop} is "${token}" — this file reads rem and px only`);
+      return `${rem ? Number(rem[1]) * 16 : Number(px[1])}px`;
+    }).join(' ');
+  };
+  return { padding: value('padding'), fontSize: value('font-size') };
+}
+
+/**
  * One page, served over http so it has a real origin and a real layout. The pill is
  * padded by 1px/4px — 1.24x its inner span, just inside §6.1's 1.4x budget; the walk
  * subtest moves that padding around to prove the ratio is measured, not assumed.
+ *
+ * The pill's two colours are the demo's own status colours (`--ok-fg` #1E8E3E on
+ * `--ok-bg` #E6F4EA, `--bad-fg` #D93025 on `--bad-bg` #FDECEA in
+ * `companion/src/demo/index.html`), applied through a CLASS exactly as the demo applies
+ * them, because that is the only thing §7.3's `style` block exists to catch: a status
+ * change that repaints an element without touching a character of its text.
  */
 const LOGIC = `<!doctype html><html><head><meta charset="utf-8"><title>logic</title><style>
   body{margin:0;font:16px system-ui}
   .pill{display:inline-block;padding:1px 4px;background:#E6F4EA;color:#1E8E3E}
+  .pill.is-cancelled{background:#FDECEA;color:#D93025}
   .row{display:block;width:400px;height:120px}
 </style></head><body>
   <main>
@@ -175,12 +207,15 @@ if (!chromium) {
       );
 
       // Two elements share the text: the closest tree path wins, not the first found.
-      const second = await page.evaluate(() => {
+      // The precondition is asserted, not assumed — `assert.ok(evaluate(() => true))`
+      // proved only that Playwright can return a literal.
+      const dupSetup = await page.evaluate(() => {
         const nodes = document.querySelectorAll('.dup');
         nodes[1].id = 'second-dup';
-        return true;
+        return { count: nodes.length, texts: Array.from(nodes, (n) => n.textContent.trim()) };
       });
-      assert.ok(second);
+      assert.deepEqual(dupSetup, { count: 2, texts: ['Repeated', 'Repeated'] },
+        'the fixture really does render the same text twice, which is what makes the next line a test');
       const dupFp = await api('fingerprint', 'sel:#second-dup');
       const moved = await resolve({ ...dupFp, css: '#not-here' });
       assert.equal(moved.confidence, 0.8);
@@ -201,33 +236,71 @@ if (!chromium) {
           return { to: to.className || to.tagName.toLowerCase(), grew: area(to) / area(from) };
         }, selector);
 
+      /** Area of `parent` over area of `child`, whatever the walk decided to do. */
+      const ratioOf = (parentSel, childSel) =>
+        page.evaluate(([p2, c2]) => {
+          const area = (el) => { const r = el.getBoundingClientRect(); return r.width * r.height; };
+          return area(document.querySelector(p2)) / area(document.querySelector(c2));
+        }, [parentSel, childSel]);
+
       const up = await walk('.txt');
       assert.equal(up.to, 'pill', 'the inner span resolves to the pill that wraps it');
       assert.ok(up.grew > 1.1, `and the walk actually moved (area ratio ${up.grew.toFixed(2)})`);
       assert.ok(up.grew <= 1.4, `inside §6.1's budget (${up.grew.toFixed(2)}x)`);
 
       // §6.1's area ratio alone is a TIGHT budget on a short word: "On time" is about
-      // 64x19 px, so 1.4x allows a parent roughly 500 px² — about 1 px of vertical and
-      // 5 px of horizontal padding. Every realistically styled pill blows past it, the
-      // demo's own included, which is why the rule is ADDITIVE: ratio <= 1.4 OR within
-      // 24 px on every side. The table below is the evidence — the middle two rows are
-      // accepted ONLY by the inset half, at 2.35x and 2.57x by area.
+      // 64x19 px at 16px, so 1.4x allows a parent roughly 500 px² — 1 px of vertical and
+      // 5 px of horizontal padding. Every realistically styled pill blows past it, which
+      // is why the rule is ADDITIVE: ratio <= 1.4 OR within 24 px on every side. The
+      // table is the evidence — the middle two rows are accepted ONLY by the inset half —
+      // and its `ratio` column is measured here, so no number in it is unchecked prose.
+      //
+      // Row 3 is SYNTHETIC and says so. It has the geometry of the demo's status pill
+      // (read above off `companion/src/demo/index.html`), but it is not the demo
+      // measured in operation: `renderStatus` in demo/app.js fills that pill with
+      // `textContent`, so the real pill has NO child element and the smart walk never
+      // runs on it on the DoD path at all (`picker.browser.test.js` asserts
+      // `childCount === 0`). The row measures what the demo's padding would cost the
+      // ratio if that label were wrapped in a span: 2.71x. The demo also sets
+      // `font-weight: 700` and `letter-spacing: 0.01em`, which widen the text and bring
+      // the same padding to ~2.60x; both are far past 1.4x, the only thing the rule
+      // turns on.
+      //
+      // Text width is the one thing a different machine changes, so the ratios carry a
+      // tolerance — deliberately NOT the guard on row 3's geometry, since 12px vs 14px
+      // of padding moves the ratio by only 0.14 and any tolerance loose enough for a
+      // font would hide it. What pins row 3 to the demo is that its padding IS the
+      // demo's, read off disk.
+      const RATIO_TOLERANCE = 0.25;
+      const demoPill = demoPillGeometry();
+      assert.deepEqual(demoPill, { padding: '5px 14px', fontSize: '12px' },
+        `the 2.71x below was measured for the demo's pill; the demo now renders ${JSON.stringify(demoPill)}, so remeasure that row (and README Deviation 30) before touching this line`);
       const cases = [
-        ['40px 120px', '16px', 'txt', 'a 120 px inset is not a pill by any measure'],
-        ['6px 14px', '16px', 'pill', 'a normal pill: 2.35x by area, 14 px by inset'],
-        ['5px 12px', '12px', 'pill', "the demo's own pill CSS: 2.57x by area, 12 px by inset"],
-        ['1px 4px', '16px', 'pill', 'and §6.1\'s literal ratio still fires where it always did']
+        ['40px 120px', '16px', 'txt', null, 'a 120 px inset is not a pill by any measure (~24.8x here)'],
+        ['6px 14px', '16px', 'pill', 2.35, 'a normal pill: 14 px by inset'],
+        [demoPill.padding, demoPill.fontSize, 'pill', 2.71, "the demo's pill geometry, synthetically wrapped: 14 px by inset"],
+        ['1px 4px', '16px', 'pill', 1.24, 'and §6.1\'s literal ratio still fires where it always did']
       ];
-      for (const [padding, fontSize, expected, why] of cases) {
+      for (const [padding, fontSize, expected, ratio, why] of cases) {
         await page.evaluate(([pad, size]) => {
           const pill = document.querySelector('.pill');
           pill.style.padding = pad;
           pill.style.fontSize = size;
         }, [padding, fontSize]);
         const result = await walk('.txt');
-        assert.equal(result.to, expected, `padding ${padding} @${fontSize}: ${why} (area ${result.grew.toFixed(2)}x)`);
+        // `result.grew` is the ratio of what the walk CHOSE to what it started from, so
+        // it is 1.00 whenever the walk refused to move. The claim in the table is about
+        // the pill either way, so measure the pill either way.
+        const area = await ratioOf('.pill', '.txt');
+        assert.equal(result.to, expected, `padding ${padding} @${fontSize}: ${why} (pill is ${area.toFixed(2)}x its span)`);
+        if (ratio === null) {
+          assert.ok(area > 10, `padding ${padding} is nowhere near any budget (${area.toFixed(2)}x)`);
+        } else {
+          assert.ok(Math.abs(area - ratio) <= RATIO_TOLERANCE,
+            `padding ${padding} @${fontSize} measures ${area.toFixed(2)}x, and this file claims ${ratio}x`);
+        }
         if (expected === 'pill' && padding !== '1px 4px') {
-          assert.ok(result.grew > 1.4, `and §6.1's ratio alone would have refused it (${result.grew.toFixed(2)}x)`);
+          assert.ok(area > 1.4, `and §6.1's ratio alone would have refused it (${area.toFixed(2)}x)`);
         }
       }
       await page.evaluate(() => {
@@ -252,14 +325,25 @@ if (!chromium) {
       await page.evaluate(() => { document.querySelector('.pill').style.padding = '1px 4px'; });
 
       // The inset half must not become a way to climb into a container. Same text,
-      // 40x the area and 340 px past its child on one side: still refused.
+      // ~40x the area and ~340 px past its child on one side: still refused. Both
+      // numbers are measured, because a `.bigrow` that quietly became pill-sized would
+      // pass the line below while testing nothing.
       assert.equal((await walk('.small')).to, 'small', 'a whole row is never the semantic element');
+      const bigrow = await page.evaluate(() => {
+        const row = document.querySelector('.bigrow').getBoundingClientRect();
+        const small = document.querySelector('.small').getBoundingClientRect();
+        return { ratio: (row.width * row.height) / (small.width * small.height), past: row.right - small.right };
+      });
+      assert.ok(bigrow.ratio > 20, `the row really is many times its child (${bigrow.ratio.toFixed(1)}x)`);
+      assert.ok(bigrow.past > 24, `and reaches ${bigrow.past.toFixed(0)} px past it, well outside the 24 px inset`);
 
       // …and the ratio half is not redundant: a big element with 30 px of padding is
       // only ~1.27x by area but 30 px past on every side, so ONLY the ratio accepts it.
+      // This one is pure geometry (a fixed 600x400 child), so the number is exact.
       const wide = await walk('.wide');
       assert.equal(wide.to, 'pad30', 'the area ratio still accepts what the inset refuses');
       assert.ok(wide.grew <= 1.4, `by ratio (${wide.grew.toFixed(2)}x), not by inset (30 px > 24 px)`);
+      assert.ok(wide.grew > 1.2 && wide.grew < 1.35, `and this file's "~1.27x" is the measured value (${wide.grew.toFixed(2)}x)`);
 
       // Same text is the other half of the rule, and it has to be tested where the
       // area rule is NOT also blocking — otherwise deleting the text check changes
@@ -365,9 +449,48 @@ if (!chromium) {
       assert.deepEqual(snap.attrs, { 'data-x': '1' }, 'every attribute except style and class');
       assert.equal(snap.childCount, 1);
       assert.deepEqual(snap.childTexts, ['On time']);
-      assert.equal(snap.style.color, 'rgb(30, 142, 62)' === snap.style.color ? snap.style.color : snap.style.color);
-      assert.ok(/^rgb/.test(snap.style.backgroundColor), '§7.3\'s six computed properties are real values');
-      assert.ok(['block', 'inline-block'].includes(snap.style.display));
+      assert.deepEqual(
+        Object.keys(snap.style).sort(),
+        ['backgroundColor', 'borderColor', 'color', 'display', 'opacity', 'visibility'],
+        '§7.3 records exactly the six computed properties it names — no more, and none missing'
+      );
+      assert.equal(snap.style.display, 'block', 'and they are this element\'s values, not defaults');
+
+      /**
+       * What this subtest is FOR, written so it can fail. §7.3's `style` block is the
+       * only way an M4 diff sees the demo's central behaviour: `status: "CANCELLED"`
+       * repaints the pill through a CLASS. A snapshot reading the inline `style`
+       * attribute instead of `getComputedStyle` would record "" for all six properties
+       * on a stylesheet-painted element, and the probe would call a repainted element
+       * unchanged — a missed link, or worse, a wrong one. So: the pill has no inline
+       * style, and the snapshot still reports the colours its stylesheet rule paints.
+       * (The line that stood here was `assert.equal(snap.style.color, cond ?
+       * snap.style.color : snap.style.color)` — both branches the same expression, on
+       * `.row`, whose colour is inherited black and never was the green it named.)
+       */
+      const pill = await page.evaluate(() => ({
+        inline: document.querySelector('.pill').getAttribute('style'),
+        snap: window.__mocklabElement.snapshotElement(document.querySelector('.pill'))
+      }));
+      assert.equal(pill.inline, null, 'the pill is painted by a stylesheet rule, with no inline style to read');
+      assert.equal(pill.snap.style.color, 'rgb(30, 142, 62)',
+        "§7.3 records the COMPUTED colour — the demo's --ok-fg green, which exists nowhere on the element itself");
+      assert.equal(pill.snap.style.backgroundColor, 'rgb(230, 244, 234)', 'and the computed background (--ok-bg)');
+      assert.equal(pill.snap.style.borderColor, 'rgb(30, 142, 62)', 'borderColor resolves through currentColor');
+      assert.equal(pill.snap.style.opacity, '1');
+      assert.equal(pill.snap.style.visibility, 'visible');
+
+      // And the colour is not merely recorded, it is DIFFERENTIABLE: the demo's
+      // ON_TIME -> CANCELLED path swaps a class and leaves the text alone.
+      const cancelled = await page.evaluate(() => {
+        const el = document.querySelector('.pill');
+        el.classList.add('is-cancelled');
+        return window.__mocklabElement.snapshotElement(el);
+      });
+      assert.equal(cancelled.text, pill.snap.text, 'the same text …');
+      assert.equal(cancelled.style.color, 'rgb(217, 48, 37)', '… a different colour (--bad-fg) …');
+      assert.equal(cancelled.style.backgroundColor, 'rgb(253, 236, 234)', '… on a different background (--bad-bg) …');
+      assert.notDeepEqual(cancelled.style, pill.snap.style, '… so §7.3 can tell the two states apart');
 
       const long = await page.evaluate(() => {
         const el = document.createElement('div');

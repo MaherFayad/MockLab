@@ -79,11 +79,17 @@
    * An area ratio is the wrong metric here. A pill's padding is roughly constant
    * whatever the text says, so the ratio it produces depends on the text's LENGTH and is
    * harshest on the short text this rule exists for. Measured in Chromium, the demo's
-   * own pill CSS puts a pill at 2.57× its inner span — so under the ratio alone §6.1
-   * could not meet the purpose §6.1 states for it ("picks the semantic pill instead of
-   * an inner <span>"). The inset test is length-independent and is in the units a
-   * designer uses. README Deviations carries the measurement table;
-   * `pickerdom.browser.test.js` asserts both halves, each where only it can fire.
+   * pill padding (`0.3125rem 0.875rem` = 5px 14px at 12px text) puts a pill at 2.71× a
+   * wrapped inner span — so under the ratio alone §6.1 could not meet the purpose §6.1
+   * states for it ("picks the semantic pill instead of an inner <span>"). That 2.71× is
+   * SYNTHETIC and labelled as such: the demo's real pill is filled with `textContent`,
+   * so it has no inner span for the walk to climb out of at all. It stands in for the
+   * padded pills of real component libraries, none of which pass 1.4× either.
+   *
+   * The inset test is length-independent and is in the units a designer uses. README
+   * Deviation 30 carries the measurement table; `pickerdom.browser.test.js` asserts both
+   * halves, each where only it can fire, and takes the demo's padding off disk so this
+   * paragraph cannot drift from it silently.
    */
   function smartTarget(el) {
     var node = el;

@@ -136,12 +136,18 @@ if (!chromium) {
 
     let demoServer = null;
     let demoOrigin = null;
+    // The two §16 M3 DoD subtests skip without the companion's demo site. The REASON is
+    // kept and printed in the skip: a bare `catch {}` here would turn a broken demo
+    // server into a silently absent one, and the DoD would stop being checked with the
+    // suite still reporting green.
+    let demoUnavailable = null;
     try {
       const { createServer } = await import('../../companion/src/index.js');
       demoServer = createServer();
       demoOrigin = `http://127.0.0.1:${await listen(demoServer)}`;
-    } catch {
-      demoServer = null; // the demo subtests skip without it
+    } catch (err) {
+      demoServer = null;
+      demoUnavailable = String((err && err.message) || err).split('\n')[0];
     }
 
     let ctx = null;
@@ -333,7 +339,7 @@ if (!chromium) {
 
       /* ═══════════════════════════════════════════════ §16 M3 DoD 1 — the demo pill */
       await t.test('§16 M3 DoD — picking the demo status pill finds `status`', async (tt) => {
-        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+        if (!demoServer) { tt.skip(`the companion demo site is not available: ${demoUnavailable}`); return; }
         const page = await ctx.newPage();
         const pageErrors = [];
         page.on('pageerror', (e) => pageErrors.push(String(e)));
@@ -403,7 +409,7 @@ if (!chromium) {
 
       /* ═══════════════════════════════════════════════ §16 M3 DoD 2 — the demo price */
       await t.test('§16 M3 DoD — picking the demo price finds price.total', async (tt) => {
-        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+        if (!demoServer) { tt.skip(`the companion demo site is not available: ${demoUnavailable}`); return; }
         const page = await ctx.newPage();
         await page.goto(demoOrigin + '/demo/?case=price', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);

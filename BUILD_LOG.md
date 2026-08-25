@@ -626,7 +626,9 @@ connects those; it works only through §6.3's sibling-key heuristic. Picking the
 **Three spec problems, found by measuring rather than by assuming**
 
 1. **§6.1's 1.4× area rule cannot do the job §6.1 describes for it.** Measured in real
-   Chromium, the demo's own pill is 2.57× and no realistically padded pill passes — the
+   Chromium, the demo's own pill (`padding: 5px 14px` at 12px) is **2.71×** — the 2.57×
+   first recorded here belonged to a 5px/12px test fixture mislabelled as the demo's CSS,
+   and is corrected. No realistically padded pill passes — the
    budget for a short word is 1px vertical and 5px horizontal. An area ratio depends on
    text *length* while padding does not, so the rule is harshest on exactly the short text
    §6.1 names as its purpose. Fixed additively (Deviation 30) rather than by raising the
