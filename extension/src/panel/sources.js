@@ -25,7 +25,7 @@ const INITIAL_OPEN_DEPTH = 1;
 export function formatValue(value) {
   if (value === null) return 'null';
   if (value === undefined) return '';
-  if (typeof value === 'object') return Array.isArray(value) ? `[${value.length}]` : '{…}';
+  if (typeof value === 'object') return Array.isArray(value) ? S.glyph.list(value.length) : S.glyph.collapsedObject;
   return String(value);
 }
 
@@ -104,6 +104,21 @@ function sourceCard(source, ctx) {
 
   const card = el('div', { class: 'card' }, head);
 
+  // Advanced mode is the one place §1.2 allows technical vocabulary, and it is what the
+  // Settings row promises: the request behind the friendly name.
+  if (ctx.state.settings.advancedMode) {
+    card.append(
+      el(
+        'div',
+        { class: 'card__advanced' },
+        el('span', { class: 'mono truncate', text: S.glyph.joinLabel(S.advanced.method, source.method) }),
+        el('span', { class: 'mono truncate', text: S.glyph.joinLabel(S.advanced.url, source.urlPattern) }),
+        el('span', { class: 'mono truncate', text: S.glyph.joinLabel(S.advanced.via, source.via) }),
+        el('span', { class: 'mono truncate', text: S.glyph.joinLabel(S.advanced.sigId, source.sigId) })
+      )
+    );
+  }
+
   if (source.unparsed) card.append(el('p', { class: 'card__note', text: S.sources.streamedUnsupported }));
   if (source.changeDropped) card.append(el('p', { class: 'card__note', text: S.sources.changeDropped }));
 
@@ -181,7 +196,7 @@ function children(value, path, depth, source, ctx) {
 }
 
 function labelOf(key) {
-  return typeof key === 'number' ? `[${key}]` : String(key);
+  return typeof key === 'number' ? S.glyph.index(key) : String(key);
 }
 
 function treeNode(key, value, path, depth, source, ctx) {
@@ -197,7 +212,7 @@ function branchNode(key, value, path, depth, source, ctx) {
     { type: 'button', class: 'tree__toggle', 'aria-expanded': String(expanded) },
     el('span', { class: 'tree__caret' }, ICON.caret()),
     el('span', { class: 'tree__key', text: labelOf(key) }),
-    el('span', { class: 'tree__count mono', text: Array.isArray(value) ? `[${count}]` : `{${count}}` })
+    el('span', { class: 'tree__count mono', text: Array.isArray(value) ? S.glyph.list(count) : S.glyph.object(count) })
   );
   toggle.addEventListener('click', () => {
     if (expanded) ctx.state.expanded.delete(path);
@@ -295,12 +310,12 @@ function valueEditor(ctx, source) {
   const where = el(
     'div',
     { class: 'editor__where' },
-    el('span', { class: 'editor__field', text: `${source.name} · ${e.key}` }),
+    el('span', { class: 'editor__field', text: S.glyph.joinDot(source.name, e.key) }),
     el('span', { class: 'mono', text: S.editor.original(formatValue(e.real)) })
   );
   if (ctx.state.settings.advancedMode) {
-    where.append(el('span', { class: 'mono truncate', text: `${S.advanced.path}: ${e.path}` }));
-    where.append(el('span', { class: 'mono truncate', text: `${S.advanced.url}: ${e.url}` }));
+    where.append(el('span', { class: 'mono truncate', text: S.glyph.joinLabel(S.advanced.path, e.path) }));
+    where.append(el('span', { class: 'mono truncate', text: S.glyph.joinLabel(S.advanced.url, e.url) }));
   }
   box.append(where);
 

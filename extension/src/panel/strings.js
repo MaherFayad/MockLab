@@ -75,7 +75,6 @@ export const S = {
     newValue: 'New value',
     trueLabel: 'True',
     falseLabel: 'False',
-    emptyText: 'Leave it empty',
     invalidNumber: 'Type a number, like 450.'
   },
   sources: {
@@ -161,6 +160,17 @@ export const S = {
     sigId: 'Signature',
     method: 'Method',
     via: 'Captured via'
+  },
+  // + not in §11 — glyphs and joins the panel renders. They live here and not inline in
+  // panel.js because §17.6 is about everything a human sees, and because an RTL locale
+  // punctuates a "name · field" join differently from an LTR one.
+  glyph: {
+    object: (n) => `{${n}}`,
+    list: (n) => `[${n}]`,
+    index: (i) => `[${i}]`,
+    collapsedObject: '{…}',
+    joinDot: (a, b) => `${a} · ${b}`,
+    joinLabel: (a, b) => `${a}: ${b}`
   },
   // + not in §11 — this build stops at PLAN.md §16 M2, so the Pick and Scenario actions
   // are visibly present but inert. Saying so beats a control that silently does nothing.

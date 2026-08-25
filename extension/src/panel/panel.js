@@ -126,8 +126,13 @@ function renderSiteBar() {
     const img = el('img', { src: state.faviconUrl, alt: '', width: 16, height: 16 });
     img.addEventListener('error', () => img.remove());
     icon.append(img);
-  } else if (state.hostname) {
-    icon.textContent = state.hostname.replace(/^www\./, '').charAt(0);
+  } else {
+    // No favicon: a monogram of the site's first letter. An IP address has no letter to
+    // take, and a bare digit beside the "3 changes on" chip would read as a count — so
+    // that case falls back to a globe instead.
+    const letter = (state.hostname.replace(/^www\./, '').match(/[a-z]/i) || [])[0];
+    if (letter) icon.textContent = letter;
+    else icon.append(ICON.globe());
   }
   dom.sitebar.append(icon);
   dom.sitebar.append(
@@ -228,7 +233,7 @@ function renderSettings() {
   dom.settingsCompanion.append(
     el(
       'div',
-      { class: 'check-row' },
+      { class: 'info-row' },
       el('span', { class: 'dot' }),
       el('span', { class: 'check-row__text' }, el('span', { class: 'check-row__label', text: S.companion.disconnected }))
     ),
@@ -310,7 +315,14 @@ async function resetEverything() {
 function render() {
   const active = document.activeElement;
   const focusId = active && active.id ? active.id : null;
-  const caret = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+  // Reading selectionStart throws InvalidStateError on input types that have no
+  // selection (checkbox, radio), and those are focused all over this panel.
+  let caret = null;
+  try {
+    if (active && typeof active.selectionStart === 'number') caret = active.selectionStart;
+  } catch {
+    caret = null;
+  }
   state.restoreFocus = Boolean(focusId);
 
   renderSiteBar();
