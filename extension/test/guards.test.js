@@ -5,14 +5,14 @@
  *
  * §17.4 in particular is a *grep* rule the plan asks the implementer to run on itself:
  * "the string `state: \"verified\"` may appear in exactly one assignment in the codebase
- * (probe.js)". A rule that only a human remembers to check is a rule that breaks the
- * first time nobody checks. It is checked here, on every `npm test`.
+ * (probe.js)". A rule only a human remembers to check breaks the first time nobody
+ * checks, so it is checked here, on every `npm test`.
  *
  * Scope, deliberately different per rule:
  *   §17.1 / §17.2  extension source only — they are about MV3 and the MAIN world.
- *   §17.4          shipping source in BOTH workspaces. `test/` is excluded on purpose:
+ *   §17.4 / §17.6  shipping source in BOTH workspaces. `test/` is excluded on purpose:
  *                  `changes.test.js` plants a verified Binding to prove the M2 engine
- *                  never downgrades one, which is the opposite of a violation.
+ *                  never downgrades one — the opposite of a violation.
  *   §17.10         every .js file in both workspaces, tests included.
  */
 import test from 'node:test';
@@ -121,8 +121,8 @@ const PROBE_JS = 'extension/src/background/probe.js';
  * added after QA got `export const evil = { "state": "verified" };` past all three
  * guards — a quoted key is the same assignment with two more characters, and JSON-ish
  * object literals write it every day. A bare `state = …` is deliberately NOT matched:
- * `interceptor.js`, `background.js` and `panel.js` all keep ordinary local variables
- * called `state`, and flagging those would drown the audit. The lookbehind also keeps
+ * three files here keep ordinary local variables called `state`, and flagging those
+ * would drown the audit. The lookbehind also keeps
  * `linkState:` and the ternary `binding.state : null` out, and `=(?![=>])` keeps the
  * COMPARISON `binding.state === 'verified'` out — reading the state is legitimate
  * everywhere, and a guard that fails on a chip render is a guard someone deletes.
@@ -161,12 +161,11 @@ function stateAssignments(text) {
  *
  * KNOWN BOUNDARY, stated rather than pretended away: this is a regex over source text,
  * so a value assembled at run time is out of its reach — `'veri' + 'fied'`,
- * `String.fromCharCode(...)`, a state read back out of `chrome.storage` or a companion
- * frame. No static check can close that, and a guard that claimed to would be the same
- * kind of lie §17.12 is about. Those paths are covered behaviourally instead:
- * `changes.test.js` "6 …" proves the M2 engine never upgrades a link it did not prove,
- * and `panel.browser.test.js` subtest 4 proves the chip a human actually sees says
- * "Possible" for an unprobed Change in real Chromium.
+ * `String.fromCharCode(...)`, a state read back out of `chrome.storage`. No static check
+ * can close that, and a guard that claimed to would be the lie §17.12 is about. Those
+ * paths are covered behaviourally: `changes.test.js` "6 …" proves the M2 engine never
+ * upgrades a link it did not prove, and `panel.browser.test.js` subtest 4 proves the
+ * chip a human sees says "Possible" for an unprobed Change in real Chromium.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 
 /** An equality comparison with the literal on the right, or a `switch` case. */
@@ -287,8 +286,9 @@ test('§17.4 a link state is never written indirectly, where no grep could catch
  * dodge has to defeat two independent checks that do not share a pattern.
  *
  * Outside probe.js the word may be read (compare it, switch on it, look it up in a list
- * of states) but never produced. Read `VERIFIED_READ_CONTEXT` above for the exact list,
- * and the note beside it for the one class of dodge no regex can reach.
+ * of states) but never produced. The exact list of read contexts is the four constants
+ * above — `COMPARISON`, `COMPARISON_YODA`, `MEMBERSHIP` and `LIST_ELEMENT` — and the
+ * KNOWN BOUNDARY note beside them states the one class of dodge no regex can reach.
  */
 test('§17.4 outside probe.js the verified state may be read, never written', () => {
   const offenders = [];
@@ -305,20 +305,41 @@ test('§17.4 outside probe.js the verified state may be read, never written', ()
 });
 
 /**
+ * Every string literal in comment-free `code`, contents only — in ALL THREE quotes. QA
+ * put `` return `Data`; `` back into signatures.js and every audit in this file stayed
+ * green: this half was quote-only, and a backtick is one keystroke away. (The §17.4
+ * pair above always read all three.) The template pattern matches only a template with
+ * no `${…}` in it — the kind that IS a whole literal; one that interpolates is
+ * concatenation, which is the boundary stated below.
+ *
+ * @param {string} code comment-free source
+ * @returns {string[]} literal contents, in source order per pattern
+ */
+function stringLiterals(code) {
+  const PATTERNS = [/(['"])((?:[^'"\\\n]|\\.)*)\1/g, /`((?:[^`\\$]|\\.|\$(?!\{))*)`/g];
+  return PATTERNS.flatMap((pattern) =>
+    [...code.matchAll(pattern)].map((match) => (match[2] === undefined ? match[1] : match[2]))
+  );
+}
+
+/**
  * §17.6 — "every user-visible string comes from strings.js" — audited where it is
- * easiest to forget it: OUTSIDE the panel. `signatures.friendlyName()` returns a source
- * name a human reads as a card heading (§10.2) and an AI agent reads as
- * `ChangeSummary.sourceName` (§12.4 #2); it shipped M2 with the bare literal 'Data' in
- * five places, and every test in this repo stayed green, because a duplicated string is
- * only wrong when someone tries to translate it.
+ * easiest to forget: OUTSIDE the panel. `signatures.friendlyName()` returns a source
+ * name a human reads as a card heading (§10.2) and an agent reads as
+ * `ChangeSummary.sourceName` (§12.4 #2); it shipped M2 with 'Data' written into it five
+ * times, green all the way, because a duplicated string is only wrong on the day
+ * somebody translates it.
  *
  * So: no shipping file outside `src/panel/` may contain a string literal that is also a
- * value in `strings.js`. Import the key instead — the worker may (`strings.js` has no
- * imports and touches no DOM; see the note at the top of signatures.js).
+ * value in `strings.js`. Import the key instead — the worker may (see signatures.js).
  *
- * Boundary: this compares whole literals, so a user-visible string built by
- * concatenation, or one that never made it into strings.js at all, is invisible to it.
- * It catches the copy-that-drifts, which is the failure §17.6 exists to prevent.
+ * KNOWN BOUNDARY, stated rather than pretended away — it compares WHOLE literals, so:
+ *   • copy assembled from parts is out of reach: `'Da' + 'ta'`, `` `${a} Data` ``, or a
+ *     word built at run time. `signatures.test.js` 28d covers those behaviourally.
+ *   • copy that never reached strings.js is invisible: strings.js IS the list compared
+ *     against. Outside the panel, a newly invented word is still uncaught.
+ *   • the patterns pair quotes independently: a lone backtick in a quoted string could
+ *     pair with a later one. That fails toward flagging, never toward silence.
  */
 test('§17.6 no file outside the panel keeps its own copy of a user-visible string', async () => {
   const { S } = await import('../src/panel/strings.js');
@@ -335,9 +356,9 @@ test('§17.6 no file outside the panel keeps its own copy of a user-visible stri
   const offenders = [];
   for (const file of SOURCE_FILES) {
     if (file.startsWith(PANEL + path.sep)) continue;
-    const code = stripComments(read(file));
-    for (const match of code.matchAll(/(['"])((?:[^'"\\\n]|\\.)*)\1/g)) {
-      if (copy.has(match[2])) offenders.push(`${rel(file)}: ${JSON.stringify(match[2])}`);
+    // An empty literal renders nothing and says nothing, so it is never copy.
+    for (const literal of stringLiterals(stripComments(read(file)))) {
+      if (literal && copy.has(literal)) offenders.push(`${rel(file)}: ${JSON.stringify(literal)}`);
     }
   }
   assert.deepEqual(
@@ -346,6 +367,13 @@ test('§17.6 no file outside the panel keeps its own copy of a user-visible stri
     'import the key from panel/strings.js instead — §17.6 means translating MockLab is ' +
       'translating one file'
   );
+});
+
+test('§17.6 the audit itself reads all three quotes, which is how the gap got in', () => {
+  // `stringLiterals` was quote-only, so `` return `Data`; `` in signatures.js passed
+  // every audit here. Deleting the second pattern must fail now, not silently later.
+  const source = String.raw`const a = 'Data'; const b = "Data"; const c = ` + '`Data`;';
+  assert.equal(stringLiterals(source).filter((literal) => literal === 'Data').length, 3);
 });
 
 test('§17.4 the M2 Changes engine writes candidate links and nothing else', () => {
@@ -402,14 +430,11 @@ test('§17.1 no response body is ever modified through webRequest or DNR', () =>
 
 /* ══════════════════════════ §17.10, and the record that documents it ═══════════════
  *
- * §17.10 caps a file at ~500 lines and says to split when bigger. Two files are past
- * that on purpose, each with a recorded reason in README's Deviations table.
- *
- * The reason is prose and a human owns it. The NUMBER is not: it has already been wrong
- * twice, both times because someone edited a file and did not revisit the row, and the
- * second time it survived a whole QA round. So the number is read out of README and
- * checked against the file — the record cannot drift silently any more, because editing
- * an oversized file without updating its row breaks the build.
+ * §17.10 caps a file at ~500 lines. Files past that are recorded in README's Deviations
+ * table with the reason, which is prose a human owns. The NUMBER is not: it has been
+ * wrong twice, both times because someone edited a file and never revisited the row,
+ * and once it survived a whole QA round. So it is read out of README and checked
+ * against the file — editing an oversized file without fixing its row breaks the build.
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 
 /** §17.10's "~500", with slack for the long header comment every file here carries. */

@@ -301,19 +301,37 @@ test('28d the fallback name is the copy table\'s word, not a literal in this mod
   // `friendlyName` produces text a HUMAN reads (the source card heading, §10.2) and an
   // AI agent reads (`ChangeSummary.sourceName`, §12.4 #2). It shipped M2 with the word
   // 'Data' written into signatures.js five times, which no test could see, because a
-  // duplicated string is only wrong the day somebody translates it. These four cases
-  // are the four `return`s that can fall back, each asserted against strings.js — so
-  // translating that one file really does translate the name (§17.6).
-  const fallback = S.sources.fallbackName;
-  assert.equal(friendlyName(null), fallback, 'no signature at all');
-  assert.equal(friendlyName({ urlPattern: 'https://a.test/graphql', gqlOperation: '__' }), fallback,
-    'a GraphQL operation with no word in it');
-  assert.equal(friendlyName({ urlPattern: '/*/' }), fallback, 'no segment and no host to fall back to');
-  assert.equal(friendlyName({ urlPattern: '/api-payload' }), fallback, 'every word filtered as jargon');
+  // duplicated string is only wrong the day somebody translates it.
+  //
+  // So this does not assert today's output. Comparing against `S.sources.fallbackName`
+  // would pass just as happily with 'Data' hardcoded here — the two would agree on the
+  // same word for the wrong reason, and the rot would only show up on translation day,
+  // which is the failure this test exists to catch. It substitutes a SENTINEL into the
+  // copy table instead and requires the module to emit it (the technique
+  // `panel.strings.test.js` uses on the panel): any word baked into signatures.js fails,
+  // however it is written — quoted, backticked, interpolated or concatenated, which is
+  // more than guards.test.js's §17.6 source audit can see.
+  //
+  // The four cases are the four `return`s in `friendlyName` that can fall back.
+  const SENTINEL = '⟪fallback-sentinel⟫';
+  const original = S.sources.fallbackName;
+  try {
+    S.sources.fallbackName = SENTINEL;
+    assert.equal(friendlyName(null), SENTINEL, 'no signature at all');
+    assert.equal(friendlyName({ urlPattern: 'https://a.test/graphql', gqlOperation: '__' }), SENTINEL,
+      'a GraphQL operation with no word in it');
+    assert.equal(friendlyName({ urlPattern: '/*/' }), SENTINEL, 'no segment and no host to fall back to');
+    assert.equal(friendlyName({ urlPattern: '/api-payload' }), SENTINEL, 'every word filtered as jargon');
+  } finally {
+    S.sources.fallbackName = original;
+  }
 
-  // And the panel and the worker agree on it, rather than each holding a copy.
-  assert.equal(typeof fallback, 'string');
-  assert.ok(fallback.length > 0, 'a source card is never headed by an empty string');
+  // Restored, so a later test in this file reads the real table — and the real word is
+  // still a word: a source card is never headed by an empty string.
+  assert.equal(S.sources.fallbackName, original);
+  assert.equal(typeof original, 'string');
+  assert.ok(original.length > 0, 'a source card is never headed by an empty string');
+  assert.equal(friendlyName(null), original, 'and the panel and the worker read the one table');
 });
 
 /* --------------------------------------------------------------- match list */
