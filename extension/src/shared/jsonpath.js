@@ -228,6 +228,65 @@ export function enumeratePaths(obj, maxDepth = 12, maxPaths = 5000) {
 }
 
 /**
+ * How many leaf scalars a body holds — the number the Sources tab prints as "{n} fields"
+ * (§10.2) and the MCP `list_sources` tool returns as `fields` (§12.4 #2).
+ *
+ * Exactly `enumeratePaths(obj, ∞, ∞).length`, and it exists because that is not what the
+ * bounded walk above returns. `enumeratePaths` is a SEARCH: it is bounded because the
+ * work grows with (sources × needles) and something has to stop it, and when it stops
+ * early the caller says so (`candidates.js`, `searched.complete`). A COUNT is a claim
+ * about the data — "this source holds 18 fields" — and a bounded count is that claim
+ * made false by an implementation detail the reader cannot see. Counting with the search
+ * bounds would only move the lie: 24 levels is no more the truth about a body than 12 is.
+ *
+ * So this is unbounded, and three things make that affordable:
+ *   - it builds no path strings, which is where enumeratePaths spends most of its time;
+ *   - PLAN.md §4 already caps a parsed body at 2 MB (bigger arrives as an `{__unparsed}`
+ *     preview and has no addressable fields at all), so the input is bounded by the one
+ *     limit the product already states;
+ *   - it is ITERATIVE. A recursive walk is safe only while a depth cap keeps the stack
+ *     shallow; `JSON.parse` accepts nesting thousands deep, and a RangeError swallowed
+ *     upstream would report "0 fields" — the same lie, told louder.
+ *
+ * Measured on a service-worker-sized budget (median of 9, Node 22): the demo's trip.json
+ * 0.01 ms; a realistic 82 KB Next.js-shaped body 0.31 ms (against 1.80 ms for the walk it
+ * replaces, which counted 2400 of its 3600 fields); the largest bodies §4 admits, 5-30 ms.
+ *
+ * Semantics match `enumeratePaths` exactly, including the parts that are not obvious:
+ * `null` IS a leaf (a real, editable field), an empty object or array contributes
+ * nothing, and a container reached twice is counted once.
+ *
+ * @param {any} obj
+ * @returns {number}
+ */
+export function countLeaves(obj) {
+  if (isScalar(obj)) return 1;
+  let count = 0;
+  const seen = new Set();
+  /** @type {any[]} */
+  const stack = [obj];
+  while (stack.length) {
+    const node = stack.pop();
+    if (seen.has(node)) continue;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i += 1) {
+        const value = node[i];
+        if (isScalar(value)) count += 1;
+        else stack.push(value);
+      }
+      continue;
+    }
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+      if (isScalar(value)) count += 1;
+      else stack.push(value);
+    }
+  }
+  return count;
+}
+
+/**
  * Loose value search over every leaf (PLAN.md §5.4, feeding the §6.3 scorer).
  *
  * `kind` reports HOW the leaf matched so the caller can score it:

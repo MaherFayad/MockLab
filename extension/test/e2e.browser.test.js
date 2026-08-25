@@ -103,6 +103,26 @@ async function loadChromium() {
 
 /* ------------------------------------------------------------------ fixtures */
 
+/**
+ * A response shaped like the ones this fix is about: wider than §5.4's default 5000-path
+ * ceiling AND deeper than its default depth of 12 — and deeper than the 24 candidate
+ * discovery searches to (Deviation 32), so a count that merely matched the search would
+ * still be wrong here.
+ *
+ * `DEEP_FIELDS` is stated, not computed by the code under test: 6000 scalars in `rows`,
+ * one `level` at each of 30 nesting levels, and the leaf at the bottom of them.
+ */
+const DEEP_LEVELS = 30;
+const DEEP_FIELDS = 6000 + DEEP_LEVELS + 1;
+/** `$.tree.next…next.bottom` — the deepest field, 32 levels down. */
+const DEEP_LEAF_PATH = '$.tree' + '.next'.repeat(DEEP_LEVELS) + '.bottom';
+
+function deepBody() {
+  let node = { bottom: 'LEAF-AT-THE-BOTTOM' };
+  for (let i = DEEP_LEVELS; i > 0; i -= 1) node = { level: i, next: node };
+  return { rows: Array.from({ length: 6000 }, (_, i) => i), tree: node };
+}
+
 /** Tracks whether the endless response's socket is still open (the D8 leak probe). */
 const endless = { closedAt: null, startedAt: null };
 
@@ -225,6 +245,18 @@ function fixtureHandler(req, res) {
       'cache-control': 'no-store'
     });
     res.end(body);
+    return;
+  }
+
+  if (url.pathname === '/deep') {
+    send(200, 'text/html; charset=utf-8', `<!doctype html><title>deep</title><body><script>
+      fetch('/deep/data.json').then((r) => r.json()).then((d) => { window.__deepDone = d.rows.length; });
+    </script></body>`);
+    return;
+  }
+
+  if (url.pathname === '/deep/data.json') {
+    send(200, 'application/json', JSON.stringify(deepBody()));
     return;
   }
 
@@ -425,6 +457,34 @@ if (!chromium) {
         assert.equal(after.sources.length, 2, 'no duplicate captures on soft navigation');
         assert.ok(after.softNavs >= 5, `soft navigations reported (${after.softNavs})`);
         assert.deepEqual(pageErrors, [], 'the demo console stays clean');
+        await page.close();
+      });
+
+      /* ---------- the §10.2 meta row and §12.4 #2 must count the WHOLE body ---------- */
+      await t.test('"{n} fields" is the whole body, not the part an old bounded walk reached', async () => {
+        const page = await ctx.newPage();
+        await page.goto(fixtureOrigin + '/deep?case=fields', { waitUntil: 'load' });
+        await page.waitForFunction(() => window.__deepDone === 6000, null, { timeout: 10000 });
+        const tabId = await tabIdOf(page);
+
+        const res = await waitForSources(tabId, 1);
+        const source = res.sources.find((s) => s.url.includes('/deep/data.json'));
+        assert.ok(source, 'the deep response was captured');
+
+        // The number the Sources tab prints (§10.2) and `list_sources` returns (§12.4 #2).
+        // Counted at §5.4's defaults it was 5000; at discovery's depth 24 it would still
+        // miss the bottom of the tree. Either way the user is told a number smaller than
+        // the data — about data MockLab searches further into than it counted.
+        assert.equal(
+          source.fields,
+          DEEP_FIELDS,
+          `the source holds ${DEEP_FIELDS} fields and must say so (said ${source.fields})`
+        );
+
+        // …and the deepest of them is genuinely addressable, so the count is a fact about
+        // this body rather than a bigger number.
+        const bottom = await getResponse(tabId, source.sigId, DEEP_LEAF_PATH);
+        assert.equal(bottom.body, 'LEAF-AT-THE-BOTTOM', DEEP_LEAF_PATH);
         await page.close();
       });
 

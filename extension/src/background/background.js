@@ -25,7 +25,7 @@
 import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
 import { normalizeRaw, friendlyName, compileMatchList } from './signatures.js';
 import { originOf, rememberSignature, groupChangesBySignature, countActiveChanges } from './ruleStore.js';
-import { parsePath, enumeratePaths, getByPath } from '../shared/jsonpath.js';
+import { parsePath, countLeaves, getByPath } from '../shared/jsonpath.js';
 import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
 import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
 import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
@@ -240,10 +240,27 @@ async function onCaptured(tabId, raw) {
   notifyPanel(tabId, 'captured');
 }
 
+/**
+ * The "{n} fields" the Sources tab prints (§10.2) and `list_sources` returns (§12.4 #2):
+ * every leaf field this source holds, counted whole.
+ *
+ * It used to be `enumeratePaths(body).length`, which stops at §5.4's default depth 12 and
+ * 5000 paths — so a source with 3600 fields was announced as having 2400, while candidate
+ * discovery searched it to depth 24 (Deviation 32) and could offer the user a field the
+ * same screen had left out of the count. A count that truncates is a claim about the data
+ * made false by an invisible detail, and counting at the search's bounds would only move
+ * that boundary. The two numbers answer different questions and may differ in exactly one
+ * direction: `fields` is what the source HOLDS, `searched.complete` (candidates.js) is how
+ * much of it MockLab LOOKED at. `{__unparsed}` bodies (§5.1.4) hold no addressable field
+ * at all, so they count zero and travel with `unparsed:true` beside them.
+ *
+ * @param {any} body
+ * @returns {number}
+ */
 function countFields(body) {
   try {
     if (!body || typeof body !== 'object' || body.__unparsed) return 0;
-    return enumeratePaths(body).length;
+    return countLeaves(body);
   } catch {
     return 0;
   }

@@ -436,7 +436,11 @@ export const PHASE = { IDLE: 'idle', PICKING: 'picking', PICKED: 'picked' };
  * @property {string} [gqlOperation]
  * @property {string} url           last concrete URL seen
  * @property {"fetch"|"xhr"|"document"|"other"} via
- * @property {number} fields        leaf-scalar count
+ * @property {number} fields        every leaf scalar the body holds — the WHOLE body,
+ *   not the part a bounded walk reached (`background.countFields`). It is a claim about
+ *   the data, so it is never smaller than what §6.3's search covered; `searched.complete`
+ *   on `GET_PICK` is the separate, honest answer to "how much did MockLab look at".
+ *   Zero for an `{__unparsed}` body, which travels with `unparsed:true` beside it.
  * @property {number} status
  * @property {number} bodyBytes
  * @property {number} lastSeenTs

@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  countLeaves,
   enumeratePaths,
   findByValue,
   formatPath,
@@ -328,4 +329,109 @@ test('45 does not confuse booleans with numbers', () => {
     { path: '$.open', value: true, kind: 'exact' }
   ]);
   assert.deepEqual(findByValue({ open: true }, '1'), [], 'true must never match 1');
+});
+
+/* ----------------------------------------------------------------- countLeaves */
+
+test('46 counts every leaf of a body, and only leaves', () => {
+  assert.equal(countLeaves(trip()), 14, 'the same 14 leaves test 36 enumerates');
+  assert.equal(countLeaves({ price: { currency: 'SAR', total: 450 } }), 2, 'containers are not fields');
+});
+
+test('47 is exactly what an unbounded enumeratePaths would count', () => {
+  // The property that DEFINES this function: one walk with the strings, one without.
+  // If the two ever disagree, the Sources tab and the tree below it describe different
+  // bodies — and this is cheaper to assert than to notice.
+  const shapes = [
+    trip(),
+    {},
+    [],
+    { a: [] },
+    { a: [[], {}, [[1]]] },
+    { 'a.b': [{ 'مدينة': 1 }], plain: 'x' },
+    { list: Array.from({ length: 300 }, (_, i) => ({ i, tags: ['x', 'y'], meta: { ok: i % 2 === 0 } })) },
+    { deep: { a: { b: { c: { d: { e: { f: { g: { h: { i: { j: { k: 'past 12' } } } } } } } } } } } },
+    { mixed: [null, 0, '', false, { z: null }] }
+  ];
+  for (const shape of shapes) {
+    assert.equal(
+      countLeaves(shape),
+      enumeratePaths(shape, Infinity, Infinity).length,
+      JSON.stringify(shape).slice(0, 60)
+    );
+  }
+});
+
+test('48 counts past §5.4\'s default depth, which is the bug it exists to fix', () => {
+  // A field 20 levels down is a field. `enumeratePaths(body).length` — what the Sources
+  // tab counted with until this function existed — stops at 12 and reports ZERO fields
+  // for this body, while candidate discovery searches it to 24 (Deviation 32) and can
+  // offer the user a field the same screen said was not there.
+  let body = { leaf: 'bottom' };
+  for (let i = 0; i < 30; i += 1) body = { level: i, next: body };
+  assert.equal(enumeratePaths(body).length, 12, 'the old count: 12 levels, then silence');
+  assert.equal(
+    enumeratePaths(body, 24, 20000).length,
+    24,
+    "and counting at the search's own depth only moves the cut — a count has no depth"
+  );
+  assert.equal(countLeaves(body), 31, 'thirty "level" fields and the leaf at the bottom');
+});
+
+test('49 counts past the 5000-path default too', () => {
+  const wide = { rows: Array.from({ length: 6000 }, (_, i) => i) };
+  assert.equal(enumeratePaths(wide).length, 5000, 'the old count stopped at the ceiling');
+  assert.equal(countLeaves(wide), 6000);
+});
+
+test('50 counts null as a field and empty containers as none', () => {
+  assert.equal(countLeaves({ notes: null }), 1, 'null is an editable field, not an absence');
+  assert.equal(countLeaves({}), 0);
+  assert.equal(countLeaves([]), 0);
+  assert.equal(countLeaves({ a: {}, b: [], c: [{}, []] }), 0, 'containers all the way down');
+});
+
+test('51 counts a shared subtree once, and survives a cycle', () => {
+  const shared = { a: 1, b: 2 };
+  assert.equal(countLeaves({ x: shared, y: shared }), 2, 'same rule as enumeratePaths');
+  const loop = { name: 'loop' };
+  loop.self = loop;
+  assert.equal(countLeaves(loop), 1);
+});
+
+test('52 counts a scalar root as the one field it is', () => {
+  assert.equal(countLeaves(42), 1);
+  assert.equal(countLeaves('text'), 1);
+  assert.equal(countLeaves(null), 1, '$ = null is one leaf, exactly as enumeratePaths reports it');
+  assert.equal(enumeratePaths(null).length, 1);
+});
+
+test('53 does not walk into inherited properties', () => {
+  const parent = { inherited: 'no' };
+  const child = Object.create(parent);
+  child.own = 'yes';
+  assert.equal(countLeaves(child), 1);
+});
+
+test('54 counts a body nested deeper than a recursive walk survives', () => {
+  // A page can hand the worker a body ~4000 levels deep — that is roughly where the
+  // structured clone between the two worlds gives up, so it is the deepest thing that
+  // can actually arrive. `JSON.parse` accepts far more than that, and so does a leaf
+  // count that keeps its own stack. A RECURSIVE counter throws RangeError somewhere in
+  // this range, the caller swallows it, and the source is announced as having ZERO
+  // fields — the same lie as an under-count, told louder. The depths below straddle it.
+  const chain = (depth) => JSON.parse('{"next":'.repeat(depth) + '{"leaf":"bottom"}' + '}'.repeat(depth));
+  assert.equal(countLeaves(chain(4000)), 1, 'as deep as a body can travel between worlds');
+  assert.equal(countLeaves(chain(200000)), 1, 'and deeper than JSON.stringify itself survives');
+});
+
+test('55 stays linear on the largest body PLAN.md §4 admits', () => {
+  // §4 caps a parsed body at 2 MB; this is that size in the shape that costs most.
+  // The bound is 1000x the measured time (1.5 ms) — it is here to catch an accidental
+  // O(n²), not to police the clock on a loaded CI box.
+  const huge = JSON.parse('[' + Array.from({ length: 700000 }, () => '1').join(',') + ']');
+  const startedAt = Date.now();
+  assert.equal(countLeaves(huge), 700000);
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < 2000, `700k leaves counted in ${elapsed} ms`);
 });
