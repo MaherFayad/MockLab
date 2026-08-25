@@ -5,6 +5,7 @@
     "lastName": "Al-Amri",
     "displayName": "Nora Al-Amri",
     "tier": "GOLD",
+    "status": "ACTIVE",
     "email": "nora@example.com"
   }
 }

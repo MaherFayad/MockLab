@@ -46,8 +46,14 @@ export function formatValue(value) {
  * null field would reach the site as the literal text "nothing". An absent value starts
  * as an empty box instead, so whatever the site ends up seeing is something a human
  * actually wrote.
+ *
+ * Exported for `panel.strings.test.js` alone, and it has to be: this defect is
+ * invisible from outside the module. The only fixture that reaches it is a response
+ * field holding no value, and the demo site (§14) has none — which is exactly how it
+ * survived a full browser run of the M2 flow. `return formatValue(value)` restores the
+ * bug and breaks no other test; the seeding test is the one that stops it.
  */
-function draftFor(value) {
+export function draftFor(value) {
   if (value === null || value === undefined || typeof value === 'object') return '';
   return String(value);
 }

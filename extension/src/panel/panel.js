@@ -10,8 +10,10 @@
  */
 import { S } from './strings.js';
 import { MSG } from '../background/messages.js';
+import { PICK_MSG } from '../background/pickMessages.js';
 import { el, clear, ICON, withTip } from './dom.js';
 import { renderSources } from './sources.js';
+import { renderPickTab, pickingChrome, cancelPick, loadPick } from './pick.js';
 
 const TOAST_MS = 3200;
 
@@ -25,6 +27,10 @@ const state = {
   sources: [],
   changes: [],
   changeCount: 0,
+  /** §10.1's three states are a function of this alone — see pick.js. */
+  pick: { picking: false, element: null, candidates: [] },
+  /** Proven Links for this origin (§10.1A). Everything here is `candidate` until M4. */
+  bindings: [],
   settings: { advancedMode: false, paranoid: false },
   query: '',
   open: null,
@@ -38,7 +44,7 @@ const state = {
 const dom = {
   tabs: document.getElementById('tabs'),
   sitebar: document.getElementById('sitebar'),
-  pickCta: document.getElementById('pick-cta'),
+  pickPanel: document.getElementById('panel-pick'),
   sourceList: document.getElementById('source-list'),
   scenarioActions: document.getElementById('scenario-actions'),
   settingsRows: document.getElementById('settings-rows'),
@@ -170,17 +176,6 @@ async function resetSite() {
 }
 
 /* ─────────────────────────────────────────────────────── tabs: pick & scenarios */
-
-/**
- * §10.1 State A. The picker itself is §16 M3 work, so the button is present — it is the
- * hero of this screen — but disabled, with the reason in plain sight rather than in a
- * tooltip a keyboard user could never reach.
- */
-function renderPick() {
-  clear(dom.pickCta);
-  const cta = el('button', { type: 'button', class: 'btn btn--primary', disabled: true }, ICON.pick(), el('span', { text: S.pick.cta }));
-  dom.pickCta.append(cta, el('p', { class: 'help', text: S.soon }));
-}
 
 /** §10.4. CRUD is §16 M5; the idle copy is real today. */
 function renderScenarios() {
@@ -337,7 +332,11 @@ function render() {
   state.restoreFocus = Boolean(focusId);
 
   renderSiteBar();
-  if (state.tab === 'pick') renderPick();
+  // Not inside renderPickTab: the dim outlives the tab. Someone can switch to Sources
+  // while the picker waits for a click on the page, and the panel must still look like
+  // it is waiting (§10.1B).
+  pickingChrome(state.pick.picking);
+  if (state.tab === 'pick') renderPickTab(dom.pickPanel, ctx);
   if (state.tab === 'sources') renderSources(dom.sourceList, ctx);
   if (state.tab === 'scenarios') renderScenarios();
   if (state.tab === 'settings') renderSettings();
@@ -380,6 +379,9 @@ async function refresh() {
   }
   const list = await send(MSG.LIST_SOURCES, { tabId: state.tabId });
   if (list.ok) state.sources = list.sources || [];
+  const links = await send(MSG.GET_BINDINGS, { tabId: state.tabId });
+  state.bindings = links.ok ? links.bindings || [] : [];
+  await loadPick(ctx);
   render();
 }
 
@@ -392,6 +394,10 @@ function wireEvents() {
   chrome.runtime.onMessage.addListener((message) => {
     const type = message && message.type;
     if (type === MSG.SOURCES_CHANGED || type === MSG.CHANGES_CHANGED) void refresh();
+    // Pick mode can also be entered or cancelled from somewhere that is not this panel
+    // — the page's own Escape key, or an agent over MCP (§1.6) — so the tab follows the
+    // worker rather than only its own clicks.
+    else if (type === PICK_MSG.PICK_CHANGED) void refresh();
     return false;
   });
   chrome.tabs.onActivated.addListener(() => void refresh());
@@ -401,6 +407,13 @@ function wireEvents() {
   dom.search.addEventListener('input', () => {
     state.query = dom.search.value;
     render();
+  });
+  // §11's `pick.picking` promises "(Esc to cancel)". The person's last click was in the
+  // PANEL, so that is where the keystroke usually lands — the page's own Escape handler
+  // (§6.1) would never see it, and a promise the product only keeps half the time is
+  // the kind of small lie §1.1 is about.
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.pick.picking) void cancelPick(ctx);
   });
 }
 

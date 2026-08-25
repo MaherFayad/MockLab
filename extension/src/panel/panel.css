@@ -342,6 +342,64 @@ input:focus-visible + .check-box { outline: 2px solid var(--accent); outline-off
 .editor__actions { display: flex; align-items: center; gap: var(--gap-s); }
 .editor__actions .btn--primary { flex: 1; }
 
+/* ─────────────────────────────────────────── Pick tab — §10.1 states A, B and C */
+
+.section-head { display: flex; align-items: center; gap: var(--gap-s); }
+.pick-live { display: flex; flex-direction: column; gap: var(--gap-s); }
+.btn--wide { inline-size: 100%; }
+
+/* §10.1B: "panel dims 60%". Everything recedes EXCEPT `.pick-live`, which is the block
+ * carrying the live instruction ("Click something on the page… (Esc to cancel)"). The
+ * dim exists to move attention to the page; dimming the sentence that says so would
+ * make the one thing the person still has to read the hardest thing on screen.
+ *
+ * Applied per-block and never to a common ancestor on purpose: `opacity` on the ancestor
+ * would open a stacking context and CAP its children, so no exemption below it is
+ * possible — `.pick-live { opacity: 1 }` inside a 0.6 parent still renders at 0.6. */
+body.is-picking .app__head,
+body.is-picking #panel-pick > *:not(.pick-live) {
+  opacity: 0.6;
+  transition: opacity var(--transition-rule);
+}
+
+/* §10.1B disables the button, and §9.2's disabled recipe (opacity .7, saturate .7,
+ * brightness .85) is right for a control that is simply unavailable. It is wrong here:
+ * this button's label is not a control's name, it is the ONLY instruction on screen, and
+ * the recipe measured 2.87:1 in light and 2.54:1 in dark against the button's own fill —
+ * under WCAG 2.2 AA 1.4.3 for 14px/600 text. 1.4.3 exempts disabled CONTROLS; it does not
+ * excuse a sentence someone has to read to get out of this state.
+ *
+ * So the button keeps `disabled` (it really is not clickable, and keyboards skip it) and
+ * is painted at full strength. It is not mistaken for a live button: the raised glow is
+ * what reads as "press me" and stays off, and the 60% panel all around it is what reads
+ * as "waiting for the page". */
+body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
+
+/* The picked element's mini card (§10.1C — "text only", no thumbnail). */
+.picked { padding: var(--gap-m); border: 1.5px solid var(--border); border-radius: var(--radius-m); background: var(--bg-secondary); }
+.picked__text { font-weight: 600; overflow-wrap: anywhere; }
+.picked__text--none { font-weight: 400; font-style: italic; color: var(--text-secondary); }
+
+/* "Possible sources" rows. Rows, not cards and not buttons: at M3 there is nothing
+ * behind them, and a hover lift or a chevron would offer an action that does not exist.
+ * They gain their affordance in M4 with State D, not before. */
+.cand-list { display: flex; flex-direction: column; gap: var(--gap-xs); }
+.cand { display: flex; align-items: baseline; gap: var(--gap-s); flex-wrap: wrap; padding: var(--gap-s) 0.625rem; border: 1.5px solid var(--border); border-radius: var(--radius-s); background: var(--bg); }
+.cand__name { flex: 0 1 auto; min-inline-size: 0; font-weight: 500; }
+.cand__value { flex: 1 1 auto; min-inline-size: 0; text-align: end; color: var(--text); }
+/* Which field, on its own line: two rows of this list can carry the same source and the
+ * same value and still be different fields (the demo's own `$.status` and
+ * `$.booking.status` do). It wraps to full width so the identifying part is never the
+ * part that gets truncated away. */
+.cand__field { flex: 1 0 100%; color: var(--text-secondary); font-size: var(--font-size-s); }
+.cand__path { flex: 1 0 100%; color: var(--text-tertiary); }
+
+/* A recent Link, shown as information rather than as a control until State D exists. */
+.card--static { cursor: default; }
+.card--static:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--border); }
+.card--static:active { transform: none; }
+.card--static .card__title > .truncate { flex: 1 1 auto; min-inline-size: 0; }
+
 /* ───────────────────────────────────────────────────────────────────── toast */
 
 .toast { position: fixed; inset-block-end: var(--gap-m); inset-inline: var(--gap-m); z-index: 40; display: flex; align-items: center; gap: var(--gap-s); padding: 0.625rem 0.875rem; border-radius: var(--radius-m); background: var(--bg-inverse); color: var(--text-oninverse); box-shadow: var(--shadow-lg); font-size: var(--font-size-s); font-weight: 500; animation: toastIn var(--transition-spring) both; }

@@ -34,7 +34,16 @@ export const S = {
     recent: 'Recent links on this site',
     noCandidates:
       "MockLab couldn't find this text in any data the page loaded. It may be part of the page's design, an image, or loaded in a way MockLab can't see yet.",
-    checkAll: 'Check all fields (slower)'
+    checkAll: 'Check all fields (slower)',
+    // + not in §11 — §10.1 State C names its two sections in prose ("the picked
+    // element", then "Possible sources") but the copy table has no keys for them. The
+    // wording below is §10.1C's own, in §11's voice.
+    picked: 'You picked',
+    sources: 'Possible sources',
+    // + not in §11 — an element can carry no text at all (an icon, a bare image). An
+    // empty card would read as a rendering failure, and this is also the honest reason
+    // the list under it may come back empty.
+    noText: 'This element has no text of its own.'
   },
   probe: {
     cta: 'Find the real source',
@@ -198,6 +207,11 @@ export const S = {
     // happens to read "nothing" must not look identical to a field that holds none
     // (.tree__value--null in panel.css; colour alone would be WCAG 1.4.1).
     nullValue: 'nothing',
+    // + not in §11 — the page's OWN words, quoted back to the person in the Pick tab
+    // (§10.1A, §10.1C). §11 already quotes a name this way in `scenarios.applied` and
+    // `scenarios.deleteConfirm`; the curly pair is here so a locale that punctuates
+    // quotation differently changes one line.
+    quote: (text) => `“${text}”`,
     joinDot: (a, b) => `${a} · ${b}`,
     joinLabel: (a, b) => `${a}: ${b}`
   },

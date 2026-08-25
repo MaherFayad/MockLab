@@ -30,6 +30,12 @@ jobs:
     # that froze the page, a match entry that could not match its own URL, a stream that
     # was never released.
     #
+    # picker.browser.test.js and pickerdom.browser.test.js guard M3. The picker is DOM
+    # behaviour end to end — an overlay a site's CSS can erase, a listener that never
+    # comes off, an area ratio that is measured rather than assumed — and none of it is
+    # visible to a unit test. Both files must be listed: a suite a CI job never invokes
+    # is a suite that is not run, and this repository has already shipped one of those.
+    #
     # panel.browser.test.js guards §1.1 itself. Changing the editor's chip to
     # "Verified ✓" — the worst bug this product can have, per §17.12 — leaves EVERY
     # unit test, both §17.4 guard tests and the entire e2e suite green. Only subtest 4
@@ -57,4 +63,10 @@ jobs:
         working-directory: extension
       - name: Browser end-to-end tests (side panel)
         run: node --test test/panel.browser.test.js
+        working-directory: extension
+      - name: Browser end-to-end tests (element picker)
+        run: node --test test/picker.browser.test.js
+        working-directory: extension
+      - name: Browser end-to-end tests (picker DOM logic)
+        run: node --test test/pickerdom.browser.test.js
         working-directory: extension

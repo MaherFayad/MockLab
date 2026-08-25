@@ -512,9 +512,20 @@ the same failure this build keeps producing, one level up.
 
 **Open M7 items** — both recorded here so M7 inherits them, neither fixed unilaterally:
 
-1. **Contrast.** White on `--accent` in dark mode is 3.12:1, below AA. §9.2 specifies
-   white text, so this is left for the M7 a11y pass rather than diverged from. The light
-   theme is 4.83:1 and passes; all four chips measure ≥ 4.5:1 in both themes.
+1. **Contrast — and it is wider than §16 M7 says.** White on `--accent` in dark mode is
+   3.12:1, below AA. §9.2 specifies white text, so this is left for the M7 a11y pass
+   rather than diverged from unilaterally. The light theme is 4.83:1 and passes; all four
+   chips measure ≥ 4.5:1 in both themes.
+
+   §16 M7 names only "all four chips", which is why this looked contained. It is not:
+   `--accent` with white on it is **every primary button in the product** — Apply &
+   refresh, Reset everything, Find the real source — not one screen. And no text colour
+   reaches 4.5:1 on `#4A90FF`, so the fix cannot be a lighter or darker white: the dark
+   theme has to go **dark-on-accent** (`--on-accent: #1E1F24` → 5.36:1), which also turns
+   §9.2's primary-button `::before` sheen from a highlight into a shadow. That is a
+   design-system decision touching every primary button, correctly not taken by one agent
+   inside one milestone. **M7 owns it; recording it here because §16's wording left it
+   unowned.**
 2. **Disabled controls explain themselves only to a mouse.** Three controls — the Deep
    mode row, "Set up AI access", and "Show on page" — say *why* they are inert only
    through a hover tooltip. A `disabled` button is not focusable, so `.tip:focus-within`
@@ -579,3 +590,94 @@ README and fails on drift; the *test totals* had no such guard and duly drifted.
 comment no longer states a total at all: "every unit test" makes the same point and
 cannot go stale. Totals that are genuinely evidence are kept, pinned to the commit they
 were measured at.
+
+---
+
+## M3 — Picker + candidates
+
+**Built by:** probe-engineer (picker, fingerprints, candidate discovery) and panel-designer
+(Pick tab states A–C), in parallel; interceptor-engineer closed three guard gaps left over
+from M2 in the same window. Owned files did not overlap.
+
+**Delivered — picker and discovery**
+
+- `content/picker.js` (the interaction: cursor, hover overlay, confirm flash, listeners)
+  and `content/element.js` (§6.2 fingerprint and re-resolve, §7.3 snapshot, §6.1 smart
+  target — the questions M4's probe asks with no picker running).
+- `background/candidates.js` (§6.3 hypothesis generator, pure functions, no chrome API)
+  and `background/pickApi.js` (the service-worker glue).
+- The overlay renders in an **open shadow root**: on a page with `* { border: 0 !important }`
+  the site's own CSS erases MockLab's outline and the user sees nothing while believing
+  they are picking. Proved by mutation.
+
+**Delivered — Pick tab**
+
+- States A, B and C per §10.1. State D and the probe progress card are M4 and were not
+  built.
+- `probe.cta` renders disabled with a real next step below it rather than hidden or
+  enabled — hidden, the screen misdescribes itself; enabled, it promises an experiment
+  that cannot run.
+
+**The DoD, which is the milestone.** Picking the demo pill lists `status` in the top 3
+when the pill reads "On time" and the data says `"ON_TIME"`. No substring or numeric match
+connects those; it works only through §6.3's sibling-key heuristic. Picking the price finds
+`price.total` by numeric match. Both proven end to end in real Chromium.
+
+**Three spec problems, found by measuring rather than by assuming**
+
+1. **§6.1's 1.4× area rule cannot do the job §6.1 describes for it.** Measured in real
+   Chromium, the demo's own pill is 2.57× and no realistically padded pill passes — the
+   budget for a short word is 1px vertical and 5px horizontal. An area ratio depends on
+   text *length* while padding does not, so the rule is harshest on exactly the short text
+   §6.1 names as its purpose. Fixed additively (Deviation 30) rather than by raising the
+   constant until the demo passed, which would have been a number chosen to fit one case.
+2. **§6.3's sibling-key gate contradicts its own example.** Read strictly it cannot fire
+   for the pill it describes, making the M3 DoD impossible (Deviation 31).
+3. **§5.4's depth-12 cap made an honest string dishonest.** A field 13 levels down was
+   invisible, and the user was shown `pick.noCandidates` — a claim about the data — when
+   the truth was that MockLab stopped looking. Raised to 24, with `searched.complete`
+   plumbed through so the bounded case can be told apart from the empty one (Deviation 32).
+   Raising the cap raised the worst case with it: 200 sources at the ceiling blocked the
+   service worker for **3244 ms** on one click. A tab-wide budget brings that to 163 ms,
+   and the honesty flag is precisely what makes bounding acceptable.
+
+**Two defects found by looking, not by testing**
+
+1. **State B's only instruction measured 2.87:1.** §10.1B says the button "becomes
+   disabled"; §9.2's disabled recipe dims it. Both rules are right, and composed they made
+   the one sentence on screen unreadable. It now keeps real `disabled` semantics and paints
+   at full strength (4.83:1); the 60% dimmed panel around it carries the "waiting" signal.
+   Asserted as a property — never painted weaker than an ordinary primary button — not as
+   a number.
+2. **Two candidate rows read identically.** The demo holds `"ON_TIME"` at both `$.status`
+   and `$.booking.status`, so §10.1C's two columns drew two different fields as one thing —
+   in the screen whose entire job is telling you which field to trust. Rows now carry the
+   field in the site's own words (`status`, `booking · status`); raw paths stay Advanced-only.
+
+**Two tests that were not guards, caught by their own authors**
+
+- Deleting every `removeEventListener` in the picker left all 12 browser subtests green,
+  because each handler early-returns when not picking. Replaced with a subtest that
+  instruments `addEventListener`/`removeEventListener` and pairs every add with a remove by
+  `(type, fn, capture)`.
+- The first same-text assertion for the smart walk sat where the *area* rule was also
+  blocking, so deleting the text check changed nothing. And the first version of the new
+  inset rule had only horizontal blockers — dropping the `top` term failed no test. Both
+  found by mutation, both fixed.
+
+**A fixture that made a vacuous assertion real.** `user.json` gained `"status": "ACTIVE"`.
+Removing §6.3's `related` gate now fails on the demo itself; before, only a synthetic
+fixture caught it. M2 spent a whole milestone with a code path no fixture could execute,
+and this is the cheapest available insurance against a repeat.
+
+**Evidence at the M3 commit:** `npm test -ws` extension 207/207, companion 5/5, 0 skipped,
+stable across three consecutive runs. Four browser suites against the real unpacked
+extension in real Chromium: `e2e` 14, `panel` 21, `picker` 7, `pickerdom` 6 — all four run
+individually and in the parallel run, and all four are wired into CI as their own steps.
+
+**QA verdict:** _pending qa-verifier_
+
+**Carried into M4:** the `pickMessages.js` merge into `messages.js`; `countFields()` in
+`background.js` still enumerating at the old depth 12, so the Sources tab's "{n} fields"
+under-counts deep responses relative to what discovery now searches; and the panel string
+for the bounded-search case, which is plumbed to the panel but not yet rendered.

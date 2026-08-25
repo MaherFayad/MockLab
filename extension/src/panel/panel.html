@@ -42,13 +42,9 @@
     </header>
 
     <main class="app__body">
-      <!-- §10.1 State A — the calm idle screen. States B–D land at M3/M4. -->
-      <section class="panel" id="panel-pick" role="tabpanel" aria-labelledby="tab-pick">
-        <h2 data-s="pick.title"></h2>
-        <p class="help" data-s="pick.body"></p>
-        <div id="pick-cta"></div>
-        <div id="pick-recent"></div>
-      </section>
+      <!-- §10.1 states A, B and C. Which one shows depends on the live pick state, so
+           the whole section is rendered by pick.js; State D lands at M4. -->
+      <section class="panel" id="panel-pick" role="tabpanel" aria-labelledby="tab-pick"></section>
 
       <!-- §10.2 — the M2 hero. -->
       <section class="panel hidden" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources">

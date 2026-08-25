@@ -17,6 +17,9 @@
  * message surface (changesApi.js), and the single storage listener that keeps the
  * in-page match list, the badge and every open panel in step after any write — whether
  * it came from this panel, another window's panel, or an MCP agent (PLAN.md §1.6).
+ *
+ * M3 adds pick mode's wiring (pickApi.js): the route from the panel to the page agent's
+ * picker, and back with one element that candidates.js turns into §6.3's guesses.
  */
 
 import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
@@ -24,6 +27,8 @@ import { normalizeRaw, friendlyName, compileMatchList } from './signatures.js';
 import { originOf, rememberSignature, groupChangesBySignature, countActiveChanges } from './ruleStore.js';
 import { parsePath, enumeratePaths, getByPath } from '../shared/jsonpath.js';
 import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
+import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
+import { PICK_MSG, PICK_PORT_MSG } from './pickMessages.js';
 import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
 
 /**
@@ -282,13 +287,20 @@ function handlePortMessage(tabId, message) {
       state.url = payload.url || state.url;
       state.origin = payload.origin || originOf(state.url);
       pushMatchList(tabId);
-      if (isNewDocument) notifyPanel(tabId, 'reset');
+      if (isNewDocument) {
+        // The captures this tab's candidates point at have just been cleared.
+        pickApi.onNewDocument(tabId);
+        notifyPanel(tabId, 'reset');
+      }
       break;
     }
     case PORT_MSG.CAPTURED:
       onCaptured(tabId, message.payload).catch((err) =>
         console.error('[MockLab] capture failed', err)
       );
+      break;
+    case PICK_PORT_MSG.PICKED:
+      pickApi.onPicked(tabId, message.payload);
       break;
     case PORT_MSG.SOFT_NAV: {
       const state = tabState.get(tabId);
@@ -330,6 +342,7 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  pickApi.forgetTab(tabId);
   tabState.delete(tabId);
   tabPorts.delete(tabId);
   lastNotifyAt.delete(tabId);
@@ -426,13 +439,45 @@ const changesApi = createChangesApi({
   }
 });
 
+/* ============================================ M3 — picker & candidate discovery */
+
+/**
+ * Pick mode's wiring (PLAN.md §6.1, §6.3). The behaviour lives in `pickApi.js`; the
+ * worker supplies the four things only it can: how to reach a tab's page agent, what
+ * that tab has captured, which origin it is on, and how to tell the panel.
+ */
+const pickApi = createPickApi({
+  resolveTabId,
+
+  /**
+   * The live Ports for a tab, or null. A tab with no page agent — a chrome:// page, or
+   * one opened before MockLab was installed — can never answer a pick, and §1.1 says to
+   * tell the user that rather than leave the panel waiting for ever.
+   */
+  portsFor: (tabId) => tabPorts.get(tabId) || null,
+
+  /** The tab's origin and everything it has captured — §6.3 searches all of it. */
+  tabRecord: (tabId) => tabState.get(tabId) || null,
+
+  /** Data-free beyond the phase, like every other panel broadcast in this file. */
+  notify(tabId, phase) {
+    chrome.runtime
+      .sendMessage({ type: PICK_MSG.PICK_CHANGED, payload: { tabId, phase } })
+      .catch(() => {
+        /* no panel open — expected, not an error */
+      });
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const type = message && message.type;
   const isSources = type === MSG.LIST_SOURCES || type === MSG.GET_RESPONSE;
   const isChanges = typeof type === 'string' && CHANGE_MESSAGE_TYPES.has(type);
-  if (!isSources && !isChanges) return false;
+  const isPick = typeof type === 'string' && PICK_MESSAGE_TYPES.has(type);
+  if (!isSources && !isChanges && !isPick) return false;
 
-  (isChanges ? changesApi.handle(message) : handleMessage(message))
+  const answer = isChanges ? changesApi.handle(message) : isPick ? pickApi.handle(message) : handleMessage(message);
+  answer
     .then(sendResponse)
     .catch((err) => {
       console.error('[MockLab] message failed', err);

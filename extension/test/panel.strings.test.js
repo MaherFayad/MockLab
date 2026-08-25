@@ -30,7 +30,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { S } from '../src/panel/strings.js';
-import { formatValue } from '../src/panel/sources.js';
+import { formatValue, draftFor } from '../src/panel/sources.js';
 
 const PANEL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'panel');
 const read = (file) => fs.readFileSync(path.join(PANEL, file), 'utf8');
@@ -142,6 +142,63 @@ test('a value that is absent never reads like a value that is there', () => {
     /\.tree__value--null\s*\{[^}]*font-style:\s*italic/,
     'a described value must be visibly a description, not only a different colour'
   );
+});
+
+/* ─────────────────────────── what the editor SEEDS, which is not what the tree shows */
+
+/**
+ * The M2 fix these two tests were missing.
+ *
+ * `draftFor` exists because `formatValue` DESCRIBES a value that has no text of its own
+ * ("nothing", "{…}"), and a description seeded into an editable box is applied as if the
+ * person had typed it: opening the editor on a field the site sent with no value in it,
+ * and pressing Apply without touching the box, sent the site the literal text "nothing".
+ *
+ * The audit above reads `draftFor` for LITERALS, which is a different property.
+ * `return formatValue(value)` puts the defect back with no literal anywhere, and until
+ * now left all 161 tests green. These two assert the behaviour instead.
+ */
+test('§1.1 the editor seeds its box with a value, never with a description of one', () => {
+  // Not `assert.equal(draftFor(null), '')` — that passes just as happily with the word
+  // hardcoded, and it also passes if someone changes strings.js. The property is the
+  // COUPLING: no word MockLab authored may ever end up in the box, whatever that word
+  // is today. Sentinelled so the test cannot be satisfied by matching a fixed string.
+  const original = { ...S.glyph };
+  try {
+    S.glyph.nullValue = SENTINEL;
+    S.glyph.collapsedObject = SENTINEL;
+    S.glyph.list = (n) => `${SENTINEL}${n}`;
+
+    for (const [label, value] of [
+      ['a field the site sent with no value in it', null],
+      ['a field with no value slot at all', undefined],
+      ['a container', { a: 1 }],
+      ['a list', [1, 2]]
+    ]) {
+      const seed = draftFor(value);
+      assert.equal(
+        String(seed).includes(SENTINEL),
+        false,
+        `the editor opened on ${label} starts with “${seed}” — MockLab's own description of ` +
+          'the value, which Apply would then send to the site as if a human had typed it (§1.1)'
+      );
+      assert.equal(seed, '', `${label} has no text of its own, so the box starts empty`);
+    }
+  } finally {
+    Object.assign(S.glyph, original);
+  }
+});
+
+test('§10.1D a value that HAS text of its own is seeded with exactly that text', () => {
+  // The other half. Without this, `draftFor = () => ''` passes the test above and
+  // silently empties the box for every ordinary edit — the box is meant to open on what
+  // is really there, so the person can change one character of it.
+  for (const value of ['ON_TIME', '', 'nothing', 0, 450, -1.5, true, false]) {
+    assert.equal(draftFor(value), String(value), `editing ${JSON.stringify(value)} starts from its own text`);
+  }
+  // The collision the previous test cannot see: a REAL text that happens to read like
+  // MockLab's description of an absent value must still come back verbatim.
+  assert.equal(draftFor(S.glyph.nullValue), S.glyph.nullValue);
 });
 
 /* ───────────────────────────────────────── the next one, wherever it is written */

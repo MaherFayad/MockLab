@@ -5,9 +5,10 @@
  * OWNER: panel-designer. Added at M2 — an additive deviation from §2.1's file tree, for
  * the same reason `e2e.browser.test.js` was added at M1: every defect that mattered here
  * was invisible to unit tests. The §16 M2 DoD is a sequence of UI actions ending in a
- * red pill on a page the extension never touched directly, and the §1.1 honesty
- * guarantee is a chip that must say "Possible" and must never say "Verified ✓". Neither
- * can be asserted without a browser, and a guard CI cannot run is not a guard.
+ * red pill on a page the extension never touched directly, M3's is a click on the page
+ * turning into a list of guesses in the panel, and the §1.1 honesty guarantee is a chip
+ * that must say "Possible" and must never say "Verified ✓". None can be asserted without
+ * a browser, and a guard CI cannot run is not a guard.
  *
  * Rules this file follows, the first two learned the hard way in M1:
  *   - it SKIPS, never fails, when Playwright or a Chromium build is absent, so
@@ -33,6 +34,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { S } from '../src/panel/strings.js';
+import { PICK_MSG } from '../src/background/pickMessages.js';
 import { createServer } from '../../companion/src/index.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -116,12 +118,148 @@ function rootRow(panel, text) {
   return panel.locator('#source-list .tree > .tree__group > .tree__row', { hasText: text }).first();
 }
 
+/**
+ * Render the Pick tab (§10.1) from a state this milestone cannot otherwise produce, and
+ * measure what a person would see.
+ *
+ * The subtest above this one reaches State C for real, through the button, the worker,
+ * the page agent and the demo. What it CANNOT reach is the rest of the state space: a
+ * source list longer than 12, an element whose text matches nothing, an element with no
+ * text at all, and above all §10.1A's "Recent links" — which needs a Binding the probe
+ * has confirmed, and nothing may write that word before M4 (§17.4). Leaving those
+ * screens unlooked-at until a later milestone is how a design ships unseen, so this
+ * imports the panel's own module INSIDE the real panel page and renders into the real
+ * `#panel-pick`, against the real stylesheet: the STATE is simulated, the rendering, the
+ * cascade and the geometry are not.
+ *
+ * Deliberately not a hook in the product code. pick.js exports what the panel itself
+ * imports and nothing more — a test seam in shipping code is a thing that can be wrong
+ * in production, and this file needs none.
+ */
+function renderPick(page, patch) {
+  return page.evaluate(async (given) => {
+    const mod = await import('/src/panel/pick.js');
+    const root = document.getElementById('panel-pick');
+    const ctx = {
+      state: Object.assign(
+        {
+          tabId: 1,
+          sources: [],
+          settings: { advancedMode: false },
+          bindings: [],
+          pick: { picking: false, element: null, candidates: [] }
+        },
+        given
+      ),
+      send: async () => ({ ok: true }),
+      toast: () => {},
+      rerender: () => {}
+    };
+    mod.renderPickTab(root, ctx);
+    mod.pickingChrome(ctx.state.pick.picking);
+
+    // Show the tab, or innerText reads '' and every text assertion below passes vacuously.
+    document.getElementById('tab-pick').checked = true;
+    for (const name of ['pick', 'sources', 'scenarios', 'settings']) {
+      document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== 'pick');
+    }
+
+    /**
+     * One element's opacity AS DESIGNED, not as mid-animation.
+     *
+     * The dim is a 250ms transition, and this panel has to stay a BACKGROUND tab for the
+     * rest of the suite to describe the demo — Chromium suspends rendering there, so the
+     * transition never advances and a plain read returns its starting value however long
+     * the test waits. (It cost an hour: freshly created nodes read 0.6 because they never
+     * transitioned at all, while the one pre-existing node stayed at 1 forever.)
+     * Suspending the transition makes the computed value jump to the end state, which is
+     * the thing worth asserting — the same technique the tooltip subtest above uses.
+     */
+    const opacity = (sel) => {
+      const node = document.querySelector(sel);
+      if (!node) return null;
+      const inline = node.style.transition;
+      node.style.transition = 'none';
+      const value = Number(getComputedStyle(node).opacity);
+      node.style.transition = inline;
+      return value;
+    };
+    const textsOf = (sel) => [...root.querySelectorAll(sel)].map((n) => n.textContent.trim());
+    const primary = root.querySelector('.btn--primary');
+    return {
+      missingContract: mod.missingPickContract(),
+      rootText: root.innerText,
+      bodyText: document.body.innerText,
+      cards: root.querySelectorAll('.card').length,
+      emptyBoxes: root.querySelectorAll('.empty').length,
+      chips: textsOf('.chip'),
+      sectionTitles: textsOf('.section-title'),
+      helps: textsOf('.help'),
+      primary: primary
+        ? {
+            text: primary.textContent.trim(),
+            disabled: primary.disabled,
+            icons: primary.querySelectorAll('svg').length,
+            // How strongly the label is actually painted. §9.2's disabled recipe is
+            // opacity .7 + saturate(.7) brightness(.85); on State B's button that is the
+            // difference between a readable instruction and a 2.87:1 one.
+            paint: {
+              opacity: Number(getComputedStyle(primary).opacity),
+              filter: getComputedStyle(primary).filter,
+              shadow: getComputedStyle(primary).boxShadow
+            }
+          }
+        : null,
+      secondaries: [...root.querySelectorAll('.btn--secondary')].map((b) => ({ text: b.textContent.trim(), disabled: b.disabled })),
+      picked: root.querySelector('.picked__text') ? root.querySelector('.picked__text').textContent : null,
+      rows: [...root.querySelectorAll('.cand')].map((row) => ({
+        name: row.querySelector('.cand__name').textContent,
+        value: row.querySelector('.cand__value').textContent,
+        field: row.querySelector('.cand__field') ? row.querySelector('.cand__field').textContent : null,
+        valueFont: getComputedStyle(row.querySelector('.cand__value')).fontFamily,
+        // Everything the row actually SAYS. Two rows with the same reading are two
+        // different fields drawn as one thing.
+        reading: row.innerText.replace(/\s+/g, ' ').trim(),
+        paths: row.querySelectorAll('.cand__path').length
+      })),
+      // §10.1B's dim, measured rather than restated: the panel recedes, the live
+      // instruction does not.
+      dim: {
+        head: opacity('.app__head'),
+        title: opacity('#panel-pick h2'),
+        body: opacity('#panel-pick p.help'),
+        live: opacity('#panel-pick .pick-live')
+      },
+      linkCards: [...root.querySelectorAll('.card')].map((card) => ({
+        cursor: getComputedStyle(card).cursor,
+        chevrons: card.querySelectorAll('.card__chevron').length,
+        clickable: card.tagName === 'BUTTON' || card.tagName === 'A'
+      }))
+    };
+  }, patch);
+}
+
+/** A Binding the probe would write at M4 — the only thing §10.1A's list may ever show. */
+function verifiedLink(path, textAnchor, value, lastVerifiedAt) {
+  return {
+    id: `id-${path}`,
+    origin: 'http://127.0.0.1',
+    sigId: 'sig-trip',
+    path,
+    elements: [{ css: '#status-pill', textAnchor, attrAnchors: [], treePath: [] }],
+    state: 'verified',
+    lastVerifiedAt,
+    observedValues: [value],
+    probeMode: 'refresh'
+  };
+}
+
 const chromium = await loadChromium();
 
 if (!chromium) {
   test('panel browser suite', { skip: 'Playwright is not installed — `npm i -D playwright && npx playwright install chromium` enables it.' }, () => {});
 } else {
-  test('side panel — PLAN.md §10 and the §16 M2 definition of done', async (t) => {
+  test('side panel — PLAN.md §10 and the §16 M2 and M3 definitions of done', async (t) => {
     let server = null;
     let ctx = null;
     let profile = null;
@@ -376,6 +514,275 @@ if (!chromium) {
 
         const bar = await panel.locator('#sitebar').innerText();
         assert.equal(bar.includes(S.site.reset), false, 'the danger button hides itself at zero changes');
+      });
+
+      /* ───────────────────────────────── the Pick tab — PLAN.md §10.1 states A, B, C */
+
+      await t.test('State A is calm, and promises nothing it has not proved (§10.1A, §17.12)', async () => {
+        await panel.click('label[for="tab-pick"]');
+        await panel.waitForTimeout(400);
+
+        const screen = await panel.locator('#panel-pick').innerText();
+        assert.ok(screen.includes(S.pick.title), `§11 pick.title must be the heading, got "${screen}"`);
+        assert.ok(screen.includes(S.pick.body), '§11 pick.body must explain the flow');
+
+        const cta = panel.locator('#panel-pick .btn--primary');
+        assert.equal(await cta.count(), 1, 'State A has exactly one primary button');
+        assert.ok((await cta.innerText()).includes(S.pick.cta), `§11 pick.cta must label it`);
+        assert.equal(await cta.locator('svg').count(), 1, '§10.1A gives the button a crosshair icon');
+
+        // The whole point of the empty case: nothing has been probed, so there is no
+        // list, no heading over an absent list, and no dashed empty box promising one.
+        assert.equal(await panel.locator('#panel-pick .card').count(), 0, 'no Link can exist before a probe has run');
+        assert.equal(await panel.locator('#panel-pick .empty').count(), 0, 'an empty shelf is still a promise — do not draw one');
+        assert.equal(screen.includes(S.pick.recent), false, `"${S.pick.recent}" heads a list that does not exist yet`);
+
+        // §17.12 — the sentence this whole product is judged on.
+        const everything = await panel.locator('body').innerText();
+        assert.equal(everything.includes(S.chips.verified), false, `"${S.chips.verified}" must not appear anywhere before a probe has run`);
+      });
+
+      await t.test('§16 M3 — the button picks the demo pill, and the tab follows the page (§10.1B, §10.1C)', async () => {
+        // The one subtest here that uses no fixture at all: the real button, the real
+        // service worker, the real page agent, the real demo. Everything below this
+        // point simulates a state; this asserts that the state can actually be reached.
+        await panel.click('label[for="tab-pick"]');
+        await panel.waitForTimeout(300);
+        await panel.click('#panel-pick .btn--primary');
+        await panel.waitForTimeout(600);
+
+        const picking = await panel.evaluate(() => ({
+          label: document.querySelector('#panel-pick .btn--primary').textContent.trim(),
+          disabled: document.querySelector('#panel-pick .btn--primary').disabled,
+          dimmed: document.body.classList.contains('is-picking')
+        }));
+        assert.equal(picking.label, S.pick.picking, '§10.1B: the button carries the instruction while picking');
+        assert.equal(picking.disabled, true);
+        assert.equal(picking.dimmed, true, 'the panel recedes so the page can be clicked');
+
+        // Now the human clicks the pill. The picker throttles hover to rAF, so move
+        // first and let a frame pass, exactly as the picker's own suite does.
+        const box = await demo.evaluate(() => {
+          const rect = document.getElementById('status-pill').getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        });
+        await demo.mouse.move(box.x, box.y);
+        await demo.waitForTimeout(150);
+        await demo.mouse.down();
+        await demo.mouse.up();
+        await panel.waitForTimeout(1500);
+
+        const seen = await panel.evaluate(() => {
+          const root = document.getElementById('panel-pick');
+          return {
+            text: root.innerText,
+            dimmed: document.body.classList.contains('is-picking'),
+            picked: root.querySelector('.picked__text') ? root.querySelector('.picked__text').textContent : null,
+            rows: [...root.querySelectorAll('.cand')].map((row) => ({
+              name: row.querySelector('.cand__name').textContent,
+              value: row.querySelector('.cand__value').textContent,
+              reading: row.innerText.replace(/\s+/g, ' ').trim()
+            })),
+            chips: [...root.querySelectorAll('.chip')].map((chip) => chip.textContent.trim()),
+            body: document.body.innerText
+          };
+        });
+
+        assert.equal(seen.dimmed, false, 'the pick is over, so the panel comes back');
+        assert.equal(seen.picked, S.glyph.quote('On time'), 'the mini card quotes the page back (§10.1C)');
+        assert.ok(seen.rows.length > 0 && seen.rows.length <= 12, `expected 1..12 rows, got ${seen.rows.length}`);
+        // §16 M3's DoD, seen from the panel: the pill reads "On time", the data says
+        // "ON_TIME", and the row a person would act on has to be near the top.
+        assert.ok(
+          seen.rows.slice(0, 3).some((row) => row.name === 'Trip' && row.value === 'ON_TIME'),
+          `the Trip source's ON_TIME must be in the top 3, got ${JSON.stringify(seen.rows.slice(0, 3))}`
+        );
+        assert.deepEqual(seen.chips, [S.chips.candidate], 'one chip, and it is the honest one (§10.6)');
+        assert.equal(seen.body.includes(S.chips.verified), false, 'a value match proves nothing (§0.2, §17.12)');
+        assert.ok(seen.text.includes(S.probe.cta), '§11 probe.cta is on screen');
+
+        // The demo holds "ON_TIME" at BOTH `$.status` and `$.booking.status`, so this
+        // list really does contain two rows from the same source with the same value.
+        // A list whose job is "choose the likeliest" must never draw two different
+        // fields as one thing (§1.1) — this is the assertion that caught it.
+        const readings = seen.rows.map((row) => row.reading);
+        assert.equal(
+          new Set(readings).size,
+          readings.length,
+          `two rows read exactly alike, so nothing on screen tells them apart: ${JSON.stringify(readings)}`
+        );
+
+        // Hand the worker back to idle. Everything below simulates a Pick-tab state by
+        // rendering into this same panel, and a live pick would re-render over it the
+        // next time the worker broadcast anything.
+        await panel.evaluate((type) => chrome.runtime.sendMessage({ type, payload: {} }), PICK_MSG.CANCEL_PICK);
+        await panel.waitForTimeout(400);
+      });
+
+      await t.test('the picker button is enabled exactly when it can actually pick (§1.1, §17.8)', async () => {
+        // pick.js names the message types it sends and refuses to send one that is not
+        // there. The invariant holds in both directions: a button that cannot do its job
+        // must say so, and a button that can must not be dimmed for no reason. It is not
+        // an assertion about today — it kept holding when the contract landed mid-build,
+        // with no edit here.
+        const seen = await renderPick(panel, {});
+        const cta = panel.locator('#panel-pick .btn--primary');
+        assert.equal(
+          await cta.isDisabled(),
+          seen.missingContract.length > 0,
+          `pick.js is missing ${JSON.stringify(seen.missingContract)} from messages.js, so the button must be disabled and say why`
+        );
+        if (seen.missingContract.length) {
+          assert.ok(seen.helps.includes(S.soon), 'a disabled hero button has to give a reason and a next step');
+        }
+      });
+
+      await t.test('State B dims the panel to 60% and keeps the live instruction readable (§10.1B)', async () => {
+        const seen = await renderPick(panel, { pick: { picking: true, element: null, candidates: [] } });
+
+        assert.equal(seen.primary.disabled, true, '§10.1B: the button becomes disabled while picking');
+        assert.equal(seen.primary.text, S.pick.picking, '§11 pick.picking is the label, not a caption beside it');
+
+        assert.equal(seen.dim.head, 0.6, '§10.1B: the panel dims 60%');
+        assert.equal(seen.dim.title, 0.6);
+        assert.equal(seen.dim.body, 0.6);
+        assert.equal(seen.dim.live, 1, 'the sentence telling the person what to do next is the one thing the dim must spare');
+
+        // …and the dim the button applies to ITSELF matters just as much. §9.2's disabled
+        // recipe measured this label at 2.87:1 (light) and 2.54:1 (dark) against its own
+        // fill. Asserted as a property, not as a number: however §9.2's disabled recipe
+        // changes, the one instruction on screen is never painted weaker than an ordinary
+        // primary button.
+        const idle = await renderPick(panel, {});
+        assert.equal(seen.primary.paint.opacity, idle.primary.paint.opacity, 'the picking label must not be faded');
+        assert.equal(seen.primary.paint.filter, idle.primary.paint.filter, 'nor desaturated');
+        assert.equal(seen.primary.paint.filter, 'none');
+        // The raised glow is what reads as "press me", and it stays off — that, plus the
+        // panel dimmed around it, is what says "waiting" instead.
+        assert.equal(seen.primary.paint.shadow, 'none');
+        assert.notEqual(idle.primary.paint.shadow, 'none', 'a button you CAN press keeps its §9.2 glow');
+      });
+
+      await t.test('State C lists possible sources honestly (§10.1C, §10.6)', async () => {
+        // Shaped like the demo's own result, collision included: "ON_TIME" sits at both
+        // `$.status` and `$.booking.status`, so two rows share a source AND a value.
+        const candidates = [
+          { sigId: 'sig-trip', path: '$.passenger.name', value: 'On time traveller', score: 0.5 },
+          { sigId: 'sig-trip', path: '$.status', value: 'ON_TIME', score: 0.45 },
+          { sigId: 'sig-trip', path: '$.booking.status', value: 'ON_TIME', score: 0.45 },
+          { sigId: 'sig-user', path: '$.label', value: 'On time', score: 1 }
+        ];
+        const seen = await renderPick(panel, {
+          sources: [
+            { sigId: 'sig-trip', name: 'Trip' },
+            { sigId: 'sig-user', name: 'User' }
+          ],
+          pick: { picking: false, element: { text: 'On time' }, candidates }
+        });
+
+        assert.equal(seen.picked, S.glyph.quote('On time'), 'the picked element is quoted back, text only (§10.1C)');
+        assert.ok(seen.sectionTitles.includes(S.pick.picked));
+        assert.ok(seen.sectionTitles.includes(S.pick.sources), '§10.1C names this list "Possible sources"');
+
+        // §10.6: four chips are the entire status vocabulary, and an unproven guess is
+        // "Possible". Once, over the list — never "Verified ✓", and never a fifth word.
+        assert.deepEqual(seen.chips, [S.chips.candidate]);
+        assert.equal(seen.bodyText.includes(S.chips.verified), false, 'nothing here has been proved (§17.12)');
+
+        assert.deepEqual(
+          seen.rows.map((row) => row.value),
+          ['On time', 'On time traveller', 'ON_TIME', 'ON_TIME'],
+          '§10.1C: score-ordered, highest first — the order IS a claim about likelihood'
+        );
+        assert.deepEqual(seen.rows.map((row) => row.name), ['User', 'Trip', 'Trip', 'Trip'], 'the friendly name §10.2 already uses');
+        assert.ok(seen.rows[0].valueFont.includes('Fira Code'), `§10.1C puts the matched value in Fira Code, got ${seen.rows[0].valueFont}`);
+        assert.equal(seen.rows[0].paths, 0, 'the RAW path stays Advanced-mode only (§1.2)');
+        // …but which field it is, said in the site's own words, is default UI — the same
+        // keys the §10.2 tree already labels its rows with.
+        assert.deepEqual(
+          seen.rows.map((row) => row.field),
+          ['label', S.glyph.joinDot('passenger', 'name'), 'status', S.glyph.joinDot('booking', 'status')],
+          'each row names its field without a "$." or a bracket in sight'
+        );
+
+        // §16 M4 owns the experiment. Shown, disabled, and explained — not hidden, and
+        // not enabled over nothing.
+        assert.equal(seen.primary.text, S.probe.cta, '§11 probe.cta must be on screen');
+        assert.equal(seen.primary.disabled, true, 'no probe can run at M3, so it must not offer to');
+        assert.ok(seen.helps.includes(S.soon), 'and it must say so, with somewhere to go instead');
+        assert.equal(seen.rootText.includes(S.probe.intro), false, 'do not describe a run that cannot start');
+      });
+
+      await t.test('State C shows at most 12 possibilities (§10.1C)', async () => {
+        const many = Array.from({ length: 25 }, (_, i) => ({ sigId: 'sig-trip', path: `$.f${i}`, value: i, score: i / 100 }));
+        const seen = await renderPick(panel, {
+          sources: [{ sigId: 'sig-trip', name: 'Trip' }],
+          pick: { picking: false, element: { text: 'On time' }, candidates: many }
+        });
+        assert.equal(seen.rows.length, 12);
+        assert.deepEqual(seen.rows.map((row) => row.value), ['24', '23', '22', '21', '20', '19', '18', '17', '16', '15', '14', '13']);
+      });
+
+      await t.test('State C with nothing found says so, and offers §6.3’s way out', async () => {
+        const seen = await renderPick(panel, {
+          pick: { picking: false, element: { text: 'On time' }, candidates: [] }
+        });
+        assert.ok(seen.rootText.includes(S.pick.noCandidates), '§6.3: tell the user honestly');
+        assert.equal(seen.rows.length, 0);
+        assert.equal(seen.chips.length, 0, 'there is no list, so there is nothing to call Possible');
+        assert.equal(seen.rootText.includes(S.probe.cta), false, 'there is nothing to find the source among');
+        assert.ok(
+          seen.secondaries.some((button) => button.text === S.pick.checkAll && button.disabled),
+          '§6.3 offers "Check all fields", and at M3 it cannot run yet'
+        );
+      });
+
+      await t.test('an element with no text of its own says so instead of drawing an empty card', async () => {
+        const seen = await renderPick(panel, { pick: { picking: false, element: { text: '   ' }, candidates: [] } });
+        assert.equal(seen.picked, S.pick.noText);
+      });
+
+      await t.test('§10.1A’s Recent links list shows verified Links and ONLY verified Links (§17.12)', async () => {
+        const proved = verifiedLink('$.status', 'On time', 'ON_TIME', 300);
+        const links = [
+          { ...proved, id: 'a', path: '$.a', lastVerifiedAt: 100 },
+          { ...proved, id: 'b', path: '$.b', lastVerifiedAt: 200 },
+          proved,
+          { ...proved, id: 'd', path: '$.d', lastVerifiedAt: 400 }
+        ];
+
+        // The state M3 actually ships in, spelled out: a Change made from the tree view
+        // records a `candidate` Binding (the M2 subtests above just made one). If this
+        // list ever loosened to "has a Binding", every such edit would grow a Verified ✓.
+        const unproven = await renderPick(panel, {
+          sources: [{ sigId: 'sig-trip', name: 'Trip' }],
+          bindings: links.map((link) => ({ ...link, state: 'candidate' })).concat(links.map((link) => ({ ...link, state: 'stale' })))
+        });
+        assert.equal(unproven.cards, 0, 'a candidate or stale Link is not a proved one, and §10.1A lists only proved ones');
+        assert.equal(unproven.rootText.includes(S.pick.recent), false, 'no list, so no heading over it');
+        assert.equal(unproven.bodyText.includes(S.chips.verified), false, `"${S.chips.verified}" must never come from an unproved Link`);
+
+        const shown = await renderPick(panel, { sources: [{ sigId: 'sig-trip', name: 'Trip' }], bindings: links });
+        assert.equal(shown.cards, 3, '§10.1A: the last 3');
+        assert.deepEqual(shown.chips, [S.chips.verified, S.chips.verified, S.chips.verified]);
+        assert.ok(shown.rootText.includes(S.pick.recent), '§11 pick.recent heads the list');
+        assert.ok(shown.rootText.includes(S.glyph.quote('On time')), "the element's own text identifies the Link");
+        assert.ok(shown.rootText.includes('ON_TIME'), '§10.1A shows the current value');
+        // Most recently proved first — "last 3" is a claim about time, not about order
+        // of insertion.
+        assert.equal(shown.rootText.indexOf(S.pick.recent) >= 0, true);
+        for (const card of shown.linkCards) {
+          // State D is M4. A chevron and a pointer cursor both say "this opens" — over
+          // nothing, at M3, that is the same lie as an enabled probe button.
+          assert.equal(card.chevrons, 0, 'no chevron until there is an editor behind it');
+          assert.equal(card.clickable, false);
+          assert.equal(card.cursor, 'default');
+        }
+
+        // Leave the fixture page as this milestone really ships, so nothing later reads
+        // a "Verified ✓" this subtest put there.
+        const after = await renderPick(panel, {});
+        assert.equal(after.bodyText.includes(S.chips.verified), false);
       });
 
       await t.test('all four status chips meet WCAG 2.2 AA in both themes (§16 M7)', async () => {

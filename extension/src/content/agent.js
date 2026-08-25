@@ -1,8 +1,13 @@
 /**
  * ISOLATED-world page agent (PLAN.md §2, §6, §7.2, §7.3).
  *
- * OWNER: probe-engineer (picker, overlays, snapshots, settle detection — M3/M4).
+ * OWNER: probe-engineer (pick mode, snapshots, settle detection — M3/M4).
  * The MAIN <-> service-worker relay below is interceptor-engineer's, delivered at M1.
+ *
+ * The picker itself lives in `picker.js`, a SECOND ISOLATED-world content script listed
+ * beside this one in the manifest (§17.10: the two together are 650 lines). They share
+ * this extension's isolated global — never the page's — and the whole contract between
+ * them is `globalThis.__mocklabPicker`. This file owns the Port; that one owns the DOM.
  *
  * The page is a hostile environment: every inbound postMessage must carry the exact
  * per-page-load token or be ignored outright (PLAN.md §2).
@@ -31,7 +36,12 @@
     HELLO: 'port:hello',
     CAPTURED: 'port:captured',
     SOFT_NAV: 'port:softNav',
-    MATCH_LIST: 'port:matchList'
+    MATCH_LIST: 'port:matchList',
+    // M3 pick mode. These three live in background/pickMessages.js until their owner
+    // merges them into messages.js — same mirroring rule, same commit discipline.
+    PICK_START: 'port:pickStart',
+    PICK_CANCEL: 'port:pickCancel',
+    PICKED: 'port:picked'
   };
   /* ─────────────────────────────────────────────────────────────────────────── */
 
@@ -106,10 +116,17 @@
     });
     port.onMessage.addListener(function (message) {
       try {
-        if (!message || message.type !== PORT_MSG.MATCH_LIST) return;
-        latestMatchList = { entries: (message.payload && message.payload.entries) || [] };
-        hasMatchList = true;
-        if (mainIsListening) toMain(PAGE.MATCH_LIST, latestMatchList);
+        if (!message) return;
+        if (message.type === PORT_MSG.MATCH_LIST) {
+          latestMatchList = { entries: (message.payload && message.payload.entries) || [] };
+          hasMatchList = true;
+          if (mainIsListening) toMain(PAGE.MATCH_LIST, latestMatchList);
+          return;
+        }
+        // Pick mode is driven by the worker only — never by the page (see the
+        // MAIN -> ISOLATED relay below, which has no pick cases on purpose).
+        if (message.type === PORT_MSG.PICK_START) startPick();
+        else if (message.type === PORT_MSG.PICK_CANCEL) cancelPick();
       } catch (err) { /* ignore */ }
     });
     try {
@@ -128,6 +145,32 @@
       // next message reconnects. Losing one capture is fine; throwing is not.
       port = null;
     }
+  }
+
+  /* ── pick mode relay (§6.1) ────────────────────────────────────────────────── */
+
+  /**
+   * `picker.js` is a second ISOLATED-world content script, so it shares this
+   * extension's isolated global — and only this extension's. It is looked up at call
+   * time rather than captured at load: if it ever fails to inject, the panel is told
+   * so instead of being left on "Click something on the page…" for ever (§1.1).
+   */
+  function picker() {
+    try { return globalThis.__mocklabPicker || null; } catch (err) { return null; }
+  }
+
+  function startPick() {
+    var ui = picker();
+    if (!ui) {
+      toWorker(PORT_MSG.PICKED, { ok: false, reason: 'unavailable' });
+      return;
+    }
+    ui.start(function (result) { toWorker(PORT_MSG.PICKED, result); });
+  }
+
+  function cancelPick() {
+    var ui = picker();
+    if (ui) ui.cancel();
   }
 
   /* ── MAIN -> ISOLATED relay ────────────────────────────────────────────────── */
@@ -170,18 +213,4 @@
     console.error('[MockLab] agent failed to start', err);
   }
 
-  /* ==========================================================================
-   * M3 / M4 — probe-engineer territory starts here. Do not put picker, overlay,
-   * snapshot, diff or settle-detection code above this line.
-   *
-   *   §6.1 element picker (pick mode, hover overlay, smart target selection)
-   *   §6.2 element fingerprint create + re-resolve
-   *   §7.3 element snapshot + settle detection
-   *   §7.6 whole-page inverse-discovery diff
-   *   §10.3 highlight overlays
-   *
-   * Use `toWorker(...)` / the Port above for anything that must reach the service
-   * worker, and ask the orchestrator for new PORT_MSG constants in messages.js —
-   * remember to mirror them into the block at the top of this file.
-   * ========================================================================== */
 })();

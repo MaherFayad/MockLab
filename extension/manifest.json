@@ -17,7 +17,7 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["src/content/agent.js"],
+      "js": ["src/content/agent.js", "src/content/element.js", "src/content/picker.js"],
       "run_at": "document_start",
       "world": "ISOLATED",
       "all_frames": false
