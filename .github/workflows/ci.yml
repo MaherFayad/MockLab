@@ -58,15 +58,30 @@ jobs:
         run: |
           npm install --no-save playwright@^1.49
           npx playwright install --with-deps chromium
-      - name: Browser end-to-end tests (capture engine)
-        run: node --test test/e2e.browser.test.js
+      # Every browser suite SKIPS rather than fails when Playwright or a Chromium build
+      # is missing, so `node --test` would exit 0 with zero browser coverage and this job
+      # would be green having proved nothing. Playwright is also not a declared
+      # dependency of either workspace (see README Deviations) — it is installed by the
+      # step above — so the skip path is reachable by an ordinary dependency change, not
+      # only by sabotage.
+      #
+      # This repository has already shipped a browser suite that CI never invoked. The
+      # wrapper below is the same lesson one step further on: it is not enough to invoke
+      # the suite, the run has to be shown to have actually happened. Each suite must
+      # report at least one pass and exactly zero skips.
+      - name: Browser end-to-end tests
         working-directory: extension
-      - name: Browser end-to-end tests (side panel)
-        run: node --test test/panel.browser.test.js
-        working-directory: extension
-      - name: Browser end-to-end tests (element picker)
-        run: node --test test/picker.browser.test.js
-        working-directory: extension
-      - name: Browser end-to-end tests (picker DOM logic)
-        run: node --test test/pickerdom.browser.test.js
-        working-directory: extension
+        run: |
+          set -euo pipefail
+          for suite in e2e panel picker pickerdom; do
+            echo "::group::$suite.browser.test.js"
+            out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
+            echo "$out"
+            echo "::endgroup::"
+            skipped=$(printf '%s\n' "$out" | sed -n 's/^# skipped \([0-9][0-9]*\)$/\1/p' | tail -1)
+            passed=$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -1)
+            if [ "${skipped:-none}" != "0" ] || [ "${passed:-0}" -lt 1 ]; then
+              echo "::error::$suite.browser.test.js did not really run (pass=${passed:-?} skipped=${skipped:-?}). A skipped browser suite is zero coverage reported as success."
+              exit 1
+            fi
+          done
