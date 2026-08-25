@@ -195,7 +195,7 @@ h2 { font-size: 1rem; font-weight: 600; }
  * hid the way to undo everything. Flipping the bubble upward is not available: the tab
  * strip starts 14px from the top of the panel, so an upward bubble is clipped off it.
  * panel.browser.test.js asserts the clearance for all four tabs. */
-.sitebar { display: flex; align-items: center; gap: var(--gap-s); padding: var(--gap-s) 0 var(--gap-m); border-block-end: 1px solid var(--border); margin-block-start: var(--gap-s); }
+.sitebar { display: flex; align-items: center; gap: var(--gap-s); padding: var(--gap-s) 0 var(--gap-m); border-block-end: 1px solid var(--border); margin-block-start: 1.5rem; }
 .sitebar__icon { flex: none; display: grid; place-items: center; inline-size: 1.25rem; block-size: 1.25rem; border-radius: var(--radius-s); background: var(--bg-tertiary); color: var(--text-secondary); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; }
 .sitebar__host { flex: 1; min-inline-size: 0; font-size: var(--font-size-s); font-weight: 500; color: var(--text-secondary); }
 .sitebar__count { flex: none; }
