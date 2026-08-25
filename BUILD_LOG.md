@@ -631,8 +631,20 @@ connects those; it works only through §6.3's sibling-key heuristic. Picking the
    text *length* while padding does not, so the rule is harshest on exactly the short text
    §6.1 names as its purpose. Fixed additively (Deviation 30) rather than by raising the
    constant until the demo passed, which would have been a number chosen to fit one case.
-2. **§6.3's sibling-key gate contradicts its own example.** Read strictly it cannot fire
-   for the pill it describes, making the M3 DoD impossible (Deviation 31).
+2. **§6.3's sibling-key gate is too narrow — but not for the reason first recorded here.**
+   The original entry said the strict reading makes the M3 DoD impossible. **That was
+   false, and the orchestrator repeated it several times before QA re-measured it.** §6.3
+   derives the word needle `time` from "On time", and `"ON_TIME".toLowerCase()` contains
+   it, so the spec's own substring rule scores `$.status` at 0.50 — rank 1, above
+   sibling-key's 0.45. The DoD passes under the literal spec. The real reason to broaden
+   the gate is that the strict reading makes enum discovery hang on an **accidental shared
+   substring** between a display string and a machine constant: "On time"/"ON_TIME" happens
+   to share one, "Delayed"/"LATE" and "Sold out"/"OOS" do not, and no localized UI does.
+   The DoD is passable either way; the product is not (Deviation 31).
+
+   Worth naming as its own lesson: the claim was plausible, repeated, and load-bearing for
+   a spec change, and nothing in the test suite could contradict it — the DoD passed, which
+   is exactly what a false premise about *why* it passes predicts.
 3. **§5.4's depth-12 cap made an honest string dishonest.** A field 13 levels down was
    invisible, and the user was shown `pick.noCandidates` — a claim about the data — when
    the truth was that MockLab stopped looking. Raised to 24, with `searched.complete`
@@ -677,7 +689,21 @@ individually and in the parallel run, and all four are wired into CI as their ow
 
 **QA verdict:** _pending qa-verifier_
 
-**Carried into M4:** the `pickMessages.js` merge into `messages.js`; `countFields()` in
-`background.js` still enumerating at the old depth 12, so the Sources tab's "{n} fields"
-under-counts deep responses relative to what discovery now searches; and the panel string
-for the bounded-search case, which is plumbed to the panel but not yet rendered.
+**Three carry-forwards, all closed before M4 — recorded here because the first version of
+this paragraph listed them as open and was never updated:**
+
+- `pickMessages.js` merged into `messages.js` with `PHASE` (`9daef6c`). Byte-identical for
+  all seven values, verified by loading both modules and comparing. It also closed a hole
+  nobody was aiming at: §17.2's mirror guard walks `Object.values(PORT_MSG)`, so while the
+  pick values sat outside it, breaking `agent.js`'s mirror of `port:picked` — which kills
+  pick mode end to end — passed all twelve guards. Reproduced at `0ff2bd1`, fails in both
+  directions at HEAD.
+- `countFields()` replaced by an exact `countLeaves` (`4fe3c90`, Deviation 42). Neither 12
+  nor 24 was the honest number; a count is a claim about the data, a ceiling is a fact about
+  the search.
+- The bounded-search sentences are rendered (`58ad67f`), so a search that stopped early no
+  longer displays as one that found nothing.
+
+That this paragraph went stale one milestone after the section above it was written about
+stale evidence is the point, not an aside. A record that is only corrected when someone
+re-reads it is not a record.
