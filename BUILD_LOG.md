@@ -440,7 +440,9 @@ two concurrent agents never edited the same file.
   ✏️ and ◎ actions, changed rows showing real → new with a toggle and trash.
 - The value editor showing the **Possible** chip and §11's `editor.unverified` copy —
   never Verified, because nothing has been probed yet.
-- `strings.js` compared against §11 programmatically: 102 values walked, every function
+- `strings.js` compared against §11 programmatically: §11's **70** leaf values walked
+  (independently re-extracted from PLAN.md and re-diffed at the PASS commit — the figure
+  first recorded here, 102, reconciled with nothing measurable and is corrected), every function
   called with sample arguments, zero differences.
 
 **Evidence**
@@ -501,6 +503,13 @@ were themselves verified, and the second pass found three defects nothing else h
    `S.sources.fallbackName`.
 3. **Stale evidence in this file.** See below.
 
+**QA verdict:** FAIL -> fixed -> FAIL again -> fixed -> **PASS** on the second
+re-verification (commit `7264a4c`). Two rounds, not one, and the second round found what
+the first could not: the first re-verification's own fix for the `null` literal added the
+key to `strings.js` but never wired it — `formatValue` still returned the literal at
+`145be47`. Only `7264a4c` actually connected it. A fix that is recorded but not wired is
+the same failure this build keeps producing, one level up.
+
 **Open M7 items** — both recorded here so M7 inherits them, neither fixed unilaterally:
 
 1. **Contrast.** White on `--accent` in dark mode is 3.12:1, below AA. §9.2 specifies
@@ -512,10 +521,24 @@ were themselves verified, and the second pass found three defects nothing else h
    can never fire, and the disabled child carries `pointer-events: none` so the wrapper
    takes the hover: mouse-only by construction. The bubble is `role="tooltip"` with no
    `aria-describedby`, so a screen reader does not announce it either. A keyboard or
-   screen-reader user meets three dead controls with no stated reason. The Pick and
-   Scenarios tabs already solve this with visible `S.soon` help text, so M7's fix is to
-   copy a pattern this codebase already has. **This item existed at the first M2 verdict
-   and was left out of the record; only re-verification caught the omission.**
+   screen-reader user meets three dead controls with no stated reason. **This item existed
+   at the first M2 verdict and was left out of the record; only re-verification caught the
+   omission.**
+
+   M7 needs three separate fixes, not one — the first version of this entry said "copy a
+   pattern this codebase already has", which is true of only two of the three controls:
+
+   - **Deep mode row** and **Set up AI access** — yes, literally: visible `S.soon` help
+     text, exactly as the Pick and Scenarios tabs already do it.
+   - **"Show on page"** — no. It is a per-row icon button inside a hover-revealed action
+     group in a dense tree. A help paragraph per row is noise and there is nowhere else to
+     put it, so this one needs the tooltip *component* changed: an id plus
+     `aria-describedby`, and `aria-disabled="true"` with an inert handler in place of
+     `disabled`, so the control is focusable at all and `:focus-within` can fire.
+   - **Every `.tip` in the panel, independent of the three disabled controls** — WCAG 2.2
+     **1.4.13 Content on Hover or Focus** is unmet: the bubble is `pointer-events: none`
+     so it cannot be hovered, and there is no Esc dismissal. M7 owes `dom.js` and
+     `panel.css` a tooltip change regardless of what happens to the disabled controls.
 
 **Two things the §17.6 fix uncovered that the breach itself did not.**
 
