@@ -21,6 +21,11 @@
 import { MSG } from './messages.js';
 import { friendlyName } from './signatures.js';
 import { getByPath } from '../shared/jsonpath.js';
+// §17.6: `sourceName` is read by a human (the source card heading, §10.2) and by an AI
+// agent (`ChangeSummary.sourceName`, §12.4), so its fallback word is translated in one
+// file like every other. `strings.js` is data-only and read-only here — see the note at
+// the top of signatures.js for why a worker module may import it.
+import { S } from '../panel/strings.js';
 import {
   getChanges,
   getChange,
@@ -82,7 +87,7 @@ export function createChangesApi(deps) {
       const binding = bindings.find((b) => b && b.sigId === change.sigId && b.path === change.path);
       return {
         ...change,
-        sourceName: signature ? friendlyName(signature) : 'Data',
+        sourceName: signature ? friendlyName(signature) : S.sources.fallbackName,
         linkState: binding ? binding.state : null,
         applies: Boolean(signature)
       };

@@ -25,6 +25,9 @@ import {
   signatureFingerprint,
   tokenizeParamName
 } from '../src/background/signatures.js';
+// §17.6: the expected fallback name is READ from the copy table, never retyped here —
+// a test with its own copy of a string cannot notice that the source has one too.
+import { S } from '../src/panel/strings.js';
 
 const patternOf = (method, url, body) => buildSignature(method, url, body).urlPattern;
 
@@ -292,6 +295,25 @@ test('28c plumbing words never reach a friendly name (PLAN.md §1.2 zero-jargon)
       assert.ok(!name.split(/\W+/).includes(banned), `"${name}" must not contain "${banned}"`);
     }
   }
+});
+
+test('28d the fallback name is the copy table\'s word, not a literal in this module (§17.6)', () => {
+  // `friendlyName` produces text a HUMAN reads (the source card heading, §10.2) and an
+  // AI agent reads (`ChangeSummary.sourceName`, §12.4 #2). It shipped M2 with the word
+  // 'Data' written into signatures.js five times, which no test could see, because a
+  // duplicated string is only wrong the day somebody translates it. These four cases
+  // are the four `return`s that can fall back, each asserted against strings.js — so
+  // translating that one file really does translate the name (§17.6).
+  const fallback = S.sources.fallbackName;
+  assert.equal(friendlyName(null), fallback, 'no signature at all');
+  assert.equal(friendlyName({ urlPattern: 'https://a.test/graphql', gqlOperation: '__' }), fallback,
+    'a GraphQL operation with no word in it');
+  assert.equal(friendlyName({ urlPattern: '/*/' }), fallback, 'no segment and no host to fall back to');
+  assert.equal(friendlyName({ urlPattern: '/api-payload' }), fallback, 'every word filtered as jargon');
+
+  // And the panel and the worker agree on it, rather than each holding a copy.
+  assert.equal(typeof fallback, 'string');
+  assert.ok(fallback.length > 0, 'a source card is never headed by an empty string');
 });
 
 /* --------------------------------------------------------------- match list */

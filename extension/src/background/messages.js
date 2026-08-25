@@ -364,6 +364,8 @@ export const MSG = {
  * @property {string} [note]
  * @property {boolean} [probe]     internal probe scaffolding (§7.1) — never shown
  * @property {string} sourceName   the friendly source name, same one the Sources tab shows
+ *   (`signatures.friendlyName`). Human-readable, so its fallback word lives in
+ *   `strings.js` (§17.6) — an MCP client reads this field verbatim (§12.4).
  * @property {"verified"|"candidate"|"stale"|null} linkState
  *   The state of the Binding for this exact (sigId, path), or null when there is none.
  *   A Change created from the tree view without a probe leaves this at "candidate", and

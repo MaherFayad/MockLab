@@ -116,29 +116,108 @@ const PROBE_JS = 'extension/src/background/probe.js';
 /**
  * Every place a Binding's `state` PROPERTY is written, with the right-hand side.
  *
- * Three shapes, and only these three: `state: <rhs>` in an object literal,
- * `something.state = <rhs>`, and `something['state'] = <rhs>`. A bare `state = …` is
- * deliberately NOT matched — `interceptor.js`, `background.js` and `panel.js` all keep
- * ordinary local variables called `state`, and flagging those would drown the audit.
- * The lookbehind also keeps `linkState:` and the ternary `binding.state : null` out.
+ * Four shapes: `state: <rhs>` and `"state": <rhs>` in an object literal,
+ * `something.state = <rhs>`, and `something['state'] = <rhs>`. The quoted KEY form was
+ * added after QA got `export const evil = { "state": "verified" };` past all three
+ * guards — a quoted key is the same assignment with two more characters, and JSON-ish
+ * object literals write it every day. A bare `state = …` is deliberately NOT matched:
+ * `interceptor.js`, `background.js` and `panel.js` all keep ordinary local variables
+ * called `state`, and flagging those would drown the audit. The lookbehind also keeps
+ * `linkState:` and the ternary `binding.state : null` out, and `=(?![=>])` keeps the
+ * COMPARISON `binding.state === 'verified'` out — reading the state is legitimate
+ * everywhere, and a guard that fails on a chip render is a guard someone deletes.
  *
  * @param {string} text
  * @returns {{kind:'literal'|'indirect', value?:string, rhs?:string}[]}
  */
 function stateAssignments(text) {
   const PATTERNS = [
-    /(?<![.\w$])state\s*:\s*([^,;}\n]+)/g,
-    /\.state\s*=\s*([^;\n]+)/g,
-    /\[\s*['"`]state['"`]\s*\]\s*=\s*([^;\n]+)/g
+    /(?<![.\w$])(?:state|['"`]state['"`])\s*:\s*(?<rhs>[^,;}\n]+)/g,
+    /\.state\s*=(?![=>])\s*(?<rhs>[^;\n]+)/g,
+    /\[\s*['"`]state['"`]\s*\]\s*=(?![=>])\s*(?<rhs>[^;\n]+)/g
   ];
   const code = stripComments(text);
   const found = [];
   for (const pattern of PATTERNS) {
     for (const match of code.matchAll(pattern)) {
-      const rhs = match[1].trim();
+      const rhs = match.groups.rhs.trim();
       const literal = /^(['"`])((?:[^'"`\\]|\\.)*)\1/.exec(rhs);
       found.push(literal ? { kind: 'literal', value: literal[2] } : { kind: 'indirect', rhs });
     }
+  }
+  return found;
+}
+
+/* ─────────────────────────── the other half of §17.4 ──────────────────────────────
+ *
+ * `stateAssignments` reads the KEY. A dodge that hides the key from it —
+ * `const K = 'state'; binding[K] = 'verified';` — still has to write the literal word
+ * `verified` somewhere, so the value side is audited separately and independently.
+ *
+ * Outside probe.js the literal `'verified'` may only be READ: compared, switched on, or
+ * looked up in a list. Producing one — assigning it, returning it, passing it as an
+ * object value — is the thing §17.4 forbids, and it is forbidden whatever the key looks
+ * like.
+ *
+ * KNOWN BOUNDARY, stated rather than pretended away: this is a regex over source text,
+ * so a value assembled at run time is out of its reach — `'veri' + 'fied'`,
+ * `String.fromCharCode(...)`, a state read back out of `chrome.storage` or a companion
+ * frame. No static check can close that, and a guard that claimed to would be the same
+ * kind of lie §17.12 is about. Those paths are covered behaviourally instead:
+ * `changes.test.js` "6 …" proves the M2 engine never upgrades a link it did not prove,
+ * and `panel.browser.test.js` subtest 4 proves the chip a human actually sees says
+ * "Possible" for an unprobed Change in real Chromium.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/** An equality comparison with the literal on the right, or a `switch` case. */
+const COMPARISON = /(?:===|!==|==|!=|\bcase)\s*$/;
+/** The same comparison written the other way round: `'verified' === binding.state`. */
+const COMPARISON_YODA = /^\s*(?:===|!==|==|!=)/;
+/** A membership test against a list of states. */
+const MEMBERSHIP = /\.(?:includes|has|indexOf)\s*\(\s*$/;
+/** An element position, which only counts as a READ inside an array literal. */
+const LIST_ELEMENT = /[[,]\s*$/;
+
+/**
+ * The innermost bracket still open at `index`, or '' at top level. Brackets inside
+ * string and regex literals are counted too — a known imprecision, and a cheap one:
+ * it can only mis-CLASSIFY a `'verified'` literal that is already rare enough to read
+ * by eye, and the argument-position rule below fails closed, not open.
+ */
+function enclosingOpener(before) {
+  const stack = [];
+  for (const character of before) {
+    if ('([{'.includes(character)) stack.push(character);
+    else if (')]}'.includes(character)) stack.pop();
+  }
+  return stack.length ? stack[stack.length - 1] : '';
+}
+
+/**
+ * Every place the literal `'verified'` is PRODUCED rather than read, with the line and
+ * a little context so a failure names the line instead of the file.
+ *
+ * A comma before it is only a read inside `[…]` — `['verified', 'stale']` is a list of
+ * states, while `applyState(binding, 'verified')` is a write with the property name
+ * hidden one call away, which is the same dodge as `binding[K] = 'verified'`.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function verifiedLiterals(text) {
+  const code = stripComments(text);
+  const found = [];
+  for (const match of code.matchAll(/(['"`])verified\1/g)) {
+    const before = code.slice(0, match.index);
+    const tail = before.slice(-60);
+    const read =
+      COMPARISON.test(tail) ||
+      COMPARISON_YODA.test(code.slice(match.index + match[0].length, match.index + match[0].length + 8)) ||
+      MEMBERSHIP.test(tail) ||
+      (LIST_ELEMENT.test(tail) && enclosingOpener(before) === '[');
+    if (read) continue;
+    const line = before.split('\n').length;
+    found.push(`${line}: ${(tail.split('\n').pop() + match[0]).trim()}`);
   }
   return found;
 }
@@ -198,6 +277,74 @@ test('§17.4 a link state is never written indirectly, where no grep could catch
     indirect,
     [],
     'write the state as a literal so §17.4 can be audited, or move the assignment into probe.js'
+  );
+});
+
+/**
+ * The key-side guards above can be dodged by hiding the KEY:
+ * `const K = 'state'; binding[K] = 'verified';` names no property the regexes can see.
+ * This one watches the VALUE instead, so both halves of the sentence are audited and a
+ * dodge has to defeat two independent checks that do not share a pattern.
+ *
+ * Outside probe.js the word may be read (compare it, switch on it, look it up in a list
+ * of states) but never produced. Read `VERIFIED_READ_CONTEXT` above for the exact list,
+ * and the note beside it for the one class of dodge no regex can reach.
+ */
+test('§17.4 outside probe.js the verified state may be read, never written', () => {
+  const offenders = [];
+  for (const file of SOURCE_FILES) {
+    if (rel(file) === PROBE_JS) continue;
+    for (const hit of verifiedLiterals(read(file))) offenders.push(`${rel(file)}:${hit}`);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'only the probe CONFIRMED state may produce a verified link (§17.4, §17.12). Compare ' +
+      'against the state here, or move the assignment into probe.js'
+  );
+});
+
+/**
+ * §17.6 — "every user-visible string comes from strings.js" — audited where it is
+ * easiest to forget it: OUTSIDE the panel. `signatures.friendlyName()` returns a source
+ * name a human reads as a card heading (§10.2) and an AI agent reads as
+ * `ChangeSummary.sourceName` (§12.4 #2); it shipped M2 with the bare literal 'Data' in
+ * five places, and every test in this repo stayed green, because a duplicated string is
+ * only wrong when someone tries to translate it.
+ *
+ * So: no shipping file outside `src/panel/` may contain a string literal that is also a
+ * value in `strings.js`. Import the key instead — the worker may (`strings.js` has no
+ * imports and touches no DOM; see the note at the top of signatures.js).
+ *
+ * Boundary: this compares whole literals, so a user-visible string built by
+ * concatenation, or one that never made it into strings.js at all, is invisible to it.
+ * It catches the copy-that-drifts, which is the failure §17.6 exists to prevent.
+ */
+test('§17.6 no file outside the panel keeps its own copy of a user-visible string', async () => {
+  const { S } = await import('../src/panel/strings.js');
+  /** Every literal string in the copy table, flattened. Functions are formatters. */
+  const copy = new Set();
+  (function walk(node) {
+    for (const value of Object.values(node)) {
+      if (typeof value === 'string') copy.add(value);
+      else if (value && typeof value === 'object') walk(value);
+    }
+  })(S);
+
+  const PANEL = path.join(SRC, 'panel');
+  const offenders = [];
+  for (const file of SOURCE_FILES) {
+    if (file.startsWith(PANEL + path.sep)) continue;
+    const code = stripComments(read(file));
+    for (const match of code.matchAll(/(['"])((?:[^'"\\\n]|\\.)*)\1/g)) {
+      if (copy.has(match[2])) offenders.push(`${rel(file)}: ${JSON.stringify(match[2])}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'import the key from panel/strings.js instead — §17.6 means translating MockLab is ' +
+      'translating one file'
   );
 });
 

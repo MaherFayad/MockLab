@@ -5,7 +5,17 @@
  *
  * §17.3: sigIds are computed HERE and nowhere else. The MAIN world never hashes; it
  * evaluates the compiled match list `compileMatchList()` produces.
+ *
+ * §17.6: `friendlyName()` is the one function here whose output a HUMAN reads (a source
+ * card heading, §10.2) and an AI agent reads (`ChangeSummary.sourceName`, §12.4 #2), so
+ * its fallback word comes from `strings.js` like every other user-visible string. The
+ * import points from the worker into `panel/` deliberately: `strings.js` is a data-only
+ * ES module with no imports and no DOM, the worker is `"type": "module"` (§3), and both
+ * halves load from the same extension origin — so the same file serves the panel, the
+ * worker and `node --test` unchanged. Nothing else in `panel/` may be imported here.
  */
+
+import { S } from '../panel/strings.js';
 
 /** @typedef {import('./messages.js').RequestSignature} RequestSignature */
 
@@ -328,12 +338,12 @@ function splitWords(segment) {
  * @returns {string}
  */
 export function friendlyName(sig) {
-  if (!sig) return 'Data';
+  if (!sig) return S.sources.fallbackName;
 
   if (sig.gqlOperation) {
     const first = String(sig.gqlOperation).split(',')[0];
     const name = sentenceCase(splitWords(first));
-    return name || 'Data';
+    return name || S.sources.fallbackName;
   }
 
   let pathname = '';
@@ -358,7 +368,7 @@ export function friendlyName(sig) {
     .filter((s) => !GENERIC_SEGMENTS.has(bare(s)))
     .filter((s) => !/^\d+$/.test(bare(s)));
 
-  if (!segments.length) return host || 'Data';
+  if (!segments.length) return host || S.sources.fallbackName;
 
   const lastWords = splitWords(segments[segments.length - 1]);
   let words = lastWords;
@@ -371,7 +381,7 @@ export function friendlyName(sig) {
   // so filter the words too rather than trusting the segment check alone.
   words = words.filter((word) => !GENERIC_SEGMENTS.has(word));
 
-  return sentenceCase(words) || host || 'Data';
+  return sentenceCase(words) || host || S.sources.fallbackName;
 }
 
 /* ------------------------------------------------------------------- match list */
