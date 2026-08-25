@@ -407,3 +407,84 @@ Deviations 7-17 were each checked for truth. No false claims remained.
 duplication; `:53` hardcodes a verification-sandbox Playwright path that should not
 ship; `changeDropped` has no automated guard; and a body over the 2MB cap reports an
 empty preview rather than §4's 512-char preview.
+
+---
+
+## M2 — Changes engine
+
+**Built by:** interceptor-engineer (backend) and panel-designer (UI), in parallel — their
+owned files do not overlap. Deviations and this log were written by the orchestrator so
+two concurrent agents never edited the same file.
+
+**Delivered — backend**
+
+- The full M2 message contract in `messages.js` (15 types), plus a `ChangeSummary`
+  carrying `sourceName`, `linkState` and `applies`, so the panel can never claim a
+  Change took effect when no signature is remembered.
+- `changesApi.js` and `badge.js` split out under §17.10. The badge is per-tab and
+  per-origin, recomputed on store change, tab switch, navigation, replace and cold
+  worker start.
+- `RESET_ALL` (§10.5's "Reset everything"). Before it existed the panel reached past the
+  message contract into storage directly — which worked, but meant an MCP agent could
+  not do what the human could, breaking §1.6 parity. It would have surfaced as a hole at
+  M6, after the tools were built on the assumption.
+- Bindings written outside a probe are `candidate`-only, and an existing binding's state
+  is never touched — so a probe-verified binding cannot be silently downgraded by an
+  unrelated edit (§1.1).
+
+**Delivered — UI**
+
+- §9.1's token block, with the Google Fonts `@import` replaced by bundled `@font-face`
+  (Deviation 18). §9.2's component recipes reproduced.
+- Sources tab (§10.2): friendly-named source cards, collapsible response tree, per-row
+  ✏️ and ◎ actions, changed rows showing real → new with a toggle and trash.
+- The value editor showing the **Possible** chip and §11's `editor.unverified` copy —
+  never Verified, because nothing has been probed yet.
+- `strings.js` compared against §11 programmatically: 102 values walked, every function
+  called with sample arguments, zero differences.
+
+**Evidence**
+
+`npm test -ws`: extension 142/142, companion 5/5, 0 skipped. Two browser suites now run
+against the real unpacked extension in real Chromium: `e2e.browser.test.js` (14) and
+`panel.browser.test.js` (10).
+
+M2 DoD, proven end to end: an edit from the tree turns the demo pill red — the site's own
+`is-cancelled` class and a computed `rgb(217,48,37)`, with the derived banner appearing —
+with **no probe involved**; it survives 10 refreshes; Reset site restores the real page.
+A Change also survives a full browser restart and applies on the FIRST load after it.
+
+**Three defects found by tests examining themselves**
+
+1. The unit harness was testing two module instances: it cache-busted its `ruleStore.js`
+   import, but `changesApi.js` imports that module by plain specifier, so the API under
+   test held a different instance with a different write-lock map. Seventeen tests looked
+   correct while exercising the wrong object graph.
+2. A concurrency test passed without the lock it was written to prove. The fake's delayed
+   read landed before the snapshot, so the hazard never occurred; removing the lock left
+   it green. Reshaped, and verified to fail in its absence.
+3. A panel assertion claimed a tree edit creates no Binding. It creates a `candidate`
+   one, with `elements: []` — which is exactly what §10.2 requires and what feeds the
+   Possible chip. The assertion was wrong, not the product.
+
+**Both browser suites are mutation-tested.** Each deliberate regression fails exactly its
+target subtest: restoring the remote `@import` fails typography *and* the console check;
+changing the editor chip to Verified fails only the §1.1 subtest; reverting the stale-chip
+token fails only the contrast subtest.
+
+**Screenshot review caught six defects no DOM assertion would have.** The worst: a hidden
+selection checkbox positioned absolutely was swallowing every input inside a card, so the
+editor's text field was invisible. Re-review with the real typefaces caught two more — a
+label reading as a heading at Inter's narrower metrics, and a checkbox animation that
+blanked every tick for 300ms on any store-driven re-render.
+
+**Correction to the record.** Commit `5d31087` is labelled "WIP … red — captured
+mid-rewrite". That label is wrong: its tree passes 142/142. The orchestrator observed a
+failure from an earlier on-disk state, and the agent saved the fixed file between that
+test run and the commit. Noted here rather than rewritten, on the same principle applied
+to every deviation on this build — a record is only worth something if it is true.
+
+**QA verdict:** _pending qa-verifier_
+
+**Open M7 item:** white on `--accent` in dark mode is 3.12:1, below AA. §9.2 specifies
+white text, so this is left for the M7 a11y pass rather than diverged from unilaterally.

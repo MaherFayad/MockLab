@@ -248,12 +248,14 @@ function rowActions({ key, value, path, change, source, ctx }) {
   if (change) {
     const box = el('input', { type: 'checkbox', 'aria-label': change.enabled ? S.sources.changeOn : S.sources.changeOff });
     box.checked = Boolean(change.enabled);
+    const mark = el('span', { class: 'check-box' });
     box.addEventListener('change', async () => {
+      mark.classList.add('check-box--draw'); // only a real toggle animates
       const res = await ctx.send(MSG.TOGGLE_CHANGE, { tabId: ctx.state.tabId, changeId: change.id, enabled: box.checked });
       if (!res || !res.ok) ctx.toast(S.errors.pageBroke, true);
       await ctx.refresh();
     });
-    actions.append(el('label', { class: 'check' }, box, el('span', { class: 'check-box' })));
+    actions.append(el('label', { class: 'check' }, box, mark));
   }
 
   const edit = el('button', { type: 'button', class: 'icon-btn', 'aria-label': S.sources.changeValue }, ICON.pencil());

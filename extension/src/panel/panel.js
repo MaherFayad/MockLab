@@ -195,12 +195,17 @@ function renderScenarios() {
 function checkRow({ label, help, checked, disabled, onChange }) {
   const input = el('input', { type: 'checkbox', disabled: Boolean(disabled) });
   input.checked = Boolean(checked);
-  if (onChange) input.addEventListener('change', () => onChange(input.checked));
+  const box = el('span', { class: 'check-box' });
+  input.addEventListener('change', () => {
+    // Only a real toggle animates — see the --draw note in panel.css.
+    box.classList.add('check-box--draw');
+    if (onChange) onChange(input.checked);
+  });
   return el(
     'label',
     { class: 'check-row' },
     input,
-    el('span', { class: 'check-box' }),
+    box,
     el(
       'span',
       { class: 'check-row__text' },
@@ -272,11 +277,16 @@ function renderSettings() {
   }
 }
 
+/**
+ * Deliberately does NOT re-render: the checkbox already shows its own new state
+ * natively, and rebuilding it here would cut its own pop animation off mid-flight.
+ * The only other surface a setting changes is the Sources tab, which re-renders when
+ * the user switches to it.
+ */
 async function saveSetting(patch) {
   const res = await send(MSG.UPDATE_SETTINGS, { patch });
   if (res.ok && res.settings) state.settings = res.settings;
   else toast(S.errors.pageBroke, true);
-  render();
 }
 
 /**

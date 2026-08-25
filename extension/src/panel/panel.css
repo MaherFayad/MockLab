@@ -261,8 +261,14 @@ h2 { font-size: 1rem; font-weight: 600; }
 .check-row:has(input:disabled) { cursor: not-allowed; opacity: 0.6; }
 .check-row input { position: absolute; opacity: 0; inline-size: 1.25rem; block-size: 1.25rem; margin: 0; }
 .check-box { position: relative; flex: none; inline-size: 1.25rem; block-size: 1.25rem; border: 1.5px solid var(--border-strong); border-radius: var(--radius-s); background: var(--bg); transition: background var(--transition-rule), border-color var(--transition-rule); }
-input:checked + .check-box { background: var(--accent); border-color: var(--accent); animation: checkboxPop var(--transition-spring); }
-input:checked + .check-box::after { content: ''; position: absolute; inset-block-start: 2px; inset-inline-start: 6px; inline-size: 5px; block-size: 10px; border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg); animation: checkmarkDraw 300ms cubic-bezier(0.4, 0, 0.2, 1); }
+/* A checked box is drawn STATICALLY. The pop and the checkmark draw only run on
+ * `--draw`, which JS adds when the human actually toggles it: the panel rebuilds its
+ * DOM on every store update, and an animation on the base rule restarted from zero each
+ * time — which rendered an already-checked box as an empty blue square for 300ms. */
+input:checked + .check-box { background: var(--accent); border-color: var(--accent); }
+input:checked + .check-box.check-box--draw { animation: checkboxPop var(--transition-spring); }
+input:checked + .check-box::after { content: ''; position: absolute; inset-block-start: 2px; inset-inline-start: 6px; inline-size: 5px; block-size: 10px; border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+input:checked + .check-box.check-box--draw::after { animation: checkmarkDraw 300ms cubic-bezier(0.4, 0, 0.2, 1); }
 input:focus-visible + .check-box { outline: 2px solid var(--accent); outline-offset: 2px; }
 .stack > .tip { display: block; }
 .stack > .tip > .btn, .stack > .btn { inline-size: 100%; }

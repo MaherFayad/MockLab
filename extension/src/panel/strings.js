@@ -154,8 +154,12 @@ export const S = {
     // a generic "done". The second sentence is the honest part: only THIS page reloads.
     // Other open tabs are not disturbed — they stop seeing edited data from their next
     // request onward, which is what the user will actually observe.
-    resetAllDone: (changes, scenarios) =>
-      `Removed ${changes} change${changes === 1 ? '' : 's'} and ${scenarios} scenario${scenarios === 1 ? '' : 's'}. This page is back to normal; other open tabs go back to real data the next time they load something.`,
+    resetAllDone: (changes, scenarios) => {
+      const parts = [];
+      if (changes) parts.push(`${changes} change${changes === 1 ? '' : 's'}`);
+      if (scenarios) parts.push(`${scenarios} scenario${scenarios === 1 ? '' : 's'}`);
+      return `Removed ${parts.join(' and ')}. This page is back to normal; other open tabs go back to real data the next time they load something.`;
+    },
     resetAllNothing: 'There was nothing to remove.',
     limitations: 'MockLab works on the main page only, and cannot edit data that arrives as a live stream.'
   },
