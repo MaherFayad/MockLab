@@ -43,6 +43,28 @@ const EXTENSION_DIR = path.resolve(HERE, '..');
 /** The value the demo maps to a red pill and a banner (§14). */
 const CANCELLED = 'CANCELLED';
 
+/** Nothing a human would type, so a match can only have come from strings.js. */
+const SENTINEL = '⟪sentinel⟫';
+
+/**
+ * `GET_PICK`'s `searched` (§6.3), in its two meanings.
+ *
+ * `REACHED_EVERYTHING` is what `findCandidates` answers on the demo: every captured
+ * response walked to its end. It is the ONLY answer that entitles the panel to
+ * `pick.noCandidates`, whose §11 wording — "couldn't find this text in any data the page
+ * loaded" — is a claim about the data rather than about the search.
+ *
+ * `STOPPED_SHORT` is the same search after it hit one of §6.3's ceilings (depth 24,
+ * 20 000 leaves per response, 120 000 across the tab). MockLab then knows nothing about
+ * the part it never read, and every screen below must say a different sentence.
+ *
+ * Spelled into every Pick fixture rather than defaulted, because which sentence appears
+ * turns on it — a fixture that omits it would be describing a state the worker never
+ * sends and hiding which one the assertion is really about.
+ */
+const REACHED_EVERYTHING = { sources: 2, bounded: 0, complete: true };
+const STOPPED_SHORT = { sources: 40, bounded: 3, complete: false };
+
 /* ------------------------------------------------------- portable Playwright */
 
 /**
@@ -135,108 +157,138 @@ function rootRow(panel, text) {
  * Deliberately not a hook in the product code. pick.js exports what the panel itself
  * imports and nothing more — a test seam in shipping code is a thing that can be wrong
  * in production, and this file needs none.
+ *
+ * `swap` is the `panel.strings.test.js` technique, moved into the real page: name any
+ * `S.pick.*` keys and they are replaced with a sentinel for this render and restored
+ * after. A test that asserts today's wording passes just as happily with that wording
+ * baked into pick.js, which is the defect class this repository has already shipped
+ * once; a test that asserts the SENTINEL reaches the screen cannot.
  */
-function renderPick(page, patch) {
-  return page.evaluate(async (given) => {
+function renderPick(page, patch, swap) {
+  return page.evaluate(async ([given, swapKeys, sentinel]) => {
     const mod = await import('/src/panel/pick.js');
-    const root = document.getElementById('panel-pick');
-    const ctx = {
-      state: Object.assign(
-        {
-          tabId: 1,
-          sources: [],
-          settings: { advancedMode: false },
-          bindings: [],
-          pick: { picking: false, element: null, candidates: [] }
-        },
-        given
-      ),
-      send: async () => ({ ok: true }),
-      toast: () => {},
-      rerender: () => {}
-    };
-    mod.renderPickTab(root, ctx);
-    mod.pickingChrome(ctx.state.pick.picking);
-
-    // Show the tab, or innerText reads '' and every text assertion below passes vacuously.
-    document.getElementById('tab-pick').checked = true;
-    for (const name of ['pick', 'sources', 'scenarios', 'settings']) {
-      document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== 'pick');
+    // The same module instance pick.js imports, so a key replaced here is the key it
+    // reads. Restored in the `finally` below — every later subtest reads real copy.
+    const { S } = await import('/src/panel/strings.js');
+    const saved = {};
+    for (const key of swapKeys || []) {
+      saved[key] = S.pick[key];
+      S.pick[key] = sentinel;
     }
+    try {
+      const root = document.getElementById('panel-pick');
+      const ctx = {
+        state: Object.assign(
+          {
+            tabId: 1,
+            sources: [],
+            settings: { advancedMode: false },
+            bindings: [],
+            pick: { picking: false, element: null, candidates: [] }
+          },
+          given
+        ),
+        send: async () => ({ ok: true }),
+        toast: () => {},
+        rerender: () => {}
+      };
+      mod.renderPickTab(root, ctx);
+      mod.pickingChrome(ctx.state.pick.picking);
 
-    /**
-     * One element's opacity AS DESIGNED, not as mid-animation.
-     *
-     * The dim is a 250ms transition, and this panel has to stay a BACKGROUND tab for the
-     * rest of the suite to describe the demo — Chromium suspends rendering there, so the
-     * transition never advances and a plain read returns its starting value however long
-     * the test waits. (It cost an hour: freshly created nodes read 0.6 because they never
-     * transitioned at all, while the one pre-existing node stayed at 1 forever.)
-     * Suspending the transition makes the computed value jump to the end state, which is
-     * the thing worth asserting — the same technique the tooltip subtest above uses.
-     */
-    const opacity = (sel) => {
-      const node = document.querySelector(sel);
-      if (!node) return null;
-      const inline = node.style.transition;
-      node.style.transition = 'none';
-      const value = Number(getComputedStyle(node).opacity);
-      node.style.transition = inline;
-      return value;
-    };
-    const textsOf = (sel) => [...root.querySelectorAll(sel)].map((n) => n.textContent.trim());
-    const primary = root.querySelector('.btn--primary');
-    return {
-      missingContract: mod.missingPickContract(),
-      rootText: root.innerText,
-      bodyText: document.body.innerText,
-      cards: root.querySelectorAll('.card').length,
-      emptyBoxes: root.querySelectorAll('.empty').length,
-      chips: textsOf('.chip'),
-      sectionTitles: textsOf('.section-title'),
-      helps: textsOf('.help'),
-      primary: primary
-        ? {
-            text: primary.textContent.trim(),
-            disabled: primary.disabled,
-            icons: primary.querySelectorAll('svg').length,
-            // How strongly the label is actually painted. §9.2's disabled recipe is
-            // opacity .7 + saturate(.7) brightness(.85); on State B's button that is the
-            // difference between a readable instruction and a 2.87:1 one.
-            paint: {
-              opacity: Number(getComputedStyle(primary).opacity),
-              filter: getComputedStyle(primary).filter,
-              shadow: getComputedStyle(primary).boxShadow
+      // Show the tab, or innerText reads '' and every text assertion below passes vacuously.
+      document.getElementById('tab-pick').checked = true;
+      for (const name of ['pick', 'sources', 'scenarios', 'settings']) {
+        document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== 'pick');
+      }
+
+      /**
+       * One element's opacity AS DESIGNED, not as mid-animation.
+       *
+       * The dim is a 250ms transition, and this panel has to stay a BACKGROUND tab for the
+       * rest of the suite to describe the demo — Chromium suspends rendering there, so the
+       * transition never advances and a plain read returns its starting value however long
+       * the test waits. (It cost an hour: freshly created nodes read 0.6 because they never
+       * transitioned at all, while the one pre-existing node stayed at 1 forever.)
+       * Suspending the transition makes the computed value jump to the end state, which is
+       * the thing worth asserting — the same technique the tooltip subtest above uses.
+       */
+      const opacity = (sel) => {
+        const node = document.querySelector(sel);
+        if (!node) return null;
+        const inline = node.style.transition;
+        node.style.transition = 'none';
+        const value = Number(getComputedStyle(node).opacity);
+        node.style.transition = inline;
+        return value;
+      };
+      const textsOf = (sel) => [...root.querySelectorAll(sel)].map((n) => n.textContent.trim());
+      /** The two colours one node is actually painted with, or null if it is not there. */
+      const ink = (node) => {
+        if (!node) return null;
+        const style = getComputedStyle(node);
+        return { color: style.color, background: style.backgroundColor };
+      };
+      const primary = root.querySelector('.btn--primary');
+      return {
+        missingContract: mod.missingPickContract(),
+        rootText: root.innerText,
+        bodyText: document.body.innerText,
+        cards: root.querySelectorAll('.card').length,
+        emptyBoxes: root.querySelectorAll('.empty').length,
+        // What the empty state and the list's caveat actually SAY, not just how many
+        // boxes exist — the §6.3 bounded case turns on which sentence is in which.
+        empties: textsOf('.empty'),
+        notes: textsOf('.pick-note'),
+        noteInk: ink(root.querySelector('.pick-note')),
+        chipInk: ink(root.querySelector('.chip--candidate')),
+        chips: textsOf('.chip'),
+        sectionTitles: textsOf('.section-title'),
+        helps: textsOf('.help'),
+        primary: primary
+          ? {
+              text: primary.textContent.trim(),
+              disabled: primary.disabled,
+              icons: primary.querySelectorAll('svg').length,
+              // How strongly the label is actually painted. §9.2's disabled recipe is
+              // opacity .7 + saturate(.7) brightness(.85); on State B's button that is the
+              // difference between a readable instruction and a 2.87:1 one.
+              paint: {
+                opacity: Number(getComputedStyle(primary).opacity),
+                filter: getComputedStyle(primary).filter,
+                shadow: getComputedStyle(primary).boxShadow
+              }
             }
-          }
-        : null,
-      secondaries: [...root.querySelectorAll('.btn--secondary')].map((b) => ({ text: b.textContent.trim(), disabled: b.disabled })),
-      picked: root.querySelector('.picked__text') ? root.querySelector('.picked__text').textContent : null,
-      rows: [...root.querySelectorAll('.cand')].map((row) => ({
-        name: row.querySelector('.cand__name').textContent,
-        value: row.querySelector('.cand__value').textContent,
-        field: row.querySelector('.cand__field') ? row.querySelector('.cand__field').textContent : null,
-        valueFont: getComputedStyle(row.querySelector('.cand__value')).fontFamily,
-        // Everything the row actually SAYS. Two rows with the same reading are two
-        // different fields drawn as one thing.
-        reading: row.innerText.replace(/\s+/g, ' ').trim(),
-        paths: row.querySelectorAll('.cand__path').length
-      })),
-      // §10.1B's dim, measured rather than restated: the panel recedes, the live
-      // instruction does not.
-      dim: {
-        head: opacity('.app__head'),
-        title: opacity('#panel-pick h2'),
-        body: opacity('#panel-pick p.help'),
-        live: opacity('#panel-pick .pick-live')
-      },
-      linkCards: [...root.querySelectorAll('.card')].map((card) => ({
-        cursor: getComputedStyle(card).cursor,
-        chevrons: card.querySelectorAll('.card__chevron').length,
-        clickable: card.tagName === 'BUTTON' || card.tagName === 'A'
-      }))
-    };
-  }, patch);
+          : null,
+        secondaries: [...root.querySelectorAll('.btn--secondary')].map((b) => ({ text: b.textContent.trim(), disabled: b.disabled })),
+        picked: root.querySelector('.picked__text') ? root.querySelector('.picked__text').textContent : null,
+        rows: [...root.querySelectorAll('.cand')].map((row) => ({
+          name: row.querySelector('.cand__name').textContent,
+          value: row.querySelector('.cand__value').textContent,
+          field: row.querySelector('.cand__field') ? row.querySelector('.cand__field').textContent : null,
+          valueFont: getComputedStyle(row.querySelector('.cand__value')).fontFamily,
+          // Everything the row actually SAYS. Two rows with the same reading are two
+          // different fields drawn as one thing.
+          reading: row.innerText.replace(/\s+/g, ' ').trim(),
+          paths: row.querySelectorAll('.cand__path').length
+        })),
+        // §10.1B's dim, measured rather than restated: the panel recedes, the live
+        // instruction does not.
+        dim: {
+          head: opacity('.app__head'),
+          title: opacity('#panel-pick h2'),
+          body: opacity('#panel-pick p.help'),
+          live: opacity('#panel-pick .pick-live')
+        },
+        linkCards: [...root.querySelectorAll('.card')].map((card) => ({
+          cursor: getComputedStyle(card).cursor,
+          chevrons: card.querySelectorAll('.card__chevron').length,
+          clickable: card.tagName === 'BUTTON' || card.tagName === 'A'
+        }))
+      };
+    } finally {
+      for (const key of Object.keys(saved)) S.pick[key] = saved[key];
+    }
+  }, [patch, swap, SENTINEL]);
 }
 
 /** A Binding the probe would write at M4 — the only thing §10.1A's list may ever show. */
@@ -584,6 +636,7 @@ if (!chromium) {
               reading: row.innerText.replace(/\s+/g, ' ').trim()
             })),
             chips: [...root.querySelectorAll('.chip')].map((chip) => chip.textContent.trim()),
+            notes: [...root.querySelectorAll('.pick-note')].map((note) => note.textContent.trim()),
             body: document.body.innerText
           };
         });
@@ -600,6 +653,13 @@ if (!chromium) {
         assert.deepEqual(seen.chips, [S.chips.candidate], 'one chip, and it is the honest one (§10.6)');
         assert.equal(seen.body.includes(S.chips.verified), false, 'a value match proves nothing (§0.2, §17.12)');
         assert.ok(seen.text.includes(S.probe.cta), '§11 probe.cta is on screen');
+        // The whole trip on the real wire: the worker walked both demo responses to
+        // their end and said so (`searched.complete:true`), so this list really is all
+        // of it and must carry no caveat. This is the only subtest that reads `searched`
+        // through `loadPick` and a live GET_PICK — the simulated ones below hand the
+        // state straight to the renderer, so a panel that stopped carrying the field off
+        // the message would still look right to every one of them.
+        assert.deepEqual(seen.notes, [], 'the demo is searched to the end, so nothing here may hedge');
 
         // The demo holds "ON_TIME" at BOTH `$.status` and `$.booking.status`, so this
         // list really does contain two rows from the same source with the same value.
@@ -677,7 +737,7 @@ if (!chromium) {
             { sigId: 'sig-trip', name: 'Trip' },
             { sigId: 'sig-user', name: 'User' }
           ],
-          pick: { picking: false, element: { text: 'On time' }, candidates }
+          pick: { picking: false, element: { text: 'On time' }, candidates, searched: REACHED_EVERYTHING }
         });
 
         assert.equal(seen.picked, S.glyph.quote('On time'), 'the picked element is quoted back, text only (§10.1C)');
@@ -717,7 +777,7 @@ if (!chromium) {
         const many = Array.from({ length: 25 }, (_, i) => ({ sigId: 'sig-trip', path: `$.f${i}`, value: i, score: i / 100 }));
         const seen = await renderPick(panel, {
           sources: [{ sigId: 'sig-trip', name: 'Trip' }],
-          pick: { picking: false, element: { text: 'On time' }, candidates: many }
+          pick: { picking: false, element: { text: 'On time' }, candidates: many, searched: REACHED_EVERYTHING }
         });
         assert.equal(seen.rows.length, 12);
         assert.deepEqual(seen.rows.map((row) => row.value), ['24', '23', '22', '21', '20', '19', '18', '17', '16', '15', '14', '13']);
@@ -725,7 +785,7 @@ if (!chromium) {
 
       await t.test('State C with nothing found says so, and offers §6.3’s way out', async () => {
         const seen = await renderPick(panel, {
-          pick: { picking: false, element: { text: 'On time' }, candidates: [] }
+          pick: { picking: false, element: { text: 'On time' }, candidates: [], searched: REACHED_EVERYTHING }
         });
         assert.ok(seen.rootText.includes(S.pick.noCandidates), '§6.3: tell the user honestly');
         assert.equal(seen.rows.length, 0);
@@ -737,8 +797,141 @@ if (!chromium) {
         );
       });
 
+      /**
+       * The bounded-search screens (§6.3's ceilings, `GET_PICK`'s `searched.complete`).
+       *
+       * These two subtests are written to fail three different ways, because "it renders
+       * the right sentence today" is the assertion that let `formatValue`'s `'null'`
+       * ship:
+       *   1. the bounded screen showing `pick.noCandidates` — the §17.12 failure this
+       *      whole mechanism exists to prevent, a confident claim about data MockLab
+       *      never read;
+       *   2. `searched.complete` no longer being READ — asserted as a property, by
+       *      rendering the SAME pick twice with only that boolean different and
+       *      requiring the two screens to differ. Delete the branch in pick.js and both
+       *      renders become identical, whichever sentence survives;
+       *   3. the wording being hardcoded in pick.js rather than taken from strings.js —
+       *      caught by rendering with the key sentinelled (§17.6).
+       */
+      await t.test('State C after a search that stopped short never claims the data is empty (§1.1, §17.12)', async () => {
+        const element = { text: 'On time' };
+        const bounded = await renderPick(panel, {
+          pick: { picking: false, element, candidates: [], searched: STOPPED_SHORT }
+        });
+
+        // (1) §11 phrases `noCandidates` as a fact about the data — "MockLab couldn't
+        // find this text in any data the page loaded", then three reasons why the data
+        // would not hold it. A search that stopped short establishes none of that.
+        assert.equal(
+          bounded.rootText.includes(S.pick.noCandidates),
+          false,
+          'the search never reached the end of the data, so the panel may not say the text is not in it'
+        );
+        assert.deepEqual(
+          bounded.empties,
+          [S.pick.searchIncomplete],
+          'the empty state gets the sentence for "MockLab stopped looking", and only that one'
+        );
+
+        // §6.3 offers "Check all fields" for a search that found nothing in data it read
+        // to the end. It does not describe this case, the control cannot run before M4,
+        // and an exhaustive pass would meet the same ceilings — so a grey button under
+        // this sentence would read as the cure and be wrong twice.
+        assert.equal(bounded.rootText.includes(S.pick.checkAll), false, 'no dead button offered as the way out');
+        assert.equal(bounded.rootText.includes(S.probe.cta), false, 'and nothing to find the source among');
+        assert.equal(bounded.chips.length, 0, 'there is no list, so there is nothing to call Possible');
+        // (The sentence's own promise — that it names somewhere the person can go
+        // instead — is audited in panel.strings.test.js, which runs without a browser.)
+
+        // (2) The flag is read, not ignored. One boolean apart, and nothing else.
+        const complete = await renderPick(panel, {
+          pick: { picking: false, element, candidates: [], searched: REACHED_EVERYTHING }
+        });
+        assert.notEqual(
+          bounded.rootText,
+          complete.rootText,
+          'a bounded search and a complete one draw the identical screen — searched.complete is not being read'
+        );
+        assert.ok(complete.rootText.includes(S.pick.noCandidates), '§6.3: a search that DID reach the end says so');
+        assert.ok(complete.secondaries.some((button) => button.text === S.pick.checkAll));
+
+        // A worker that stops sending `searched` at all must make the panel quieter,
+        // never more confident. Not knowing how far it got is not knowing.
+        const silent = await renderPick(panel, { pick: { picking: false, element, candidates: [] } });
+        assert.equal(
+          silent.rootText.includes(S.pick.noCandidates),
+          false,
+          'with no report of how far the search got, the panel must not claim the data is empty'
+        );
+        assert.deepEqual(silent.empties, [S.pick.searchIncomplete]);
+
+        // (3) The words come from §11's file. Hardcode them in pick.js and this fails.
+        const swapped = await renderPick(
+          panel,
+          { pick: { picking: false, element, candidates: [], searched: STOPPED_SHORT } },
+          ['searchIncomplete']
+        );
+        assert.deepEqual(swapped.empties, [SENTINEL], '§17.6: this sentence must come from strings.js');
+      });
+
+      await t.test('a list built from a search that stopped short says it may not be all of it (§1.1)', async () => {
+        const candidates = [
+          { sigId: 'sig-trip', path: '$.status', value: 'ON_TIME', score: 0.45 },
+          { sigId: 'sig-user', path: '$.label', value: 'On time', score: 1 }
+        ];
+        const sources = [
+          { sigId: 'sig-trip', name: 'Trip' },
+          { sigId: 'sig-user', name: 'User' }
+        ];
+        const element = { text: 'On time' };
+        const bounded = await renderPick(panel, {
+          sources,
+          pick: { picking: false, element, candidates, searched: STOPPED_SHORT }
+        });
+        const complete = await renderPick(panel, {
+          sources,
+          pick: { picking: false, element, candidates, searched: REACHED_EVERYTHING }
+        });
+
+        // Twelve rows in likelihood order read as "these are the possibilities". After a
+        // bounded search that completeness is implied and unearned, so the list says so.
+        assert.deepEqual(bounded.notes, [S.pick.listIncomplete], 'the list must admit what it does not cover');
+        assert.deepEqual(complete.notes, [], 'and must not say it when the search did reach the end');
+        assert.notEqual(
+          bounded.rootText,
+          complete.rootText,
+          'both lists read exactly alike — searched.complete is not being read on this branch either'
+        );
+
+        // A caveat under the rows arrives after the person has already picked a row.
+        assert.ok(
+          bounded.rootText.indexOf(S.pick.listIncomplete) < bounded.rootText.indexOf(candidates[0].value),
+          'the caveat has to be readable before the list it qualifies, not after it'
+        );
+        // It qualifies the list; it does not change it.
+        assert.deepEqual(bounded.rows.map((row) => row.reading), complete.rows.map((row) => row.reading));
+
+        // §10.6 fixes the status vocabulary at four chips, and this is prose, not a fifth
+        // word. It is painted in the same warning family as the "Possible" chip beside
+        // the heading, so uncertainty reads as one mood — and so the contrast the chip
+        // subtest below already measures in both themes covers this block too.
+        assert.deepEqual(bounded.chips, [S.chips.candidate], 'no new status word');
+        assert.deepEqual(bounded.noteInk, bounded.chipInk, 'the caveat and the Possible chip share their colours');
+
+        const swapped = await renderPick(
+          panel,
+          { sources, pick: { picking: false, element, candidates, searched: STOPPED_SHORT } },
+          ['listIncomplete']
+        );
+        assert.deepEqual(swapped.notes, [SENTINEL], '§17.6: this sentence must come from strings.js');
+      });
+
       await t.test('an element with no text of its own says so instead of drawing an empty card', async () => {
-        const seen = await renderPick(panel, { pick: { picking: false, element: { text: '   ' }, candidates: [] } });
+        const seen = await renderPick(panel, {
+          // No text of its own means no needles, so §6.3 searches nothing and reports
+          // the search complete — the honest answer here really is `noCandidates`.
+          pick: { picking: false, element: { text: '   ' }, candidates: [], searched: REACHED_EVERYTHING }
+        });
         assert.equal(seen.picked, S.pick.noText);
       });
 

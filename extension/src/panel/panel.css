@@ -380,6 +380,14 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 .picked__text { font-weight: 600; overflow-wrap: anywhere; }
 .picked__text--none { font-weight: 400; font-style: italic; color: var(--text-secondary); }
 
+/* What the list does NOT cover, when §6.3's search hit one of its ceilings and the panel
+ * is told so (`searched.complete: false`). Prose and not a chip: §10.6 fixes the status
+ * vocabulary at four words and this is not a status. Tinted from the same warning family
+ * as the "Possible" chip sitting beside the heading above it, so a person reads one mood
+ * of uncertainty rather than two — the recipe is `.editor__note`'s, which carries
+ * `editor.unverified` for the same reason. */
+.pick-note { padding: var(--gap-s); border-radius: var(--radius-s); background: var(--bg-warning); color: var(--chip-possible-text); font-size: var(--font-size-s); }
+
 /* "Possible sources" rows. Rows, not cards and not buttons: at M3 there is nothing
  * behind them, and a hover lift or a chevron would offer an action that does not exist.
  * They gain their affordance in M4 with State D, not before. */

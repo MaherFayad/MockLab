@@ -5,7 +5,7 @@
  *
  * §17.6: every word here comes from strings.js.
  * §17.7: every colour comes from panel.css.
- * §17.8: every message uses a declared constant — see the note on pickMessages.js below.
+ * §17.8: every message uses a declared constant from `background/messages.js`.
  *
  * ── What this file deliberately does NOT do ─────────────────────────────────────
  * State D (the result / editor card) and the probe progress card are §16 M4. Nothing
@@ -23,11 +23,10 @@
  *
  * ── Where this tab's message types live ─────────────────────────────────────────
  * Entering pick mode means reaching `content/agent.js`, which the panel can only do
- * through the service worker. §17.8 forbids magic strings, and `messages.js` was owned
- * by another agent for this milestone, so M3's four types are declared once in
- * `background/pickMessages.js` — a staging file whose own header says it merges into
- * `messages.js` in a single no-behaviour-change commit. This file imports the constants
- * and will need only its import line changed when that merge happens.
+ * through the service worker. M3's four pick types were staged in a separate
+ * `background/pickMessages.js` while `messages.js` was owned by another agent; that
+ * merge has landed, so both `MSG` and `PHASE` now come from `messages.js` and §17.8's
+ * one-home rule holds without an asterisk.
  *
  * `missingPickContract` stays regardless. It is what keeps the promise on the button
  * honest: if a constant this tab sends ever goes missing, the button reports that it
@@ -44,7 +43,28 @@ const MAX_CANDIDATES = 12;
 /** §10.1A — "last 3 verified Links for this site". */
 const MAX_RECENT = 3;
 
-const EMPTY_PICK = { picking: false, element: null, candidates: [] };
+const EMPTY_PICK = { picking: false, element: null, candidates: [], searched: null };
+
+/**
+ * Did §6.3's search reach the end of this tab's data, or did it stop short?
+ *
+ * `GET_PICK` answers with `searched:{sources, bounded, complete}` because the search is
+ * bounded on purpose: depth 24, 20 000 leaves per response, 120 000 across the tab —
+ * without those ceilings one click blocks the worker for seconds. A ceiling that is hit
+ * silently turns "MockLab stopped looking" into "there is nothing there", which is the
+ * §17.12 failure told in the honest-sounding direction.
+ *
+ * The default is deliberately the humble one. A `searched` that is missing or malformed
+ * is MockLab not KNOWING how far it got, and the sentence for not knowing is the one
+ * that claims nothing about the data. Only an explicit `complete === true` — which the
+ * worker sends on every real answer, including the blank record — buys the right to say
+ * `pick.noCandidates`. So if this field is ever dropped from the message, the panel gets
+ * quieter, never more confident.
+ */
+function searchReachedEverything(pick) {
+  const searched = pick && pick.searched;
+  return Boolean(searched) && searched.complete === true;
+}
 
 /**
  * Every message type this tab uses. Declared as a list so the button can check that the
@@ -149,6 +169,10 @@ function renderCandidates(root, ctx, pick) {
     .sort((a, b) => (b.score || 0) - (a.score || 0))
     .slice(0, MAX_CANDIDATES);
 
+  // §6.3's ceilings are real, so how far the search got is part of what this screen
+  // means. Read once, used by both branches below.
+  const wholeDataSearched = searchReachedEverything(pick);
+
   if (shown.length) {
     root.append(
       el(
@@ -161,6 +185,14 @@ function renderCandidates(root, ctx, pick) {
         chipNode('candidate', S.chips.candidate)
       )
     );
+    // A list of twelve, ordered by likelihood, is read as "the possibilities". After a
+    // bounded search that is a claim of completeness nobody made — so the list says so,
+    // ABOVE the rows: a caveat under them arrives after the person has already decided
+    // which row is the answer. Not a chip (§10.6 fixes the chip vocabulary at four and
+    // this is not a status), but tinted from the same warning family as the "Possible"
+    // chip beside it, so uncertainty reads as one block rather than two moods.
+    if (!wholeDataSearched) root.append(el('p', { class: 'pick-note', text: S.pick.listIncomplete }));
+
     const rows = el('div', { class: 'cand-list' });
     for (const candidate of shown) rows.append(candidateRow(candidate, ctx));
     root.append(rows);
@@ -177,8 +209,11 @@ function renderCandidates(root, ctx, pick) {
         el('p', { class: 'help', text: S.soon })
       )
     );
-  } else {
+  } else if (wholeDataSearched) {
     // §6.3: "If ZERO candidates: tell the user honestly … and offer Check all fields".
+    // This branch is the only one entitled to `noCandidates`, because that string is a
+    // claim about the data ("couldn't find this text in any data the page loaded") and
+    // only a search that reached the end of the data can make it.
     root.append(el('p', { class: 'empty', text: S.pick.noCandidates }));
     root.append(
       el(
@@ -188,6 +223,17 @@ function renderCandidates(root, ctx, pick) {
         el('p', { class: 'help', text: S.soon })
       )
     );
+  } else {
+    // Empty AND bounded. A different sentence, and deliberately no button under it.
+    //
+    // §6.3 offers "Check all fields" for the zero-candidate case; it does not describe
+    // this one. Rendering that control here — disabled, as M4 requires — would put a
+    // grey button directly beneath "MockLab couldn't reach every part of it" and make
+    // it read as the cure, which is wrong twice over: it cannot be pressed at M3, and
+    // an exhaustive pass is the same enumeration under the same ceilings, so it is not
+    // promised to reach further either. `searchIncomplete` names the step that exists
+    // today instead, and the "Pick an element" button below is still on screen.
+    root.append(el('p', { class: 'empty', text: S.pick.searchIncomplete }));
   }
 
   const ready = canPick(ctx);
@@ -374,6 +420,11 @@ export async function loadPick(ctx) {
     // from a phase that has moved on is a screen describing something that is no
     // longer true.
     element: phase === PHASE.PICKED ? res.element || null : null,
-    candidates: phase === PHASE.PICKED ? res.candidates || [] : []
+    candidates: phase === PHASE.PICKED ? res.candidates || [] : [],
+    // How much of this tab's data the search behind those candidates actually reached
+    // (§6.3). Carried at the same moment as the candidates and discarded with them: the
+    // two are one answer, and a `searched` left over from a previous pick would describe
+    // a search that produced a different list.
+    searched: phase === PHASE.PICKED ? res.searched || null : null
   };
 }

@@ -35,6 +35,32 @@ export const S = {
     noCandidates:
       "MockLab couldn't find this text in any data the page loaded. It may be part of the page's design, an image, or loaded in a way MockLab can't see yet.",
     checkAll: 'Check all fields (slower)',
+    // + not in §11 — the sentence that must be said INSTEAD of `noCandidates` when the
+    // search that came back empty did not reach the end of the data (§6.3's MAX_DEPTH /
+    // MAX_PATHS / MAX_TOTAL_PATHS; `GET_PICK` reports it as `searched.complete:false`).
+    //
+    // `noCandidates` above is a claim about the DATA — "couldn't find this text in any
+    // data the page loaded", and then a list of reasons why the data would not contain
+    // it. After a bounded search MockLab never established that. §17.12: a confident
+    // wrong answer is the worst thing this product can do, and this is the one that
+    // sounds most honest while being least true. So this string claims nothing about
+    // the data and says only what happened: MockLab stopped looking.
+    //
+    // The next step is NOT "Check all fields". That control is §16 M4, and it would be
+    // the same enumeration with the same ceilings — pointing at it would promise a cure
+    // that is neither available nor certain. What exists today, and really does go
+    // where the search did not, is the Sources tab: its tree renders whole response
+    // bodies and opens to any depth (`sources.js` caps only how much starts OPEN).
+    searchIncomplete:
+      "MockLab searched the data this page loaded but couldn't reach every part of it, so it can't say whether this text is there. Open the Sources tab to look through the data yourself.",
+    // + not in §11 — the same fact over a list that is NOT empty. Rows ordered by
+    // likelihood and capped at 12 read as "these are the possibilities"; after a bounded
+    // search that completeness is implied and unearned, so the list says what it is.
+    // Separate from `searchIncomplete` because the claim is different: there, MockLab
+    // cannot say whether the text is in the data at all; here it found some of it and
+    // cannot say it found all of it.
+    listIncomplete:
+      "MockLab couldn't reach every part of the data this page loaded, so there may be more than what's listed here. Open the Sources tab to look through the data yourself.",
     // + not in §11 — §10.1 State C names its two sections in prose ("the picked
     // element", then "Possible sources") but the copy table has no keys for them. The
     // wording below is §10.1C's own, in §11's voice.

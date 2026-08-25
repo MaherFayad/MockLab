@@ -241,6 +241,82 @@ test('§17.6 panel.html carries no copy either', () => {
   assert.deepEqual(copy, [], 'put it in strings.js and render it with data-s');
 });
 
+/* ────────────────── §6.3's bounded search: the sentence that must not be swapped in */
+
+/**
+ * The screens themselves are guarded in `panel.browser.test.js`, which renders the real
+ * Pick tab with `searched.complete` true and false and requires the two to differ. This
+ * is the backstop for the machine that has no Chromium: it can only see that the
+ * mechanism is still wired, not that it draws the right thing — so it says so, rather
+ * than posing as the guard.
+ */
+test('§6.3 the Pick tab still carries and still renders how far the search got', () => {
+  const code = stripComments(read('pick.js'));
+  for (const [what, pattern] of [
+    ['read `searched` off the GET_PICK answer', /res\.searched/],
+    ['keep it on the pick state the render reads', /searched:/],
+    ['render the sentence for an empty list after a bounded search', /S\.pick\.searchIncomplete/],
+    ['render the caveat over a list built from a bounded search', /S\.pick\.listIncomplete/]
+  ]) {
+    assert.match(code, pattern, `pick.js no longer seems to ${what} (§6.3, §1.1)`);
+  }
+  // `noCandidates` claims the data does not hold the text. Exactly one place in the
+  // panel may say it, and the browser suite proves that place is the complete-search
+  // branch; a second occurrence is a second claim nobody has checked.
+  const claims = code.split('S.pick.noCandidates').length - 1;
+  assert.equal(claims, 1, `S.pick.noCandidates is rendered from ${claims} places — only the complete-search branch may say it`);
+});
+
+test('§11 the bounded-search copy claims nothing about the data, and says where to go', () => {
+  // The failure being prevented is a rewrite that quietly puts `noCandidates`' claim
+  // back into the new sentence — "there is nothing here" dressed as "MockLab stopped
+  // looking". These two say different things or they are not worth having.
+  for (const key of ['searchIncomplete', 'listIncomplete']) {
+    const copy = S.pick[key];
+    assert.notEqual(copy, S.pick.noCandidates, `S.pick.${key} has become a copy of the claim it exists to replace`);
+    // §11: "always say what to do next". Mechanically: it must name the place that
+    // holds what the search did not reach. Coupled to the tab's own label, so renaming
+    // the tab and leaving the sentence pointing at the old name fails here.
+    assert.ok(
+      copy.includes(S.tab.sources),
+      `S.pick.${key} tells the person MockLab stopped short and then leaves them there — §11 wants the next step`
+    );
+  }
+});
+
+test("§11's closing rules: sentence case, and no exclamation marks outside an applied moment", () => {
+  // "no exclamation marks except `applied` moments" — §11. Audited across the whole
+  // table so the next string added inherits the rule instead of re-arguing it.
+  const offenders = [];
+  const walk = (node, trail) => {
+    for (const [key, value] of Object.entries(node)) {
+      const where = trail ? `${trail}.${key}` : key;
+      if (value && typeof value === 'object') {
+        walk(value, where);
+        continue;
+      }
+      const text = typeof value === 'function' ? sample(value) : typeof value === 'string' ? value : '';
+      if (/applied|paired/i.test(key)) continue; // §11's one sanctioned exception
+      if (text.includes('!')) offenders.push(`S.${where}: “${text}”`);
+    }
+  };
+  walk(S, '');
+  assert.deepEqual(offenders, [], '§11: no exclamation marks except at an "applied" moment');
+});
+
+/** A representative rendering of an interpolating string, for the audits above. */
+function sample(fn) {
+  for (const args of [[1, 1], ['x', 'y']]) {
+    try {
+      const out = fn(...args);
+      if (typeof out === 'string') return out;
+    } catch {
+      /* a shape this audit cannot call says nothing either way */
+    }
+  }
+  return '';
+}
+
 test("§11's closing rules: the default UI speaks no technical vocabulary", () => {
   // "never use: JSON, API, endpoint, payload, regex, DOM, probe, binding, signature
   // (those words may ONLY appear when Advanced mode is on)" — §11, and §1.2 for why.
