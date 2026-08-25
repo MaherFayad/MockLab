@@ -22,11 +22,18 @@ jobs:
         run: node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'))"
 
   browser:
-    # extension/test/e2e.browser.test.js loads the REAL unpacked extension in real
-    # Chromium. It skips itself when Playwright is missing, so the job above stays
-    # green anywhere — this job is what makes it actually run. The defects it guards
-    # (a streaming response that froze the page, a match entry that could not match its
-    # own URL, a stream that was never released) were all invisible to unit tests.
+    # Both browser suites load the REAL unpacked extension in real Chromium. They skip
+    # themselves when Playwright is missing, so the job above stays green anywhere —
+    # this job is what makes them actually run, and it must run BOTH files.
+    #
+    # e2e.browser.test.js guards defects unit tests could not see: a streaming response
+    # that froze the page, a match entry that could not match its own URL, a stream that
+    # was never released.
+    #
+    # panel.browser.test.js guards §1.1 itself. Changing the editor's chip to
+    # "Verified ✓" — the worst bug this product can have, per §17.12 — leaves all 142
+    # unit tests, both §17.4 guard tests and the entire e2e suite green. Only subtest 4
+    # of this file fails. Never drop it from this job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +47,9 @@ jobs:
         run: |
           npm install --no-save playwright@^1.49
           npx playwright install --with-deps chromium
-      - name: Browser end-to-end tests
+      - name: Browser end-to-end tests (capture engine)
         run: node --test test/e2e.browser.test.js
+        working-directory: extension
+      - name: Browser end-to-end tests (side panel)
+        run: node --test test/panel.browser.test.js
         working-directory: extension
