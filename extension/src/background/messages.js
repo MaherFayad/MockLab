@@ -105,6 +105,9 @@
  * @property {string[]} [requestBodyKeys] sorted top-level keys of a JSON request body
  * @property {string} [gqlOperation]      operationName read out of the request body
  * @property {boolean} mocked
+ * @property {boolean} [changeDropped]   a Change matched, but the body did not arrive
+ *   within the in-page read deadline, so the page received the REAL response. Surfaced
+ *   so the panel can say the edit did not apply (PLAN.md §1 — never lie).
  * @property {number} ts
  */
 
@@ -117,7 +120,8 @@
  * @property {string} sigId
  * @property {string} method
  * @property {string} urlRegex          anchored, matched against origin + pathname
- * @property {[string,string][]} params required query params; "*" value = any value
+ * @property {[string,string|null][]} params required query params; a null value means
+ *   "any value" (the volatile sentinel). A literal "*" is an ordinary literal.
  * @property {string} [gqlOperation]
  * @property {{path:string, tokens:{type:"key"|"index", value:string|number}[], value:any}[]} changes
  */
@@ -207,4 +211,6 @@ export const MSG = {
  * @property {number} lastSeenTs
  * @property {boolean} mocked
  * @property {boolean} unparsed
+ * @property {boolean} changeDropped  a Change matched this source but could not be
+ *   applied because the response body did not arrive in time
  */

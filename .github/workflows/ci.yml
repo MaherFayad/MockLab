@@ -20,3 +20,26 @@ jobs:
         run: npm test -ws
       - name: Check the extension manifest parses
         run: node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'))"
+
+  browser:
+    # extension/test/e2e.browser.test.js loads the REAL unpacked extension in real
+    # Chromium. It skips itself when Playwright is missing, so the job above stays
+    # green anywhere — this job is what makes it actually run. The defects it guards
+    # (a streaming response that froze the page, a match entry that could not match its
+    # own URL, a stream that was never released) were all invisible to unit tests.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install workspaces
+        run: npm ci
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --no-save playwright@^1.49
+          npx playwright install --with-deps chromium
+      - name: Browser end-to-end tests
+        run: node --test test/e2e.browser.test.js
+        working-directory: extension

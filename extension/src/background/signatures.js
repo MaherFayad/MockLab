@@ -47,11 +47,19 @@ const VOLATILE_NAME_TOKENS = new Set([
   'requestid', 'reqid', 'correlationid'
 ]);
 
-/** Generic path segments that carry no meaning in a friendly name. */
+/**
+ * Words that must never reach a friendly name. Two reasons, one list:
+ * plumbing words carry no meaning for the reader, and PLAN.md §1.2's zero-jargon rule
+ * (word list in §11's closing note) forbids showing "JSON", "API", "endpoint",
+ * "payload" and friends outside Advanced mode. `/rest/payload/endpoint` must not become
+ * "Endpoint", and `/api/58` must not become "Api".
+ */
 const GENERIC_SEGMENTS = new Set([
   'api', 'apis', 'rest', 'restapi', 'ajax', 'json', 'v1', 'v2', 'v3', 'v4',
   'graphql', 'gql', 'service', 'services', 'svc', 'gateway', 'gw', 'public',
-  'web', 'www', 'data', 'demo'
+  'web', 'www', 'data', 'demo',
+  'endpoint', 'endpoints', 'payload', 'payloads', 'request', 'requests',
+  'response', 'responses', 'resource', 'resources', 'handler', 'call', 'calls'
 ]);
 
 /** Last-segment words that are qualifiers, so the segment before them is kept too. */
@@ -113,22 +121,23 @@ export function isVolatileParamName(name) {
 /**
  * Percent-encode one query name or value for the urlPattern.
  *
- * The pattern used to carry DECODED values, which made it ambiguous: a kept param whose
- * value contains a literal `&` (`?q=a%26b`) turned into `q=a&b`, so the compiled match
- * list read it back as two params and the entry could never match the very URL it came
- * from — the user's change silently did nothing, with no error anywhere. Encoding makes
- * urlPattern a real URL and the round-trip lossless.
+ * urlPattern used to carry DECODED values, which made it ambiguous: a kept param whose
+ * value contains a literal `&` (`?q=a%26b`) became `q=a&b`, so the compiled match list
+ * read it back as two params and the entry could never match the very URL it came from.
+ * No error, no warning — the user's change simply never applied.
  *
- * `*` is the volatile-value sentinel and stays bare; a literal `*` inside a kept value is
- * encoded to `%2A` so the two can never be confused.
+ * The `*` volatile sentinel is written by the CALLER, which knows whether a value was
+ * starred; this function only ever encodes real values, and it encodes `*` to `%2A`
+ * unconditionally. An earlier version short-circuited on `text === '*'`, so a param
+ * whose real value was exactly `*` was emitted bare and read back as the wildcard —
+ * `?star=%2A` then matched `?star=anything`. Never add that short-circuit back.
  */
 function encodeQueryPart(text) {
-  if (text === '*') return '*';
   return encodeURIComponent(text).replace(/\*/g, '%2A');
 }
 
+/** Inverse of encodeQueryPart. Callers detect the bare `*` sentinel before decoding. */
 export function decodeQueryPart(text) {
-  if (text === '*') return '*';
   try {
     return decodeURIComponent(text);
   } catch {
@@ -207,15 +216,18 @@ export function buildSignature(method, url, requestBody) {
     return sig;
   }
 
-  /** @type {[string,string][]} */
+  /** @type {[string,string,boolean][]} name, value, wasVolatile */
   const kept = [];
   for (const [name, value] of parsed.searchParams.entries()) {
     if (isVolatileParamName(name)) continue;
-    kept.push([name, isVolatileValue(value) ? '*' : value]);
+    kept.push([name, value, isVolatileValue(value)]);
   }
-  kept.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+  const rank = ([name, value, wild]) => name + '\u0000' + (wild ? '' : value);
+  kept.sort((a, b) => (rank(a) < rank(b) ? -1 : rank(a) > rank(b) ? 1 : 0));
 
-  const query = kept.map(([name, value]) => encodeQueryPart(name) + '=' + encodeQueryPart(value)).join('&');
+  const query = kept
+    .map(([name, value, wild]) => encodeQueryPart(name) + '=' + (wild ? '*' : encodeQueryPart(value)))
+    .join('&');
   /** @type {any} */
   const sig = { method: verb, urlPattern: origin + pathPattern + (query ? '?' + query : '') };
 
@@ -355,6 +367,10 @@ export function friendlyName(sig) {
     words = splitWords(segments[segments.length - 2]).concat(lastWords);
   }
 
+  // A compound segment can smuggle jargon past the segment filter (`booking-payload`),
+  // so filter the words too rather than trusting the segment check alone.
+  words = words.filter((word) => !GENERIC_SEGMENTS.has(word));
+
   return sentenceCase(words) || host || 'Data';
 }
 
@@ -377,8 +393,11 @@ function escapeRegex(text) {
  * Entries are ordered most-constrained-first so §5.3's "first match wins" picks the
  * most specific signature when two overlap.
  *
+ * A `params` entry of `[name, null]` means "this param must be present with any value"
+ * — the volatile sentinel. `[name, "*"]` means the value must literally be `*`.
+ *
  * @param {{signature:{method:string,urlPattern:string,gqlOperation?:string}, sigId:string, changes:{path:string,tokens:any[],value:any}[]}[]} groups
- * @returns {{sigId:string, method:string, urlRegex:string, params:[string,string][], gqlOperation?:string, changes:any[]}[]}
+ * @returns {{sigId:string, method:string, urlRegex:string, params:[string,string|null][], gqlOperation?:string, changes:any[]}[]}
  */
 export function compileMatchList(groups) {
   const list = [];
@@ -389,7 +408,7 @@ export function compileMatchList(groups) {
     const [base, query] = String(sig.urlPattern).split('?');
     const urlRegex = '^' + escapeRegex(base).replace(/\\\*/g, '[^/&?]+') + '$';
 
-    /** @type {[string,string][]} */
+    /** @type {[string,string|null][]} */
     const params = [];
     if (query) {
       for (const pair of query.split('&')) {
@@ -397,7 +416,9 @@ export function compileMatchList(groups) {
         const idx = pair.indexOf('=');
         const rawName = idx === -1 ? pair : pair.slice(0, idx);
         const rawValue = idx === -1 ? '' : pair.slice(idx + 1);
-        params.push([decodeQueryPart(rawName), decodeQueryPart(rawValue)]);
+        // A bare `*` is the volatile sentinel and becomes null ("any value"). Everything
+        // else decodes to a literal — including `%2A`, a param whose real value is `*`.
+        params.push([decodeQueryPart(rawName), rawValue === '*' ? null : decodeQueryPart(rawValue)]);
       }
     }
 

@@ -52,8 +52,15 @@
     var MATCH_LIST_GATE_MS = 1000;
     /** Deadline for buffering a body we intend to REWRITE. Expiry = hand back the original. */
     var MODIFY_READ_TIMEOUT_MS = 3000;
-    /** Deadline for the background read that only feeds the Sources list. */
+    /**
+     * Deadlines for the background read that only feeds the Sources list. A response
+     * that declares JSON is worth waiting for; anything else textual is at best a 512
+     * character preview, so it is released far sooner. This is what bounds how long
+     * MockLab keeps a socket alive after the page itself has let go: an endless
+     * text/plain body is released after this, not held until the JSON deadline.
+     */
     var CAPTURE_READ_TIMEOUT_MS = 5000;
+    var CAPTURE_READ_TIMEOUT_OTHER_MS = 1500;
 
     /* ── save originals FIRST (PLAN.md §5.1.1) ──────────────────────────────── */
     var realFetch = window.fetch;
@@ -245,7 +252,9 @@
           var wildcards = 0;
           for (var k = 0; k < group.values.length; k += 1) {
             var want = group.values[k];
-            if (want === '*') { wildcards += 1; continue; }
+            // null (not the string "*") means "any value": a param whose real value is
+            // literally "*" is a normal literal and must not match everything.
+            if (want === null) { wildcards += 1; continue; }
             var at = pool.indexOf(want);
             if (at === -1) { ok = false; break; }
             pool.splice(at, 1);
@@ -379,7 +388,7 @@
      * it parsed. The captured body is always the REAL one — `mocked` records that a
      * Change was applied on the way out, so the panel can show real vs new.
      */
-    function reportBody(info, via, status, contentType, text, mocked) {
+    function reportBody(info, via, status, contentType, text, mocked, changeDropped) {
       var chars = text ? text.length : 0;
       var parsed = null;
       var isJson = false;
@@ -389,12 +398,17 @@
           isJson = true;
         } catch (err) { isJson = false; }
       }
-      report(info, via, status, contentType, isJson ? parsed : unparsed(text), chars, mocked);
+      report(info, via, status, contentType, isJson ? parsed : unparsed(text), chars, mocked, changeDropped);
       return isJson;
     }
 
-    /** @param {{method:string,url:string,bodyText:string|null}} info */
-    function report(info, via, status, contentType, body, bodyBytes, mocked) {
+    /**
+     * @param {{method:string,url:string,bodyText:string|null}} info
+     * @param {boolean} [changeDropped] a Change matched but the body did not arrive in
+     *   time to rewrite it, so the page got the real response. Never silent: the panel
+     *   surfaces it (PLAN.md §1 — never lie about what happened).
+     */
+    function report(info, via, status, contentType, body, bodyBytes, mocked, changeDropped) {
       try {
         if (info.url.indexOf('http') !== 0) return; // data:, blob:, chrome-extension: — not page data
         post(T_CAPTURED, {
@@ -408,6 +422,7 @@
           requestBodyKeys: requestFacts(info).keys,
           gqlOperation: requestFacts(info).gql,
           mocked: Boolean(mocked),
+          changeDropped: Boolean(changeDropped),
           ts: Date.now()
         });
       } catch (err) { /* reporting must never throw into the page */ }
@@ -475,34 +490,88 @@
     }
 
     /**
-     * Read a cloned body with a deadline, so a body that never ends can never strand
-     * either the page or the capture. On timeout the clone's stream is cancelled.
+     * Read a cloned body with a deadline and a size cap, owning the reader throughout.
+     *
+     * MockLab owns the reader deliberately. `clone.text()` LOCKS the body, so the
+     * obvious `clone.body.cancel()` on timeout returns a REJECTED promise that no
+     * try/catch around the call can catch — it surfaces on the page as an
+     * `unhandledrejection` with no MockLab frame on the stack, so a site running Sentry
+     * or its own handler logs an error caused purely by MockLab being installed. Worse,
+     * the read carries on: an endless response keeps its socket open and keeps
+     * buffering long after the page has let go of its own reader.
+     *
+     * Holding the reader ourselves makes `reader.cancel()` legal (we hold the lock),
+     * its promise ours to handle, and the release real.
+     *
+     * Resolves with the decoded text, or null when the deadline or the size cap hit.
      */
     function readWithDeadline(clone, ms) {
       return new Promise(function (resolve) {
         var settled = false;
-        var timer = setTimeout(function () {
+        var reader = null;
+        var timer = null;
+        var decoder = null;
+        var text = '';
+        var bytes = 0;
+
+        function finish(value) {
           if (settled) return;
           settled = true;
-          try {
-            if (clone.body && typeof clone.body.cancel === 'function') clone.body.cancel();
-          } catch (err) { /* already locked or closed */ }
-          resolve(null);
-        }, ms);
-        clone.text().then(
-          function (text) {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(text);
-          },
-          function () {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve(null);
+          if (timer !== null) clearTimeout(timer);
+          resolve(value);
+        }
+
+        /** Deadline or size cap: let the stream go, and handle cancel()'s promise. */
+        function abandon() {
+          if (settled) return;
+          if (reader) {
+            try {
+              var cancelled = reader.cancel();
+              if (cancelled && typeof cancelled.then === 'function') {
+                cancelled.then(null, function () { /* already closed — not the page's problem */ });
+              }
+            } catch (err) { /* already released */ }
           }
-        );
+          finish(null);
+        }
+
+        try {
+          if (!clone.body || typeof clone.body.getReader !== 'function') {
+            // No stream at all (an empty body): there is nothing to read or release.
+            finish('');
+            return;
+          }
+          reader = clone.body.getReader();
+          decoder = new TextDecoder();
+        } catch (err) {
+          finish(null);
+          return;
+        }
+
+        timer = setTimeout(abandon, ms);
+
+        function pump() {
+          reader.read().then(
+            function (chunk) {
+              if (settled) return;
+              if (chunk.done) {
+                try { text += decoder.decode(); } catch (err) { /* trailing bytes */ }
+                finish(text);
+                return;
+              }
+              bytes += chunk.value ? chunk.value.length : 0;
+              try {
+                text += decoder.decode(chunk.value, { stream: true });
+              } catch (err) { /* undecodable chunk: keep what we have */ }
+              // Bounded memory as well as bounded time: an endless body is released
+              // as soon as it passes the size a capture could ever use (§4).
+              if (bytes > MAX_BODY_CHARS) { abandon(); return; }
+              pump();
+            },
+            function () { finish(null); }
+          );
+        }
+        pump();
       });
     }
 
@@ -519,7 +588,10 @@
         report(info, 'fetch', status, contentType, unparsed(''), 0, false);
         return;
       }
-      readWithDeadline(clone, CAPTURE_READ_TIMEOUT_MS).then(function (text) {
+      var deadline = String(contentType || '').toLowerCase().indexOf('json') !== -1
+        ? CAPTURE_READ_TIMEOUT_MS
+        : CAPTURE_READ_TIMEOUT_OTHER_MS;
+      readWithDeadline(clone, deadline).then(function (text) {
         try {
           reportBody(info, 'fetch', status, contentType, text, false);
         } catch (err) { /* capture is best-effort */ }
@@ -561,7 +633,9 @@
         try {
           if (text === null) {
             // Never arrived in time: hand back the untouched original rather than hang.
-            report(info, 'fetch', status, contentType, unparsed(''), 0, false);
+            // A Change DID match, so the capture is flagged — the panel must be able to
+            // say the edit did not apply instead of leaving the user guessing.
+            report(info, 'fetch', status, contentType, unparsed(''), 0, false, true);
             return response;
           }
           return finishFetch(info, response, status, contentType, text, changes);

@@ -209,7 +209,7 @@ and dynamic `import()` of an extension URL would require adding `messages.js` to
 carry a clearly-marked mirrored-literals block, and `messages.js`'s header names both
 files. Do not "fix" either with an import.
 
-**Deviations:** 8 new (7–14) — see README "Deviations".
+**Deviations:** 11 new (7–17) — see README "Deviations".
 
 ### M1 QA round 2 — FAIL → fixed
 
@@ -241,15 +241,18 @@ Fixed in two independent layers, because either one alone would have left a hole
 2. **Streamed content types are never read and never cloned.** `text/event-stream`,
    `text/x-component`, `x-ndjson`, `stream+json` and `multipart/*` are captured
    metadata-only per §5.1.4, so they stay visible in Sources as read-only.
-   Both read paths also carry a deadline (3 s when rewriting, 5 s for a background
-   capture) that cancels the clone's stream, so a body that never ends can strand
-   neither the page nor the capture.
+   Both read paths also carry a deadline, so a body that never ends can strand neither
+   the page nor the capture. **Correction (round 3, D8):** this section originally
+   claimed the deadline "cancels the clone's stream". It did not — the cancel could not
+   work at all, and the attempt leaked a rejection onto the page. See D8 below for what
+   was actually happening and what the deadlines are now.
 
 Proved with a new regression harness that measures the same page with the extension off
-and on. **On the fixed build:** SSE first chunk 14 ms → 39 ms and the stream keeps
-flowing; `text/x-component` headers 109 ms → 134 ms; binary still skipped. The 25 ms
-delta is deviation 10's one-time match-list wait and is identical across SSE, RSC and
-binary — it is not a streaming stall. **On a deliberately re-broken copy of the build,
+and on. **On the fixed build** (three runs, re-measured after round 3): SSE first chunk
+13-14 ms → 43-49 ms and the stream keeps flowing; `text/x-component` headers ~110 ms →
+~145 ms; binary 12 ms → 45 ms. The ~33 ms delta is deviation 10's one-time match-list
+wait — it is identical on the binary response MockLab never reads, which is what shows
+it is not a streaming stall. **On a deliberately re-broken copy of the build,
 the same harness reproduces the original defect exactly:** SSE never resolves and RSC
 takes 1527 ms. The test is a real guard, not a rubber stamp.
 
@@ -271,15 +274,102 @@ applies.
 **Smaller items, all fixed.** D4 — failed and aborted XHRs (`status 0`) no longer appear
 in Sources as empty entries. D5 — `/api/58` used to be named "58"; bare-number segments
 are now treated as ids, and when a path holds nothing meaningful the friendly name falls
-back to the host rather than to an id or to "Api" (a word §11 bans from default copy).
+back to the host rather than to an id or to "Api" (PLAN.md §1.2's zero-jargon
+rule; the banned word list is in §11's closing note).
 D6 — the delimited-token rule now applies to single-word names too, so a bare
 `tracelogid` and an `x_tracelogid` are treated alike. D7 — README deviation 11 now reads
-"792 lines (606 code)" — the file length §17.10 actually talks about, not just the code
+"866 lines (644 code)" — the file length §17.10 actually talks about, not just the code
 count — and gives the real reason the file cannot be split: the manifest
 *would* accept several MAIN-world `js` entries, but they share the page's global scope,
 so splitting would publish the match list and patch internals on `window` where a hostile
 page could rewrite them. The §5.1.3 XHR-mechanism divergence the verifier flagged as
 undocumented is now deviation 13.
 
-**Re-verified after the fixes:** `npm test -ws` — extension **81/81**, companion 5/5.
-Chromium end-to-end: M1 DoD 25/25, mock engine 15/15, streaming regression 11/11.
+**Re-verified after round 2:** `npm test -ws` — extension 81/81, companion 5/5, plus
+Chromium end-to-end runs. Those browser runs lived in a scratch directory, which round 3
+correctly called out as worthless to anyone else — see D10 below.
+
+### M1 QA round 3 — FAIL → fixed
+
+Round 3 confirmed the round-2 fixes independently (SSE 6 ms → 31 ms and still flowing,
+RSC 3 ms → 3 ms, ~0.7 ms median overhead when nothing matches, all hostile URL shapes
+applying against the real interceptor, §17.5 re-proved) and found three more things,
+one of which was a claim in this file that was not true.
+
+**D8 (blocking) — MockLab never released a stream, and leaked a rejection onto the page.**
+`readWithDeadline` documented "on timeout the clone's stream is cancelled". It did not.
+`clone.text()` LOCKS the body, so `clone.body.cancel()` returns a **rejected** promise;
+the rejection escapes the surrounding try/catch because it happens out of band. Two
+consequences, both reproduced here against an endless `text/plain` response (which is
+deliberately not on the streaming content-type list, so only this path can release it):
+
+| | page let go | socket closed | chunks written | site-visible unhandledrejections |
+|---|---|---|---|---|
+| extension off | 116 ms | **yes, 105 ms** | 1 | none |
+| before the fix | 118 ms | **no — still open after 12 s** | 121 | `TypeError: Failed to execute 'cancel' on 'ReadableStream': Cannot cancel a locked stream` |
+| after the fix | 116 ms | **yes, 1605 ms** | 16 | none |
+
+Any site running Sentry, Datadog or its own `onunhandledrejection` was logging an error
+caused solely by MockLab being installed — also a breach of §5's "any internal error must
+be swallowed". Fixed properly rather than with a `.catch()` band-aid: MockLab now **owns
+the reader** (`clone.body.getReader()`), accumulates chunks itself, and on the deadline
+calls `reader.cancel()` — legal, because it holds the lock — and handles that promise.
+The read is now bounded on size as well as time (2 MB), and the capture-only deadline was
+split: 5 s for a response that declares JSON, 1.5 s for anything else, because a non-JSON
+body is only ever kept as a 512-character preview. That is what moved the release from
+"never" to 1605 ms. The residual hold is real and is now recorded as deviation 17 rather
+than described as something it is not.
+
+**D10 (blocking, process) — the browser evidence was not in the repository.** Round 2
+called the streaming harness "a real guard, not a rubber stamp" while it sat in a scratch
+directory where it could never run for anyone. It is now
+**`extension/test/e2e.browser.test.js`** (deviation 15): eight subtests against the real
+unpacked extension in real Chromium, wired into `.github/workflows/ci.yml` as a second
+`browser` job that installs Playwright and Chromium. It **skips itself** when Playwright
+or a Chromium build is absent — verified: `ok 1 … # SKIP`, zero failures — so
+`npm test -ws` stays green on a plain Node machine. All fixtures live in the one file
+because `node --test` executes every `.js` file under `test/` (verified: a stray
+`test/fixtures/probe.js` was executed as a test).
+
+The three subtests that encode bugs which already bit us:
+
+- *streamed responses resolve at their headers and keep flowing* (D1)
+- *a fetch with no matching Change resolves at its headers, not its body* (D14) — the
+  fixture calls `res.flushHeaders()`, without which Node holds the head until the first
+  write and even an unpatched browser would "fail", making the assertion meaningless
+- *every compiled entry matches the URL its signature came from* (D3/D11) — asserted
+  against the REAL in-page matcher over ten hostile query shapes: encoded `&`, encoded
+  `=`, unicode, `+`-as-space, repeated names, empty values, a literal `*`, pipes,
+  encoded slashes, and a starred id beside a dropped cache-buster
+
+**The suite was verified to actually catch its own defects.** Re-broken copies of the
+build were run against it: reverting `readWithDeadline` to `clone.text()` +
+`clone.body.cancel()` fails subtest 4 and nothing else; restoring the `encodeQueryPart`
+short-circuit fails subtest 6 and nothing else.
+
+**D9 — a claim of ours that was false.** `encodeQueryPart` short-circuited on
+`text === '*'` before the `%2A` replacement, so a param whose value is exactly `*` was
+emitted bare and decoded back as the volatile wildcard: `?star=%2A` matched
+`?star=anything`. The comment and this log both claimed "a literal `*` becomes `%2A`",
+true only for a `*` embedded in a longer value. Worse, test 32's `?star=%2A` line passed
+*because of* the degradation. Fixed three ways: the encoder never short-circuits; the
+volatile sentinel is now carried as a flag by the caller and compiles to `null` rather
+than the string `"*"`, so a literal `*` and "any value" can no longer be confused
+anywhere; and the test now asserts the thing that was broken —
+`?star=anything` must NOT match — in the unit suite and against the real interceptor.
+
+**D11** — the invariant is now asserted against the real in-page matcher in the browser
+suite, not only against `matchesOwnUrl`, the hand-copy in `signatures.test.js` (which
+stays as the fast unit-level check).
+**D12** — the 3-second rewrite deadline no longer fails silently: the capture carries a
+`changeDropped` flag through to the panel's source summary, and the honest consequence is
+recorded as deviation 16.
+**D13** — `endpoint`, `payload`, `request`, `response`, `resource`, `handler` and `call`
+joined the ignored-segment list, and the filter now runs over the final WORDS as well as
+the segments, so a compound like `booking-payload` cannot smuggle jargon through:
+`/rest/payload/endpoint` → the host, `/booking-payload` → "Booking".
+**Wording** — the jargon ban is cited as §1.2 (word list in §11's closing note), not §11.
+
+**Re-verified after round 3:** `npm test -ws` — extension **93/93** (38 signature, 45
+JSONPath, 8 browser subtests, 2 module placeholders), companion 5/5. Leak probe: socket
+closed at 1605 ms, zero site-visible rejections.

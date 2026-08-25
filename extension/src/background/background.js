@@ -175,6 +175,7 @@ async function onCaptured(tabId, raw) {
     ts: Number(raw.ts) || Date.now(),
     via: raw.via || 'other',
     mocked: Boolean(raw.mocked),
+    changeDropped: Boolean(raw.changeDropped),
     // Derived cache, not part of the §4 typedef: the panel's "{n} fields" meta row and
     // the MCP list_sources `fields` field. Counted once here, never on every read.
     fields: countFields(raw.body)
@@ -216,6 +217,7 @@ function toSummary(record) {
     bodyBytes: record.bodyBytes,
     lastSeenTs: record.ts,
     mocked: record.mocked,
+    changeDropped: Boolean(record.changeDropped),
     unparsed: Boolean(record.body && record.body.__unparsed)
   };
 }

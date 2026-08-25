@@ -280,6 +280,20 @@ test('28b a path with nothing meaningful in it falls back to the host, never to 
   assert.equal(friendlyName(buildSignature('GET', 'https://a.test/v2/seat/12')), 'Seat');
 });
 
+test('28c plumbing words never reach a friendly name (PLAN.md §1.2 zero-jargon)', () => {
+  // §11's closing note lists the banned words: JSON, API, endpoint, payload, regex…
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/rest/payload/endpoint')), 'a.test');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/booking-payload')), 'Booking');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/v1/json/response')), 'a.test');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/trip/endpoint')), 'Trip');
+  for (const path of ['/rest/payload/endpoint', '/api/58', '/v1/json/response', '/booking-payload']) {
+    const name = friendlyName(buildSignature('GET', 'https://a.test' + path)).toLowerCase();
+    for (const banned of ['json', 'api', 'endpoint', 'payload', 'regex']) {
+      assert.ok(!name.split(/\W+/).includes(banned), `"${name}" must not contain "${banned}"`);
+    }
+  }
+});
+
 /* --------------------------------------------------------------- match list */
 
 test('29 compileMatchList anchors the regex, stars ids, and lifts params out', () => {
@@ -291,7 +305,7 @@ test('29 compileMatchList anchors the regex, stars ids, and lifts params out', (
     }
   ]);
   assert.equal(entry.urlRegex, '^https://a\\.test/orders/[^/&?]+/items$');
-  assert.deepEqual(entry.params, [['curr', 'SAR'], ['hotelId', '*']]);
+  assert.deepEqual(entry.params, [['curr', 'SAR'], ['hotelId', null]]);
   const re = new RegExp(entry.urlRegex);
   assert.equal(re.test('https://a.test/orders/44212114/items'), true);
   assert.equal(re.test('https://a.test/orders/44212114/items/2'), false);
@@ -348,7 +362,8 @@ function matchesOwnUrl(entry, method, url) {
     if (pool.length < wants.length) return false;
     let wildcards = 0;
     for (const want of wants) {
-      if (want === '*') { wildcards += 1; continue; }
+      // null, not "*": a param whose real value is literally "*" is a literal.
+      if (want === null) { wildcards += 1; continue; }
       const at = pool.indexOf(want);
       if (at === -1) return false;
       pool.splice(at, 1);
@@ -369,7 +384,7 @@ const ROUND_TRIP_URLS = [
   'https://a.test/api/x?a=1&a=2',                       // repeated param name
   'https://a.test/api/x?a=1&a=1',                       // repeated identical values
   'https://a.test/api/x?empty=&b=2',
-  'https://a.test/api/x?star=%2A',                      // a literal * is not a wildcard
+  'https://a.test/api/x?star=%2A',                      // a literal * (see case 35)
   'https://a.test/api/x?hotelId=44212114&t=99',         // starred value + dropped param
   'https://a.test/api/x?filters=17%7C1~17~1*80%7C0',    // pipes and a literal *
   'https://a.test/api/x?path=%2Fa%2Fb%2Fc',
@@ -399,6 +414,33 @@ test('33 the round-trip does not make the matcher indiscriminate', async () => {
   assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/y?q=a%26b'), false);
   // Extra params are volatile by construction, so they must not block a match.
   assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?q=a%26b&_=1770000000'), true);
+});
+
+test("35 a param whose value is literally '*' stays a literal and never becomes a wildcard", async () => {
+  const signature = await normalize('GET', 'https://a.test/api/x?star=%2A');
+  // The encoder must not short-circuit on a value that IS "*": emitting it bare would
+  // make it decode back to the volatile sentinel and match anything at all.
+  assert.equal(signature.urlPattern, 'https://a.test/api/x?star=%2A');
+  const [entry] = compileMatchList([
+    { sigId: signature.sigId, signature, changes: [{ path: '$.a', tokens: [], value: 1 }] }
+  ]);
+  assert.deepEqual(entry.params, [['star', '*']], 'a literal, not the null sentinel');
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?star=%2A'), true);
+  // The assertion that would have failed while the encoder was broken:
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?star=anything'), false);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?star=%2A%2A'), false);
+});
+
+test('36 a volatile value IS a wildcard, and is the only thing that is', async () => {
+  const signature = await normalize('GET', 'https://a.test/api/x?hotelId=44212114&curr=SAR');
+  assert.equal(signature.urlPattern, 'https://a.test/api/x?curr=SAR&hotelId=*');
+  const [entry] = compileMatchList([
+    { sigId: signature.sigId, signature, changes: [{ path: '$.a', tokens: [], value: 1 }] }
+  ]);
+  assert.deepEqual(entry.params, [['curr', 'SAR'], ['hotelId', null]]);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?hotelId=99881234&curr=SAR'), true);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?hotelId=99881234&curr=USD'), false);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?curr=SAR'), false, 'the param must still be present');
 });
 
 test('34 repeated param names are matched as a multiset, not by the first value', async () => {
