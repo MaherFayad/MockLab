@@ -31,9 +31,14 @@ jobs:
     # was never released.
     #
     # panel.browser.test.js guards §1.1 itself. Changing the editor's chip to
-    # "Verified ✓" — the worst bug this product can have, per §17.12 — leaves all 142
-    # unit tests, both §17.4 guard tests and the entire e2e suite green. Only subtest 4
+    # "Verified ✓" — the worst bug this product can have, per §17.12 — leaves EVERY
+    # unit test, both §17.4 guard tests and the entire e2e suite green. Only subtest 4
     # of this file fails. Never drop it from this job.
+    #
+    # This comment deliberately carries no test totals. It used to say "all 142 unit
+    # tests"; the suite grew to 146 and the number rotted in place, asserting something
+    # false in the file whose whole job is to be trusted. The claim is stronger without
+    # it — "every unit test" cannot go stale.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

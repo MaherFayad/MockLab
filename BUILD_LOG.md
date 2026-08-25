@@ -479,12 +479,49 @@ label reading as a heading at Inter's narrower metrics, and a checkbox animation
 blanked every tick for 300ms on any store-driven re-render.
 
 **Correction to the record.** Commit `5d31087` is labelled "WIP … red — captured
-mid-rewrite". That label is wrong: its tree passes 142/142. The orchestrator observed a
+mid-rewrite". That label is wrong: its tree passes its own full suite (142 extension
+tests, the total at that commit). The orchestrator observed a
 failure from an earlier on-disk state, and the agent saved the fixed file between that
 test run and the commit. Noted here rather than rewritten, on the same principle applied
 to every deviation on this build — a record is only worth something if it is true.
 
-**QA verdict:** _pending qa-verifier_
+**Re-verification found three more.** The first M2 verdict was FAIL; the fixes for it
+were themselves verified, and the second pass found three defects nothing else had:
 
-**Open M7 item:** white on `--accent` in dark mode is 3.12:1, below AA. §9.2 specifies
-white text, so this is left for the M7 a11y pass rather than diverged from unilaterally.
+1. **§17.6, panel.** `formatValue()` returned the literal `'null'` for a null leaf,
+   rendered to the human in the tree and inside "Real value: …". The file's own header
+   claimed every word came from `strings.js`. The demo fixtures contain no nulls, which
+   is exactly why eleven browser subtests and both mutation passes missed it — the line
+   never executed. Fixed via `S.glyph.nullValue`.
+2. **§17.6, background.** `friendlyName()` and `changesApi.js` returned a bare `'Data'`
+   as a source's display name at five sites. It reaches the human as a source-card
+   heading today and as `ChangeSummary.sourceName` over MCP from M6 — so the breach
+   would have widened into the agent-facing contract before anyone noticed. Fixed via
+   `S.sources.fallbackName`.
+3. **Stale evidence in this file.** See below.
+
+**Open M7 items** — both recorded here so M7 inherits them, neither fixed unilaterally:
+
+1. **Contrast.** White on `--accent` in dark mode is 3.12:1, below AA. §9.2 specifies
+   white text, so this is left for the M7 a11y pass rather than diverged from. The light
+   theme is 4.83:1 and passes; all four chips measure ≥ 4.5:1 in both themes.
+2. **Disabled controls explain themselves only to a mouse.** Three controls — the Deep
+   mode row, "Set up AI access", and "Show on page" — say *why* they are inert only
+   through a hover tooltip. A `disabled` button is not focusable, so `.tip:focus-within`
+   can never fire, and the disabled child carries `pointer-events: none` so the wrapper
+   takes the hover: mouse-only by construction. The bubble is `role="tooltip"` with no
+   `aria-describedby`, so a screen reader does not announce it either. A keyboard or
+   screen-reader user meets three dead controls with no stated reason. The Pick and
+   Scenarios tabs already solve this with visible `S.soon` help text, so M7's fix is to
+   copy a pattern this codebase already has. **This item existed at the first M2 verdict
+   and was left out of the record; only re-verification caught the omission.**
+
+**Stale evidence, and why it is worth its own entry.** The Evidence paragraph above and a
+CI comment both carried hand-maintained test totals ("142"). The suite grew and the
+numbers rotted in place — in a section that closes by saying a record is only worth
+something if it is true, and in the one file whose entire job is to be trusted. The
+recorded *line counts* could not rot, because `guards.test.js` parses them back out of
+README and fails on drift; the *test totals* had no such guard and duly drifted. The CI
+comment no longer states a total at all: "every unit test" makes the same point and
+cannot go stale. Totals that are genuinely evidence are kept, pinned to the commit they
+were measured at.

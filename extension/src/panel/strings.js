@@ -86,6 +86,11 @@ export const S = {
     showOnPage: 'Show on page',
     guessHighlight: 'Best guess — not verified',
     fields: (n) => `${n} fields`,
+    // + not in §11 — the name a source falls back to when its URL carries no word worth
+    // showing (`/api/v2/`, an opaque id). §17.6 owns it here because it reaches the human
+    // twice: as a source card heading, and as `ChangeSummary.sourceName` over MCP (§12).
+    // Imported by background/signatures.js and background/changesApi.js — read-only there.
+    fallbackName: 'Data',
     // + not in §11 — the search field §10.2 asks for, and its empty result.
     search: 'Search',
     noMatch: 'Nothing here matches that search.',
@@ -180,6 +185,10 @@ export const S = {
     list: (n) => `[${n}]`,
     index: (i) => `[${i}]`,
     collapsedObject: '{…}',
+    // + not in §11 — how a null leaf reads in the tree and in "Real value: …". §17.12
+    // picks the calmer word: `null` is a programmer's name for this, `empty` is what it
+    // means to the person reading it. panel-designer owns the wording.
+    nullValue: 'empty',
     joinDot: (a, b) => `${a} · ${b}`,
     joinLabel: (a, b) => `${a}: ${b}`
   },
