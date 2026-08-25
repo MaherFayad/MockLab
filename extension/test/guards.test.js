@@ -7,6 +7,13 @@
  * "the string `state: \"verified\"` may appear in exactly one assignment in the codebase
  * (probe.js)". A rule that only a human remembers to check is a rule that breaks the
  * first time nobody checks. It is checked here, on every `npm test`.
+ *
+ * Scope, deliberately different per rule:
+ *   §17.1 / §17.2  extension source only — they are about MV3 and the MAIN world.
+ *   §17.4          shipping source in BOTH workspaces. `test/` is excluded on purpose:
+ *                  `changes.test.js` plants a verified Binding to prove the M2 engine
+ *                  never downgrades one, which is the opposite of a violation.
+ *   §17.10         every .js file in both workspaces, tests included.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,11 +22,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const EXTENSION = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(EXTENSION, '..');
 const SRC = path.join(EXTENSION, 'src');
-const TESTS = path.join(EXTENSION, 'test');
-const README_PATH = path.resolve(EXTENSION, '..', 'README.md');
+const COMPANION = path.join(ROOT, 'companion');
+const README_PATH = path.join(ROOT, 'README.md');
 
+/** Every .js file under `dir`, or none when the directory does not exist. */
 function jsFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) return jsFiles(full);
@@ -28,11 +38,36 @@ function jsFiles(dir) {
 }
 
 const read = (file) => fs.readFileSync(file, 'utf8');
-/** Repo-relative-to-`extension/`, with forward slashes, so it reads like README does. */
-const rel = (file) => path.relative(EXTENSION, file).split(path.sep).join('/');
+/**
+ * Repo-root-relative, forward slashes: `extension/src/…`, `companion/src/…`. Both
+ * workspaces have a `src/` and a `test/`, so a path relative to either one would be
+ * ambiguous the moment the companion is audited alongside the extension.
+ */
+const rel = (file) => path.relative(ROOT, file).split(path.sep).join('/');
 
+/** The extension's own source — the only place §17.1 and §17.2 can apply. */
 const FILES = jsFiles(SRC).sort();
-const ALL_FILES = [...jsFiles(SRC), ...jsFiles(TESTS)].sort();
+
+/**
+ * Shipping source in BOTH workspaces, for §17.4. The companion has no Binding today,
+ * but at M6 it serves `get_bindings` to AI agents (§12.4 #6) — a hardcoded verified
+ * state there would be the same lie §17.12 calls the worst bug this product can have,
+ * told to a different audience.
+ */
+const SOURCE_FILES = [...jsFiles(SRC), ...jsFiles(path.join(COMPANION, 'src'))].sort();
+
+/**
+ * Everything §17.10's line budget applies to, in both workspaces. The companion is
+ * three small files today and M6 adds the hub, the MCP server and 15 tool definitions
+ * to it — written by someone who has not read this thread, which is exactly who a
+ * self-checking record is for.
+ */
+const ALL_FILES = [
+  ...jsFiles(SRC),
+  ...jsFiles(path.join(EXTENSION, 'test')),
+  ...jsFiles(path.join(COMPANION, 'src')),
+  ...jsFiles(path.join(COMPANION, 'test'))
+].sort();
 
 /** What `wc -l` counts: newline-terminated lines, so a trailing newline is not a line. */
 function lineCount(text) {
@@ -75,6 +110,9 @@ function stripComments(text) {
     .join('\n');
 }
 
+/** §17.4's single exception: the probe's CONFIRMED state, and nowhere else. */
+const PROBE_JS = 'extension/src/background/probe.js';
+
 /**
  * Every place a Binding's `state` PROPERTY is written, with the right-hand side.
  *
@@ -115,12 +153,12 @@ function stateAssignments(text) {
  */
 test('§17.4 nothing outside probe.js may put a link into the verified state', () => {
   const offenders = [];
-  for (const file of FILES) {
+  for (const file of SOURCE_FILES) {
     const verified = stateAssignments(read(file)).filter((a) => a.kind === 'literal' && a.value === 'verified');
     if (verified.length) offenders.push(`${rel(file)} (${verified.length})`);
   }
 
-  const allowed = offenders.filter((entry) => entry.startsWith('src/background/probe.js'));
+  const allowed = offenders.filter((entry) => entry.startsWith(PROBE_JS));
   assert.deepEqual(
     offenders.filter((entry) => !allowed.includes(entry)),
     [],
@@ -141,8 +179,8 @@ test('§17.4 nothing outside probe.js may put a link into the verified state', (
  */
 test('§17.4 a link state is never written indirectly, where no grep could catch it', () => {
   const indirect = [];
-  for (const file of FILES) {
-    if (rel(file) === 'src/background/probe.js') continue;
+  for (const file of SOURCE_FILES) {
+    if (rel(file) === PROBE_JS) continue;
     for (const assignment of stateAssignments(read(file))) {
       if (assignment.kind === 'indirect') indirect.push(`${rel(file)}: state = ${assignment.rhs}`);
     }
@@ -155,8 +193,8 @@ test('§17.4 a link state is never written indirectly, where no grep could catch
 });
 
 test('§17.4 the M2 Changes engine writes candidate links and nothing else', () => {
-  const engine = ['background/ruleStore.js', 'background/changesApi.js'].map((rel) =>
-    fs.readFileSync(path.join(SRC, rel), 'utf8')
+  const engine = ['background/ruleStore.js', 'background/changesApi.js'].map((relative) =>
+    read(path.join(SRC, relative))
   );
   const written = new Set();
   for (const text of engine) {
@@ -202,7 +240,7 @@ test('§17.2 interceptor.js has no imports and never hashes', () => {
 test('§17.1 no response body is ever modified through webRequest or DNR', () => {
   const forbidden = /declarativeNetRequest|chrome\.webRequest/;
   for (const file of FILES) {
-    assert.doesNotMatch(fs.readFileSync(file, 'utf8'), forbidden, `${path.relative(SRC, file)} — MV3 cannot`);
+    assert.doesNotMatch(read(file), forbidden, `${rel(file)} — MV3 cannot`);
   }
 });
 

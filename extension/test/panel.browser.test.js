@@ -37,6 +37,15 @@ const EXTENSION_DIR = path.resolve(HERE, '..');
 /** The value the demo maps to a red pill and a banner (§14). */
 const CANCELLED = 'CANCELLED';
 
+/**
+ * `.tip__bubble` rests at translateY(-4px) and slides to 0 on hover, so its shown box is
+ * 4px lower than its laid-out box. The geometry subtest measures the resting box and
+ * adds this, because :hover is not applied to a background tab and the panel must stay
+ * in the background for the site bar to describe the DEMO tab rather than itself.
+ * If the slide changes in panel.css, change it here.
+ */
+const TOOLTIP_HOVER_SLIDE_PX = 4;
+
 /* ------------------------------------------------------- portable Playwright */
 
 /**
@@ -271,6 +280,50 @@ if (!chromium) {
           return tab ? chrome.action.getBadgeText({ tabId: tab.id }) : null;
         }, demoUrl);
         assert.equal(badge, '1', 'the toolbar badge mirrors the active-change count');
+      });
+
+      await t.test('no tab tooltip covers the Reset site control (§10 site bar)', async () => {
+        // A tooltip that hides the way to undo every change is worse than no tooltip.
+        // The tab strip opens its bubbles downward into the site bar's margin, and that
+        // margin is sized for them — a geometry relationship no other kind of test sees.
+        const measured = await panel.evaluate((slide) => {
+          const hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+          const box = (node) => {
+            const b = node.getBoundingClientRect();
+            return { top: b.top, bottom: b.bottom, left: b.left, right: b.right };
+          };
+          const reset = document.querySelector('#sitebar .btn--danger');
+          const chip = document.querySelector('#sitebar .chip');
+          const out = { reset: Boolean(reset), tabs: [] };
+          if (!reset) return out;
+          const resetBox = box(reset);
+          const chipBox = chip ? box(chip) : null;
+          for (const opt of document.querySelectorAll('.segmented__opt')) {
+            const bubble = opt.querySelector('.tip__bubble');
+            const rest = box(bubble);
+            const shown = { ...rest, top: rest.top + slide, bottom: rest.bottom + slide };
+            out.tabs.push({
+              tab: opt.querySelector('input').value,
+              hidesReset: hit(shown, resetBox),
+              hidesChip: chipBox ? hit(shown, chipBox) : false,
+              clearance: Math.round(resetBox.top - shown.bottom)
+            });
+          }
+          return out;
+        }, TOOLTIP_HOVER_SLIDE_PX);
+
+        assert.equal(measured.reset, true, 'this subtest is meaningless unless Reset site is on screen');
+        assert.equal(measured.tabs.length, 4, 'all four tabs carry a tooltip');
+        for (const tab of measured.tabs) {
+          assert.equal(tab.hidesReset, false, `the ${tab.tab} tooltip overlaps Reset site (clearance ${tab.clearance}px)`);
+          assert.equal(tab.hidesChip, false, `the ${tab.tab} tooltip hides the active-changes count`);
+          // Vertical, and checked for every tab: the lane has to be wide enough that
+          // moving a control along the site bar can never put it under a bubble.
+          assert.ok(
+            tab.clearance >= 4,
+            `the ${tab.tab} tooltip reaches to within ${tab.clearance}px of the site bar's control row — widen the .sitebar lane in panel.css`
+          );
+        }
       });
 
       await t.test('the change survives 10 refreshes (§16 M2)', async () => {

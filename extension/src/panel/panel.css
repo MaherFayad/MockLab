@@ -175,7 +175,7 @@ h2 { font-size: 1rem; font-weight: 600; }
 .tip { position: relative; }
 .tip__bubble {
   position: absolute; inset-inline-start: 50%; inset-block-start: calc(100% + 6px); z-index: 20;
-  padding: 0.375rem 0.5rem; inline-size: max-content; max-inline-size: 14rem;
+  padding: 0.25rem 0.5rem; inline-size: max-content; max-inline-size: 14rem;
   background: var(--bg-inverse); color: var(--text-oninverse); border-radius: var(--radius-s); box-shadow: var(--shadow-lg);
   font-size: var(--font-size-s); font-weight: 500; line-height: 1.35; text-align: center;
   opacity: 0; pointer-events: none; transform: translate(calc(-50% * var(--dir)), -4px);
@@ -188,6 +188,13 @@ h2 { font-size: 1rem; font-weight: 600; }
 
 /* ──────────────────────────────────────────────────────────── site bar — §10 shell */
 
+/* The tab strip's tooltips open downward into this margin. It is 1.5rem and not
+ * --gap-s because a --font-size-s bubble is 24px tall plus its 6px offset, and the site
+ * bar carries "Reset site" — a destructive control. At --gap-s the bubble landed 13px
+ * on top of that button (measured: bubble 61..89, button 76..103), so hovering a tab
+ * hid the way to undo everything. Flipping the bubble upward is not available: the tab
+ * strip starts 14px from the top of the panel, so an upward bubble is clipped off it.
+ * panel.browser.test.js asserts the clearance for all four tabs. */
 .sitebar { display: flex; align-items: center; gap: var(--gap-s); padding: var(--gap-s) 0 var(--gap-m); border-block-end: 1px solid var(--border); margin-block-start: var(--gap-s); }
 .sitebar__icon { flex: none; display: grid; place-items: center; inline-size: 1.25rem; block-size: 1.25rem; border-radius: var(--radius-s); background: var(--bg-tertiary); color: var(--text-secondary); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; }
 .sitebar__host { flex: 1; min-inline-size: 0; font-size: var(--font-size-s); font-weight: 500; color: var(--text-secondary); }
