@@ -703,6 +703,64 @@ if (!chromium) {
         await page.close();
       });
 
+      /* ---- §10.5 danger zone: "Reset everything", across two sites at once ---- */
+      await t.test('Reset everything clears every site and the pages go back to real', async (tt) => {
+        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+
+        const demoPage = await ctx.newPage();
+        await demoPage.goto(demoOrigin + '/demo/?run=reset-all', { waitUntil: 'load' });
+        const demoTab = await tabIdOf(demoPage);
+        const demoSources = await waitForSources(demoTab, 2);
+        await sendMessage(MSG.SET_VALUE, {
+          tabId: demoTab,
+          sigId: demoSources.sources.find((s) => s.via === 'fetch').sigId,
+          path: '$.status',
+          value: 'CANCELLED'
+        });
+        assert.equal((await waitForPill(demoPage, 'Cancelled')).text, 'Cancelled', 'site one is mocked');
+
+        const otherPage = await ctx.newPage();
+        await otherPage.goto(fixtureOrigin + '/blank?case=reset-all', { waitUntil: 'load' });
+        const otherTab = await tabIdOf(otherPage);
+        await otherPage.evaluate(() => fetch('/shape/0?case=reset-all').then((r) => r.json()));
+        const otherSources = await waitForSources(otherTab, 1);
+        const otherSig = otherSources.sources.find((s) => s.url.includes('case=reset-all')).sigId;
+        await sendMessage(MSG.SET_VALUE, {
+          tabId: otherTab, sigId: otherSig, path: '$.label', value: 'MOCKED', refresh: false
+        });
+        await sleep(300);
+        assert.equal(
+          await otherPage.evaluate(() => fetch('/shape/0?case=reset-all').then((r) => r.json()).then((d) => d.label)),
+          'MOCKED',
+          'site two is mocked'
+        );
+
+        /* ---- one call, both sites ---- */
+        const reset = await sendMessage(MSG.RESET_ALL, { tabId: demoTab });
+        assert.equal(reset.ok, true);
+        assert.ok(reset.cleared.changes >= 2, `at least both sites' Changes went (${reset.cleared.changes})`);
+        assert.ok(reset.cleared.origins.includes(demoOrigin), 'the demo origin is reported');
+        assert.ok(reset.cleared.origins.includes(fixtureOrigin), 'the fixture origin is reported');
+
+        // The real point of running this in a browser: Changes are REMOVED, not written
+        // back as empty arrays, and only Chrome can say whether a removal fires
+        // storage.onChanged — which is what re-pushes the match list and the badge.
+        assert.equal((await waitForPill(demoPage, 'On time')).text, 'On time', 'site one is real again');
+        assert.equal(await waitForBadge(demoTab, ''), '', 'and its badge cleared');
+        assert.equal(await waitForBadge(otherTab, ''), '', 'the other site\'s badge cleared too');
+        assert.equal(
+          await otherPage.evaluate(() => fetch('/shape/0?case=reset-all').then((r) => r.json()).then((d) => d.label)),
+          'REAL',
+          'site two is real again without being reloaded — the match list was re-pushed'
+        );
+        assert.deepEqual((await sendMessage(MSG.LIST_CHANGES, { origin: demoOrigin })).changes, []);
+        assert.deepEqual((await sendMessage(MSG.LIST_CHANGES, { origin: fixtureOrigin })).changes, []);
+        assert.deepEqual((await sendMessage(MSG.GET_BINDINGS, { origin: demoOrigin })).bindings, []);
+
+        await demoPage.close();
+        await otherPage.close();
+      });
+
       /* ---- Deviation 16: a Change that could not be applied is never silent ---- */
       await t.test('a Change on a too-slow response is reported dropped, not applied', async () => {
         const page = await ctx.newPage();

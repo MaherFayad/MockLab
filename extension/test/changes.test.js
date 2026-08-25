@@ -23,8 +23,14 @@ import assert from 'node:assert/strict';
  */
 function fakeChrome() {
   const data = new Map();
+  /** One-shot read delays, so a test can hold a read-modify-write open on purpose. */
+  const delays = new Map();
   return {
     __data: data,
+    /** Make the NEXT read of `key` take `ms`, then behave normally again. */
+    __delayNextGet(key, ms) {
+      delays.set(key, ms);
+    },
     storage: {
       local: {
         async get(key) {
@@ -34,10 +40,22 @@ function fakeChrome() {
           const keys = Array.isArray(key) ? key : [key];
           const out = {};
           for (const k of keys) if (data.has(k)) out[k] = structuredClone(data.get(k));
+          // The snapshot is taken FIRST and the delay applied after, because that is
+          // the shape of the hazard: a read-modify-write whose read already happened
+          // and whose write is still to come.
+          for (const k of keys) {
+            const wait = delays.get(k);
+            if (wait === undefined) continue;
+            delays.delete(k);
+            await new Promise((resolve) => setTimeout(resolve, wait));
+          }
           return out;
         },
         async set(bag) {
           for (const [k, v] of Object.entries(bag)) data.set(k, structuredClone(v));
+        },
+        async remove(key) {
+          for (const k of Array.isArray(key) ? key : [key]) data.delete(k);
         }
       }
     }
@@ -47,12 +65,19 @@ function fakeChrome() {
 const ORIGIN = 'https://demo.test';
 const SIG = 'abc123def456';
 
-/** Fresh modules per test: the store's write-lock map is module-level state. */
+/**
+ * A fresh STORE per test — a new fake `chrome`, not a new module instance.
+ *
+ * Cache-busting the import looked tidier and was wrong: `changesApi.js` imports
+ * `./ruleStore.js` by its own plain specifier, so a busted copy of the store here left
+ * the API talking to a DIFFERENT module instance with a DIFFERENT write-lock map. The
+ * two shared the fake storage, so every result still looked right — until test 27,
+ * which is the one test that can only pass if both halves share one lock.
+ */
 async function freshModules() {
   globalThis.chrome = fakeChrome();
-  const bust = '?t=' + Math.random();
-  const store = await import('../src/background/ruleStore.js' + bust);
-  const api = await import('../src/background/changesApi.js' + bust);
+  const store = await import('../src/background/ruleStore.js');
+  const api = await import('../src/background/changesApi.js');
   return { store, api, chrome: globalThis.chrome };
 }
 
@@ -60,6 +85,7 @@ async function freshModules() {
 function fakeDeps(overrides = {}) {
   const state = {
     reloads: 0,
+    badgeRepaints: 0,
     url: ORIGIN + '/trip',
     record: {
       sigId: SIG,
@@ -78,6 +104,9 @@ function fakeDeps(overrides = {}) {
       },
       capturedRecord(_tabId, sigId) {
         return sigId === state.record.sigId ? state.record : null;
+      },
+      async repaintAllBadges() {
+        state.badgeRepaints += 1;
       },
       async reload(tabId) {
         // Mirrors background.js: with no tab there is nothing to reload, and the
@@ -355,4 +384,79 @@ test('23 a mutation with no resolvable tab still stores, and says it did not ref
   const res = await handle({ type: MSG.SET_VALUE, payload: { sigId: SIG, path: '$.status', value: 'X' } });
   assert.equal(res.ok, true);
   assert.equal(res.refreshed, false, '§1.1 — report what happened, not what was asked for');
+});
+
+/* ------------------------------------------------- §10.5 danger zone: reset everything */
+
+test('24 RESET_ALL clears Changes, Scenarios and Links on EVERY site', async () => {
+  const { handle, store, chrome, state, MSG } = await setup();
+  const other = 'https://elsewhere.test';
+
+  await handle({ type: MSG.SET_VALUE, payload: { sigId: SIG, path: '$.status', value: 'X', refresh: false } });
+  await store.addChange({ origin: ORIGIN, sigId: SIG, path: '$.probe', value: 1, probe: true });
+  await store.addChange({ origin: other, sigId: SIG, path: '$.a', value: 1 });
+  await store.addChange({ origin: other, sigId: SIG, path: '$.b', value: 2, enabled: false });
+  await store.noteChangedPath(other, SIG, '$.a', 'real');
+  await store.setPresets(other, [{ id: 'p1', origin: other, name: 'Cancelled', emoji: '🎬', changes: [], createdAt: 1 }]);
+
+  const res = await handle({ type: MSG.RESET_ALL, payload: { tabId: 7 } });
+
+  assert.equal(res.ok, true);
+  assert.equal(res.cleared.changes, 4, 'both sites, disabled and probe Changes included');
+  assert.equal(res.cleared.presets, 1);
+  assert.equal(res.cleared.bindings, 2, 'the tree-view link and the other site\'s');
+  assert.deepEqual(res.cleared.origins.sort(), [ORIGIN, other].sort());
+  assert.equal(res.refreshed, true);
+  assert.equal(state.badgeRepaints, 1, 'every tab is repainted, not only the ones with Changes');
+
+  for (const origin of [ORIGIN, other]) {
+    assert.deepEqual(await store.getChanges(origin), [], `${origin} has no Changes`);
+    assert.deepEqual(await store.getBindings(origin), [], `${origin} has no Links`);
+    assert.deepEqual(await store.getPresets(origin), [], `${origin} has no Scenarios`);
+    assert.equal(await store.countActiveChanges(origin), 0);
+  }
+  assert.deepEqual(
+    [...chrome.__data.keys()].filter((k) => /^(changes|bindings|presets):/.test(k)),
+    [],
+    'the keys are gone, not merely emptied'
+  );
+});
+
+test('25 RESET_ALL keeps settings and the derived signature cache', async () => {
+  const { handle, store, MSG } = await setup();
+  await handle({ type: MSG.UPDATE_SETTINGS, payload: { patch: { advancedMode: true, companionToken: 'tok' } } });
+  await handle({ type: MSG.SET_VALUE, payload: { sigId: SIG, path: '$.status', value: 'X', refresh: false } });
+
+  await handle({ type: MSG.RESET_ALL, payload: { tabId: 7, refresh: false } });
+
+  const settings = await store.getSettings();
+  assert.equal(settings.advancedMode, true, 'preferences are not user data to wipe');
+  assert.equal(settings.companionToken, 'tok', 'a data reset must not silently unpair the AI');
+  assert.ok((await store.getSignatures(ORIGIN))[SIG], 'the signature cache is derived, and survives');
+});
+
+test('26 RESET_ALL on an empty store is a clean no-op', async () => {
+  const { handle, MSG } = await setup();
+  const res = await handle({ type: MSG.RESET_ALL, payload: { tabId: 7, refresh: false } });
+  assert.deepEqual(res.cleared, { origins: [], changes: 0, presets: 0, bindings: 0 });
+  assert.equal(res.refreshed, false);
+});
+
+test('27 RESET_ALL is not raced by a Change created while it runs', async () => {
+  const { handle, store, chrome, MSG } = await setup();
+  await handle({ type: MSG.SET_VALUE, payload: { sigId: SIG, path: '$.status', value: 'X', refresh: false } });
+
+  // Force the dangerous interleaving rather than hoping for it: the create's read is
+  // held open for 50 ms, so an UNLOCKED reset would delete the key in the middle of a
+  // read-modify-write and the create would then write the pre-reset list straight back.
+  // The per-key write lock is the only thing that prevents it — remove the lock in
+  // ruleStore.resetEverything and this test fails with `$.status` still standing.
+  chrome.__delayNextGet('changes:' + ORIGIN, 50);
+  const creating = store.addChange({ origin: ORIGIN, sigId: SIG, path: '$.price.total', value: 9 });
+  const resetting = handle({ type: MSG.RESET_ALL, payload: { tabId: 7, refresh: false } });
+  await Promise.all([creating, resetting]);
+
+  const left = await store.getChanges(ORIGIN);
+  assert.ok(!left.some((c) => c.path === '$.status'), 'nothing from before the reset is left standing');
+  assert.ok(left.length <= 1, `at most the late Change survives, never a pre-reset one (${left.length})`);
 });

@@ -319,9 +319,13 @@ function valueEditor(ctx, source) {
   }
   box.append(where);
 
-  box.append(el('label', { class: 'editor__label', for: 'ml-value', text: S.editor.newValue }));
-  box.append(inputFor(e, ctx));
-  if (e.error) box.append(el('p', { class: 'editor__error', text: e.error }));
+  // Label, field and its error are one group: at Inter's metrics a bare --gap-m between
+  // them reads as three unrelated blocks rather than one labelled control.
+  const group = el('div', { class: 'editor__group' });
+  group.append(el('label', { class: 'editor__label', for: 'ml-value', text: S.editor.newValue }));
+  group.append(inputFor(e, ctx));
+  if (e.error) group.append(el('p', { class: 'editor__error', text: e.error }));
+  box.append(group);
 
   // §10.2: a Change made from the tree has not been probed, so it is Possible, never
   // Verified (§17.4). The chip above and this line say the same thing twice on purpose.

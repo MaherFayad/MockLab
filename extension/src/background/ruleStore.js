@@ -226,6 +226,54 @@ export async function getChange(origin, id) {
   return list.find((change) => change && change.id === id) || null;
 }
 
+/**
+ * "Reset everything" (PLAN.md §10.5): drop every Change, Scenario and Link, on every
+ * site. `settings` survives — unpairing the user's AI is not part of a data reset — and
+ * so does the derived `signatures:<origin>` cache, which records what a request looks
+ * like and never what MockLab did to it.
+ *
+ * Each key is removed inside its own write lock, so a create that is mid-flight cannot
+ * write its list back on top of the reset and leave one Change standing.
+ *
+ * @returns {Promise<{origins:string[], changes:number, presets:number, bindings:number}>}
+ */
+export async function resetEverything() {
+  const PREFIXES = [
+    ['changes:', 'changes'],
+    ['presets:', 'presets'],
+    ['bindings:', 'bindings']
+  ];
+  const tally = { origins: [], changes: 0, presets: 0, bindings: 0 };
+  const origins = new Set();
+
+  let all;
+  try {
+    all = await chrome.storage.local.get(null);
+  } catch (err) {
+    console.error('[MockLab] reset everything failed to read storage', err);
+    return tally;
+  }
+
+  for (const [key, value] of Object.entries(all)) {
+    const hit = PREFIXES.find(([prefix]) => key.startsWith(prefix));
+    if (!hit) continue;
+    const [prefix, bucket] = hit;
+    origins.add(key.slice(prefix.length));
+    tally[bucket] += Array.isArray(value) ? value.length : 0;
+    // eslint-disable-next-line no-await-in-loop -- the lock IS the point: serial by key
+    await withLock(key, async () => {
+      try {
+        await chrome.storage.local.remove(key);
+      } catch (err) {
+        console.error('[MockLab] storage remove failed', key, err);
+      }
+    });
+  }
+
+  tally.origins = [...origins];
+  return tally;
+}
+
 /* --------------------------------------------------------------- signature cache */
 
 /** @param {string} origin @returns {Promise<Record<string, RequestSignature>>} */

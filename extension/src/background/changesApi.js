@@ -28,6 +28,7 @@ import {
   updateChange,
   deleteChange,
   clearChanges,
+  resetEverything,
   countActiveChanges,
   getSignatures,
   rememberSignature,
@@ -48,6 +49,7 @@ export const CHANGE_MESSAGE_TYPES = new Set([
   MSG.TOGGLE_CHANGE,
   MSG.DELETE_CHANGE,
   MSG.RESET_SITE,
+  MSG.RESET_ALL,
   MSG.REFRESH_TAB,
   MSG.GET_BINDINGS,
   MSG.GET_SETTINGS,
@@ -59,7 +61,8 @@ export const CHANGE_MESSAGE_TYPES = new Set([
  *   resolveTabId: (requested:any) => Promise<number|null>,
  *   tabInfo: (tabId:number|null) => Promise<{url:string, origin:string, faviconUrl:string, captured:boolean}>,
  *   capturedRecord: (tabId:number|null, sigId:string) => any,
- *   reload: (tabId:number|null) => Promise<boolean>
+ *   reload: (tabId:number|null) => Promise<boolean>,
+ *   repaintAllBadges: () => Promise<void>
  * }} deps
  */
 export function createChangesApi(deps) {
@@ -224,6 +227,19 @@ export function createChangesApi(deps) {
         // modification, so they stay; nothing about the page is changed by them.
         const cleared = await clearChanges(origin);
         return mutated(origin, tabId, payload, { cleared });
+      }
+
+      case MSG.RESET_ALL: {
+        // §10.5 danger zone, "Reset everything". Scoped wider than RESET_SITE and
+        // nothing else: settings and the derived signature cache survive (see
+        // resetEverything). Exposed as a message rather than left to the panel poking
+        // at storage, so an MCP agent can do it too (§1.6).
+        const cleared = await resetEverything();
+        // The storage listener repaints the origins it sees change; this covers a tab
+        // whose site had only Scenarios or Links, and costs one tabs.query.
+        await deps.repaintAllBadges();
+        const tabId = await deps.resolveTabId(payload.tabId);
+        return { ok: true, cleared, refreshed: await maybeReload(tabId, payload) };
       }
 
       case MSG.REFRESH_TAB: {

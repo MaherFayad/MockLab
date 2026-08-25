@@ -312,6 +312,7 @@ input:focus-visible + .check-box { outline: 2px solid var(--accent); outline-off
 .editor__field { color: var(--text); font-weight: 500; }
 .editor__input { inline-size: 100%; padding: 0.5rem 0.625rem; border: 1.5px solid var(--border-strong); border-radius: var(--radius-s); background: var(--bg); color: var(--text); font-family: 'Fira Code', ui-monospace, monospace; font-size: var(--font-size-s); transition: all var(--transition-rule); }
 .editor__input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.editor__group { display: flex; flex-direction: column; gap: var(--gap-xs); }
 .editor__label { font-size: var(--font-size-s); font-weight: 600; color: var(--text-secondary); }
 .editor__note { display: flex; gap: var(--gap-s); padding: var(--gap-s); border-radius: var(--radius-s); background: var(--bg-warning); color: var(--chip-possible-text); font-size: var(--font-size-s); }
 .editor__error { color: var(--danger); font-size: var(--font-size-s); }

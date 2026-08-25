@@ -410,6 +410,9 @@ const changesApi = createChangesApi({
     return (state && state.sources.get(sigId)) || null;
   },
 
+  /** "Reset everything" (§10.5) can empty a site with no tab-visible Change. */
+  repaintAllBadges: refreshAllBadges,
+
   /** "Apply & refresh page" (§10.1D) and "Reset site" (§1.5) both end here. */
   async reload(tabId) {
     if (tabId === null) return false;

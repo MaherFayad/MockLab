@@ -280,6 +280,26 @@ export const MSG = {
   RESET_SITE: 'msg:resetSite',
 
   /**
+   * Panel -> SW. "Reset everything" — §10.5's danger zone, the sibling of "Reset this
+   * site". Removes every Change, Scenario and Link on EVERY site, not just this one.
+   *
+   * `{tabId?, refresh?:true}` -> `{ok:true, refreshed:boolean,
+   *   cleared:{origins:string[], changes:number, presets:number, bindings:number}}`
+   *
+   * Deliberately NOT cleared: `settings` (wiping the companion pairing token would
+   * silently unpair the user's AI, which a data reset should not do) and the
+   * `signatures:<origin>` cache (derived, bounded, and relearned on the next page load
+   * — it describes what requests look like, never what MockLab changed).
+   *
+   * `probe:true` scaffolding goes with everything else, exactly as RESET_SITE and
+   * §17.5's startup sweep treat it.
+   *
+   * This exists so an MCP agent can do what the human can (§1.6 parity): the panel must
+   * not reach around the contract into chrome.storage.local to implement it.
+   */
+  RESET_ALL: 'msg:resetAll',
+
+  /**
    * Panel -> SW. Reload the tab without touching the store — the second half of
    * "Apply & refresh page" when the caller batched several edits with `refresh:false`.
    * `{tabId?}` -> `{ok:true, refreshed:boolean}`
