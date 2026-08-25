@@ -34,6 +34,7 @@
   var ACCENT_FILL = 'rgba(0,102,255,.08)';  // §6.1, verbatim
   var CHIP_TEXT = '#FFFFFF';      // §9.1 --text-oninverse on the accent chip
 
+  /** CONTENT_GLOBALS.overlayId in messages.js — a browser suite reads this id too. */
   var OVERLAY_ID = '__mocklab_overlay__';   // §6.1 / §10.3 — the one overlay container
   var MOCKLAB_ATTR = 'data-mocklab';
 
@@ -284,7 +285,7 @@
    * `window`, which a site can read and rewrite.
    */
   try {
-    globalThis.__mocklabPicker = {
+    globalThis.__mocklabPicker = {   // CONTENT_GLOBALS.picker in messages.js
       start: function (onResult) {
         pickResult = typeof onResult === 'function' ? onResult : null;
         enterPickMode();

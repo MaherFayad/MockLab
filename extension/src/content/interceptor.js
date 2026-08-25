@@ -31,7 +31,7 @@
     var T_MATCH_LIST = 'page:matchList';            // PAGE.MATCH_LIST
     /* ───────────────────────────────────────────────────────────────────────── */
 
-    var INSTALL_FLAG = '__mocklabInterceptorInstalled';
+    var INSTALL_FLAG = '__mocklabInterceptorInstalled';   // CONTENT_GLOBALS.interceptorInstalled
     if (window[INSTALL_FLAG]) return;
     window[INSTALL_FLAG] = true;
 

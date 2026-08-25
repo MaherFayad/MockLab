@@ -156,6 +156,40 @@ export const TOKEN_ATTRIBUTE = 'data-mocklab-token';
 export const PORT_NAME = 'mocklab';
 
 /**
+ * The names the content scripts publish themselves under, and the id of the one overlay
+ * container. Not message types — but the same KIND of thing, and here for the same
+ * reason: they are literals two files have to agree on with no import between them, so
+ * §17.8's "no magic strings" applies to them exactly as it applies to `PAGE.CAPTURED`.
+ *
+ *   element  `element.js` -> read by `picker.js` (§6.1/§6.2/§7.3 questions about a node)
+ *   picker   `picker.js`  -> read by `agent.js`  (§6.1 pick mode)
+ *   overlayId  the single `#__mocklab_overlay__` host every overlay lives in (§6.1, §10.3)
+ *   interceptorInstalled  the MAIN world's re-entrancy flag (§5.1.6) — the one name on
+ *     the PAGE's window rather than the extension's isolated global, because that is the
+ *     only global the MAIN-world patch has.
+ *
+ * Why these are worth a constant when nothing can import them: every read sits inside a
+ * `try/catch` that returns null on failure (that is §17.2 — a content script may never
+ * break the host page). So a rename degrades SILENTLY: pick mode simply stops working,
+ * the page keeps rendering, and only a browser suite notices — which means nothing
+ * notices on a machine without Playwright. This is the shape of bug that let a broken
+ * mirror of `port:picked` pass twelve guards while killing pick mode end to end. The
+ * guard is `guards.test.js` "§17.2 vs §17.8 …", which asserts these appear verbatim in
+ * every file that mirrors them AND that every method called on the two contracts is a
+ * method they actually export.
+ *
+ * NOT a runtime handshake: the content scripts still hardcode these names. Nothing here
+ * is imported by them — it cannot be (see the header). This is the written-down half of
+ * a duplication that already existed.
+ */
+export const CONTENT_GLOBALS = {
+  element: '__mocklabElement',
+  picker: '__mocklabPicker',
+  overlayId: '__mocklab_overlay__',
+  interceptorInstalled: '__mocklabInterceptorInstalled'
+};
+
+/**
  * Frames exchanged between the MAIN world (interceptor.js) and the ISOLATED world
  * (agent.js) via window.postMessage. Every frame is
  * `{ [MOCKLAB_TAG]: token, type, payload }` and anything without the exact token is

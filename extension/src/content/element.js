@@ -288,7 +288,7 @@
   }
 
   try {
-    globalThis.__mocklabElement = {
+    globalThis.__mocklabElement = {   // CONTENT_GLOBALS.element in messages.js
       smartTarget: smartTarget,
       fingerprint: fingerprint,
       resolveFingerprint: resolveFingerprint,
