@@ -373,3 +373,37 @@ the segments, so a compound like `booking-payload` cannot smuggle jargon through
 **Re-verified after round 3:** `npm test -ws` — extension **93/93** (38 signature, 45
 JSONPath, 8 browser subtests, 2 module placeholders), companion 5/5. Leak probe: socket
 closed at 1605 ms, zero site-visible rejections.
+
+
+---
+
+## M1 verdict: PASS (commit `8d236fb`, after three QA rounds)
+
+Round 1 FAIL: installing MockLab froze any page using a fetch-based SSE stream, with
+zero Changes configured. Round 2 FAIL: the deadline meant to fix that did not release
+the stream and leaked an unhandledrejection into the host page, and the browser
+evidence lived in a scratch directory where CI could never run it. Round 3 PASS.
+
+Independently confirmed at the passing commit:
+
+- 8 browser subtests against the real unpacked extension, validated by FIVE mutations
+  (two ours, three the verifier's own, including emptying `interceptor.js` entirely).
+  Every subtest has now been shown to fail for a defect it targets, so a green run
+  cannot be vacuous. Suite skips rather than fails when Playwright is absent.
+- Endless-stream leak probe: socket closes in 1505ms (`text/plain`) and 5003ms
+  (declared JSON), zero unhandledrejections reach the page, and the residual does not
+  degrade under six concurrent streams.
+- 2 sources in 118ms, no duplicates across 5 soft navigations, planted Changes drive
+  the site's own rendering, captured bodies keep the real values.
+- trip.com vectors: one stable sigId across a fresh trace id, a new 666-char blob and a
+  changed stamp, and across a different `hotelId`; different for `curr` and `checkIn`;
+  `checkInTime`/`signInMethod`/`hotelId`/`contentId` all correctly kept.
+- §17: all 12 rules pass. `state: "verified"` is still assigned nowhere.
+
+Deviations 7-17 were each checked for truth. No false claims remained.
+
+**Open nits carried into M2** (none blocking): `e2e.browser.test.js:29` hand-mirrors
+`MSG` although `messages.js` is importable from Node — one import removes a §17.8
+duplication; `:53` hardcodes a verification-sandbox Playwright path that should not
+ship; `changeDropped` has no automated guard; and a body over the 2MB cap reports an
+empty preview rather than §4's 512-char preview.
