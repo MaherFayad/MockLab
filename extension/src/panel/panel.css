@@ -7,10 +7,23 @@
  * "extension tokens" block that follows.
  */
 
-/* ─────────────────────────────────────────── PLAN.md §9.1 — verbatim, do not edit */
+/* ─────────────────────────────────────────── PLAN.md §9.1 — verbatim, do not edit
+ *
+ * DEVIATION (the only edit to §9.1, and it is a delivery change, not a design one):
+ * §9.1's two `@import url('https://fonts.googleapis.com/…')` lines are replaced by the
+ * @font-face block below, which loads the SAME faces from files bundled in the
+ * extension. §1.4 is non-negotiable — "Everything local. No telemetry, no remote
+ * servers" — and a Google Fonts import sends the user's IP and the timing of every
+ * panel open to a third party. Bundling delivers §9.1's typography MORE faithfully
+ * than the import did: Inter and Fira Code now render offline, on first paint, with no
+ * flash of the fallback stack. Every token below this block is byte-identical to §9.1.
+ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code&display=swap');
+@font-face { font-family: 'Inter'; src: url('../../fonts/inter-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Inter'; src: url('../../fonts/inter-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Inter'; src: url('../../fonts/inter-600.woff2') format('woff2'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Inter'; src: url('../../fonts/inter-700.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Fira Code'; src: url('../../fonts/fira-code-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
 
 :root {
   --transition-rule: 250ms cubic-bezier(0.4, 0, 0.2, 1);
