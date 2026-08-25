@@ -152,20 +152,29 @@ function stateAssignments(text) {
  * prove the M2 engine never downgrades one, which is the opposite of a violation.
  */
 test('§17.4 nothing outside probe.js may put a link into the verified state', () => {
+  /** @type {{file:string, count:number}[]} */
   const offenders = [];
   for (const file of SOURCE_FILES) {
     const verified = stateAssignments(read(file)).filter((a) => a.kind === 'literal' && a.value === 'verified');
-    if (verified.length) offenders.push(`${rel(file)} (${verified.length})`);
+    if (verified.length) offenders.push({ file: rel(file), count: verified.length });
   }
 
-  const allowed = offenders.filter((entry) => entry.startsWith(PROBE_JS));
   assert.deepEqual(
-    offenders.filter((entry) => !allowed.includes(entry)),
+    offenders.filter((entry) => entry.file !== PROBE_JS).map((entry) => `${entry.file} (${entry.count})`),
     [],
     'a wrong "Verified ✓" is the worst bug this product can have (§17.12) — only the ' +
       'probe CONFIRMED state may assign it'
   );
-  assert.ok(allowed.length <= 1, 'even probe.js gets exactly one such assignment');
+
+  // §17.4 says the string may appear in exactly ONE assignment, not in one file. An
+  // earlier version of this guard counted files, so a probe.js with three of them read
+  // as compliant — the M4 state machine is the one place that mistake would matter.
+  // Zero is allowed too: probe.js is still a stub until M4.
+  const inProbe = offenders.find((entry) => entry.file === PROBE_JS);
+  assert.ok(
+    !inProbe || inProbe.count === 1,
+    `${PROBE_JS} assigns the verified state ${inProbe && inProbe.count} times; §17.4 allows exactly one`
+  );
 });
 
 /**
