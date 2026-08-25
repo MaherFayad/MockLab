@@ -1,0 +1,4 @@
+node_modules/
+mocklab-extension.zip
+*.log
+.DS_Store

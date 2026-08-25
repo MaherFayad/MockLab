@@ -1,0 +1,14 @@
+{
+  "name": "mocklab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Click any element, find the data behind it, change it, and see the site render the new state.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "workspaces": ["extension", "companion"],
+  "scripts": {
+    "test": "npm test -ws",
+    "zip": "cd extension && zip -r ../mocklab-extension.zip . -x '*.DS_Store'"
+  }
+}

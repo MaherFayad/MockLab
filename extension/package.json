@@ -1,0 +1,10 @@
+{
+  "name": "mocklab-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MockLab Chromium MV3 extension (no build step).",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

@@ -1,0 +1,40 @@
+/* MockLab side panel — design system per PLAN.md §9.
+ *
+ * OWNER: panel-designer. The §9.1 token block is copied VERBATIM at milestone M2,
+ * along with the DGA component recipes in §9.2.
+ *
+ * Rule §17.7: no colour hex may appear outside a :root block in this file.
+ */
+
+:root {
+  --transition-rule: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --gap-l: 1.25rem; --gap-m: 0.875rem; --gap-s: 0.5rem;
+  --font-size-m: 0.875rem; --font-size-s: 0.75rem;
+  --radius-m: 0.625rem;
+
+  --bg: #FFFFFF;
+  --text: #1E1F24;
+  --text-secondary: #6B6F76;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1E1F24;
+    --text: #F0F1F3;
+    --text-secondary: #A6AAB1;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, system-ui, sans-serif; }
+
+body {
+  min-inline-size: 320px;
+  padding: var(--gap-l);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--font-size-m);
+}
+
+*:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+#boot { color: var(--text-secondary); font-size: var(--font-size-s); }

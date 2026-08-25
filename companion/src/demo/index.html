@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyline — Your trip</title>
+<!-- No web font on purpose: the demo is reloaded many times during a probe run, and
+     every extra request would show up in the capture list and delay settle detection
+     (PLAN.md §7.3). Inter is used when the machine has it; otherwise the system UI face. -->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #F5F6F8; --card: #FFFFFF; --text: #1E1F24; --muted: #6B6F76;
+    --line: #E3E5E8; --accent: #0066FF;
+    --ok-fg: #1E8E3E; --ok-bg: #E6F4EA;
+    --warn-fg: #B26A00; --warn-bg: #FFF4E0;
+    --bad-fg: #D93025; --bad-bg: #FDECEA; --bad-line: #F5B7B1;
+  }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-block-size: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 2rem 1rem;
+  }
+  .card {
+    inline-size: 100%; max-inline-size: 34rem; background: var(--card);
+    border: 1px solid var(--line); border-radius: 1rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08); overflow: hidden;
+  }
+  .card__head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: 1.25rem 1.5rem; border-block-end: 1px solid var(--line);
+  }
+  .brand { font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; }
+  .brand span { color: var(--accent); }
+  #passenger-chip {
+    font-size: 0.75rem; font-weight: 600; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 999px; padding: 0.25rem 0.75rem;
+  }
+  #alert-banner {
+    display: none; padding: 0.875rem 1.5rem; font-size: 0.875rem; font-weight: 600;
+    color: var(--bad-fg); background: var(--bad-bg);
+    border-block-end: 1px solid var(--bad-line);
+  }
+  #alert-banner.is-visible { display: block; }
+  .card__body { padding: 1.5rem; }
+  .row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1rem; margin-block-end: 1.5rem;
+  }
+  .flight-no { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  .flight-meta { font-size: 0.8125rem; color: var(--muted); margin-block-start: 0.25rem; }
+  #status-pill {
+    flex: none; border-radius: 999px; padding: 0.3125rem 0.875rem;
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.01em;
+    color: var(--ok-fg); background: var(--ok-bg);
+  }
+  #status-pill.is-delayed { color: var(--warn-fg); background: var(--warn-bg); }
+  #status-pill.is-cancelled { color: var(--bad-fg); background: var(--bad-bg); }
+  .legs { display: flex; align-items: center; gap: 1rem; margin-block-end: 1.5rem; }
+  .leg { flex: 1; }
+  .leg__time { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .leg__code { font-size: 0.875rem; font-weight: 600; color: var(--muted); margin-block-start: 0.125rem; }
+  .leg__city { font-size: 0.75rem; color: var(--muted); }
+  .leg--in { text-align: end; }
+  .legs__line { flex: none; inline-size: 3rem; block-size: 1px; background: var(--line); }
+  .prices { border-block-start: 1px solid var(--line); padding-block-start: 1rem; }
+  .price-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 0.875rem; color: var(--muted); margin-block-end: 0.375rem;
+  }
+  .price-row--total { font-size: 1.125rem; font-weight: 700; color: var(--text); margin-block-end: 0; }
+  .price-row span:last-child { font-variant-numeric: tabular-nums; }
+  #tip-box {
+    margin: 0 1.5rem 1.5rem; padding: 0.875rem 1rem;
+    background: var(--bg); border: 1px dashed var(--line); border-radius: 0.625rem;
+    font-size: 0.8125rem; color: var(--muted);
+  }
+  #tip-box b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <header class="card__head">
+      <div class="brand">Sky<span>line</span></div>
+      <div id="passenger-chip">…</div>
+    </header>
+
+    <div id="alert-banner" role="alert"></div>
+
+    <div class="card__body">
+      <div class="row">
+        <div>
+          <div class="flight-no" id="flight-number">…</div>
+          <div class="flight-meta" id="flight-ref">…</div>
+        </div>
+        <div id="status-pill">…</div>
+      </div>
+
+      <div class="legs">
+        <div class="leg leg--out">
+          <div class="leg__time" id="departs-at">…</div>
+          <div class="leg__code" id="origin-code">…</div>
+          <div class="leg__city" id="origin-city">…</div>
+        </div>
+        <div class="legs__line" aria-hidden="true"></div>
+        <div class="leg leg--in">
+          <div class="leg__time" id="arrives-at">…</div>
+          <div class="leg__code" id="destination-code">…</div>
+          <div class="leg__city" id="destination-city">…</div>
+        </div>
+      </div>
+
+      <div class="prices">
+        <div class="price-row"><span>Fare</span><span id="price-base">…</span></div>
+        <div class="price-row"><span>Taxes &amp; fees</span><span id="price-taxes">…</span></div>
+        <div class="price-row price-row--total"><span>Total</span><span id="price-total">…</span></div>
+      </div>
+    </div>
+
+    <div id="tip-box">…</div>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

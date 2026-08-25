@@ -1,0 +1,16 @@
+{
+  "name": "mocklab-companion",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MockLab local companion: WebSocket hub, MCP server, demo site.",
+  "license": "MIT",
+  "bin": { "mocklab-companion": "src/index.js" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}
