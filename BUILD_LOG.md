@@ -106,3 +106,107 @@ boots and is evaluable. Every later milestone can therefore be acceptance-tested
 the genuine interceptor and service worker rather than mocks. Real websites are NOT
 reachable from the build sandbox (the network policy refuses all outbound hosts), so
 real-OTA verification stays a human manual step.
+
+---
+
+## M1 — Capture
+
+**Built by:** interceptor-engineer.
+
+**Scope note.** M1 delivers the whole data pipeline up to and including the service
+worker holding correctly-named `CapturedRequest`s, plus the messages the panel calls to
+read them. The Sources **tab UI** (tree view, card rendering) is panel-designer's file
+and lands at M2; nothing under `extension/src/panel/**` was touched.
+
+**Delivered**
+
+- `extension/src/content/interceptor.js` — the MAIN-world patch (§5.1). Dependency-free
+  IIFE, everything in try/catch, originals saved first. Patches `fetch` and
+  `XMLHttpRequest`, captures both, applies matching Changes, and reports raw
+  method/url/body-keys outward. Computes no hashes (§17.3) and walks pre-parsed
+  JSONPath token arrays the worker hands it, so no path parser lives in the page.
+- `extension/src/content/agent.js` — **M1 portion only**: token minting, the
+  MAIN⇄ISOLATED relay, and the lazily-reconnecting Port to the service worker. The file
+  ends with an explicit marker block reserving §6/§7 (picker, overlays, snapshots) for
+  probe-engineer at M3.
+- `extension/src/background/messages.js` — every message constant and the §4 typedefs.
+- `extension/src/background/signatures.js` — §5.2 normalization, `friendlyName()` (one
+  implementation shared by the panel and the MCP `list_sources` tool so the two can
+  never drift), and `compileMatchList()`.
+- `extension/src/background/ruleStore.js` — storage schema and CRUD, with a per-key
+  write lock (see "Bugs found by the real browser" below).
+- `extension/src/shared/jsonpath.js` — the §5.4 subset: `parsePath`, `formatPath`,
+  `joinPath`, `getByPath`, `setByPath`, `enumeratePaths`, `findByValue`.
+- `extension/src/background/background.js` — M1 wiring only. The M0 `sidePanel` block
+  and the module-top-level `probe:true` startup sweep are untouched, byte for byte.
+
+**Tests:** `npm test -ws` — extension **77/77**, companion **5/5**.
+31 signature normalization cases (§5.2 requires ≥ 15) and 45 JSONPath cases (§5.4
+requires ≥ 30, including unicode keys, keys containing dots round-tripping through the
+bracket form, and arrays of objects).
+
+**M1 DoD, proved in real Chromium** with the real unpacked extension loaded via
+`launchPersistentContext` and asserted from a real extension page (the worker cannot
+`sendMessage` to itself, so the proof uses the same API the panel will):
+
+| §16 M1 DoD | Result |
+|---|---|
+| open demo → 2 sources appear ≤ 1 s after load | **91 ms**, exactly 2 |
+| both demo sources named | `Trip` (`via:"fetch"`) and `User` (`via:"xhr"`) |
+| bodies parsed | `$.status === "ON_TIME"`, `$.user.displayName === "Nora Al-Amri"`, `$.price.total === 450` via a path query |
+| no duplicate captures on SPA nav | 5 `pushState` navigations + 5 refetches → still exactly 2 sources, same two sigIds; `softNavs = 5` |
+| full reload | still exactly 2 sources, soft-nav counter reset |
+| a site with 50+ requests stays smooth | 60-request page → 60 distinct sources, 60 parallel fetches in 145 ms, no page errors |
+
+Measured overhead, extension **off vs on**, median of 5 / 3 runs: demo time-to-render
+49 ms → 55 ms; 60 parallel fetches 344 ms → 297 ms (inside run-to-run noise).
+
+Also proved end to end, because the capture side is worthless if the other half is
+broken: a planted Change makes the **site itself** re-render (`ON_TIME` → pill text
+"Cancelled", the site's own `is-cancelled` class, and the derived banner — no DOM
+editing); a second Change on the same source applies too; the XHR `responseText`
+override reaches the site; the captured body still holds the **real** value with
+`mocked: true`; disabling every Change restores the real site. Consoles clean
+throughout — page, service worker, and the 60-request stress page.
+
+**The trip.com vectors, proved on a live page.** A test server shaped like the product
+owner's target (`/hotels/detail/` → `/api/hotel?...&masterhotelid_tracelogid=…`
+regenerated per load, plus a fresh `hoteluniquekey` blob and `subStamp`) produces **one**
+source with an identical `sigId` across loads, and a Change created on load 1 still
+applies on load 2 with a brand-new trace id — and follows the user to a different
+`hotelId`. Without the §5.2 extension below, each load would have minted a new `sigId`
+and the product would have done nothing on the exact page it exists to demo.
+
+**Bugs found by the real browser (not by the unit tests)**
+
+1. **Lost update in `chrome.storage.local`.** Two captures landing together each did
+   `get` → mutate → `set` on `signatures:<origin>`; the second write silently discarded
+   the first. About one page load in twenty stored only one of the demo's two
+   signatures, and a Change against the lost one stopped applying with no error
+   anywhere — the worst kind of bug this product can have. Fixed with a per-key promise
+   chain around every read-modify-write in `ruleStore.js`. 20/20 clean afterwards.
+2. **Responses arriving before the match list.** The match list is pushed in from the
+   worker, which takes a few milliseconds — long enough that a page firing data requests
+   at `document_start` gets its response back before any Change is known. The demo's XHR
+   consistently lost this race. Fixed by holding only the *first* requests of a page load
+   until the list lands, capped at 1000 ms (Deviation 10).
+3. **The agent replayed an empty placeholder match list**, which opened that gate early
+   and let the first responses through unmocked. Now only a list the worker actually
+   sent counts.
+4. **Time-throttled soft-nav reporting dropped real navigations** (2 of 5 reported).
+   Now collapsed by URL instead of by clock, so repeated `replaceState` at the same URL
+   is still absorbed but every genuine URL change is reported.
+
+**Interpretation recorded, not a deviation:** a `CapturedRequest.body` holds the
+**original** response, with `mocked: true` beside it, when a Change applied. §4 does not
+say which. Keeping the real body is what lets §10.2 show "original → new" and what gives
+`Change.originalValue` something true to hold.
+
+**Contract note extended.** M0's §17.2-vs-§17.8 note covers `interceptor.js`. It applies
+to `agent.js` too: content scripts are classic scripts, `import` is a syntax error there,
+and dynamic `import()` of an extension URL would require adding `messages.js` to
+`web_accessible_resources` — exposing it to every page. Both content scripts therefore
+carry a clearly-marked mirrored-literals block, and `messages.js`'s header names both
+files. Do not "fix" either with an import.
+
+**Deviations:** 6 new (7–12) — see README "Deviations".
