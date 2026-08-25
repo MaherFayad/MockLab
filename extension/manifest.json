@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Click any element, find the data behind it, change it, and see the site render the new state.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "tabs", "scripting", "activeTab", "alarms", "debugger"],
+  "permissions": ["storage", "tabs", "scripting", "activeTab", "alarms", "debugger", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "src/background/background.js", "type": "module" },
   "content_scripts": [

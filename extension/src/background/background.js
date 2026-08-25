@@ -10,10 +10,25 @@
  * so a browser crash mid-probe can never leave a site silently mocked).
  */
 
-// Toolbar icon opens the side panel (PLAN.md §3).
-chrome.sidePanel
-  ?.setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((err) => console.error('[MockLab] sidePanel.setPanelBehavior failed', err));
+/**
+ * Toolbar icon opens the side panel (PLAN.md §3).
+ *
+ * Deliberately NOT optional-chained. chrome.sidePanel is undefined unless the
+ * "sidePanel" permission is present, and `chrome.sidePanel?.setPanelBehavior(...)`
+ * short-circuits to undefined without throwing — the panel silently never opens and
+ * chrome://extensions stays clean. If this namespace is ever missing again, it must
+ * be loud.
+ */
+if (chrome.sidePanel) {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((err) => console.error('[MockLab] sidePanel.setPanelBehavior failed', err));
+} else {
+  console.error(
+    '[MockLab] chrome.sidePanel is unavailable — the "sidePanel" permission is missing ' +
+      'from manifest.json. The toolbar icon will not open the panel.'
+  );
+}
 
 /**
  * PLAN.md §7.1 / §17.5: probe Changes are internal scaffolding and must never

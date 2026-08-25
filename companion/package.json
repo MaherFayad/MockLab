@@ -7,7 +7,7 @@
   "bin": { "mocklab-companion": "src/index.js" },
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

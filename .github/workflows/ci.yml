@@ -13,8 +13,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
       - name: Install workspaces
-        run: npm install
+        run: npm ci
       - name: Test
         run: npm test -ws
       - name: Check the extension manifest parses

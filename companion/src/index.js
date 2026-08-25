@@ -81,6 +81,15 @@ export function handleRequest(req, res) {
     return;
   }
 
+  // The demo's console is the console every milestone's acceptance is judged in, so it
+  // must be clean. Without this, Chrome's automatic favicon request 404s on every load
+  // and every page gets a red console error that has nothing to do with MockLab.
+  if (url === '/favicon.ico') {
+    res.writeHead(204, { 'cache-control': 'max-age=86400' });
+    res.end();
+    return;
+  }
+
   if (url === '/health') {
     send(res, 200, JSON.stringify({ ok: true, demo: `http://${HOST}:${HUB_PORT}/demo/` }), MIME['.json']);
     return;
