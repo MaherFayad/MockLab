@@ -12,12 +12,19 @@
  * M1 adds the capture pipeline below: the Port every page agent connects on, the
  * per-tab CapturedRequest store, the compiled match list push, and the one-shot
  * messages the side panel and (from M6) the MCP tools read sources through.
+ *
+ * M2 adds the Changes engine's wiring: the toolbar badge (badge.js), the Change CRUD
+ * message surface (changesApi.js), and the single storage listener that keeps the
+ * in-page match list, the badge and every open panel in step after any write — whether
+ * it came from this panel, another window's panel, or an MCP agent (PLAN.md §1.6).
  */
 
 import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
 import { normalizeRaw, friendlyName, compileMatchList } from './signatures.js';
-import { originOf, rememberSignature, groupChangesBySignature } from './ruleStore.js';
+import { originOf, rememberSignature, groupChangesBySignature, countActiveChanges } from './ruleStore.js';
 import { parsePath, enumeratePaths, getByPath } from '../shared/jsonpath.js';
+import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
+import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
 
 /**
  * Toolbar icon opens the side panel (PLAN.md §3).
@@ -62,6 +69,17 @@ async function deleteCrashedProbeChanges() {
 chrome.runtime.onStartup?.addListener(deleteCrashedProbeChanges);
 chrome.runtime.onInstalled?.addListener(deleteCrashedProbeChanges);
 deleteCrashedProbeChanges();
+
+/**
+ * The badge is browser state, not worker state, so a cold start must repaint it — after
+ * the probe sweep above, which may itself have emptied a site (PLAN.md §1.5, §17.5).
+ * The bare call matters more than the listeners: it is what runs when an evicted worker
+ * is woken by anything at all.
+ */
+installBadgeListeners();
+chrome.runtime.onStartup?.addListener(refreshAllBadges);
+chrome.runtime.onInstalled?.addListener(refreshAllBadges);
+void refreshAllBadges();
 
 /* ==========================================================================
  * M1 — capture pipeline (PLAN.md §5, §5.2, §10.2).  OWNER: interceptor-engineer.
@@ -140,7 +158,17 @@ async function pushMatchList(tabId) {
   }
 }
 
-/** A Change (or scenario, or reset) landed in storage: re-push to every affected tab. */
+/**
+ * A Change (or scenario, or reset) landed in storage. ONE listener does all three
+ * downstream jobs, so they can never disagree about what the store now says:
+ *   1. re-push the compiled match list to every tab on that origin
+ *   2. recompute that origin's toolbar badge (§1.5)
+ *   3. tell every open panel to re-read (§1.6 — an agent's change shows up in the
+ *      panel within a second, and the other way round)
+ *
+ * It fires for writes made anywhere: this worker, a second window's panel, or the MCP
+ * bridge at M6 — chrome.storage is the shared source of truth for all of them.
+ */
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   const origins = new Set();
@@ -148,10 +176,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (key.startsWith('changes:')) origins.add(key.slice('changes:'.length));
   }
   if (!origins.size) return;
+
   for (const [tabId, state] of tabState) {
     if (origins.has(state.origin)) pushMatchList(tabId);
   }
+  for (const origin of origins) {
+    void refreshBadgesForOrigin(origin);
+    void notifyChanges(origin);
+  }
 });
+
+/** Data-free by design: the panel re-reads, so this event can never go stale. */
+async function notifyChanges(origin) {
+  try {
+    const count = await countActiveChanges(origin);
+    await chrome.runtime.sendMessage({ type: MSG.CHANGES_CHANGED, payload: { origin, count } });
+  } catch {
+    /* no panel open — expected, not an error */
+  }
+}
 
 /* -------------------------------------------------------------------- capture */
 
@@ -329,10 +372,64 @@ async function handleMessage(message) {
   }
 }
 
+/* =========================================================== M2 — Changes engine */
+
+/**
+ * What changesApi.js needs from the worker, and nothing more. Keeping it to four
+ * functions is what lets the Change CRUD be unit-tested without a browser.
+ */
+const changesApi = createChangesApi({
+  resolveTabId,
+
+  /**
+   * The tab's URL comes from Chrome, not from the capture state, so the site bar and
+   * the badge agree even on a tab MockLab has never intercepted (a page with no
+   * requests, or one loaded before the extension was installed).
+   */
+  async tabInfo(tabId) {
+    const state = tabId === null ? null : tabState.get(tabId);
+    let tab = null;
+    if (tabId !== null) {
+      try {
+        tab = await chrome.tabs.get(tabId);
+      } catch {
+        tab = null;
+      }
+    }
+    const url = (tab && tab.url) || (state && state.url) || '';
+    return {
+      url,
+      origin: originOf(url),
+      faviconUrl: (tab && tab.favIconUrl) || '',
+      captured: Boolean(state && state.sources.size)
+    };
+  },
+
+  capturedRecord(tabId, sigId) {
+    const state = tabId === null ? null : tabState.get(tabId);
+    return (state && state.sources.get(sigId)) || null;
+  },
+
+  /** "Apply & refresh page" (§10.1D) and "Reset site" (§1.5) both end here. */
+  async reload(tabId) {
+    if (tabId === null) return false;
+    try {
+      await chrome.tabs.reload(tabId);
+      return true;
+    } catch (err) {
+      console.error('[MockLab] tab reload failed', err);
+      return false;
+    }
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const handled = message && (message.type === MSG.LIST_SOURCES || message.type === MSG.GET_RESPONSE);
-  if (!handled) return false;
-  handleMessage(message)
+  const type = message && message.type;
+  const isSources = type === MSG.LIST_SOURCES || type === MSG.GET_RESPONSE;
+  const isChanges = typeof type === 'string' && CHANGE_MESSAGE_TYPES.has(type);
+  if (!isSources && !isChanges) return false;
+
+  (isChanges ? changesApi.handle(message) : handleMessage(message))
     .then(sendResponse)
     .catch((err) => {
       console.error('[MockLab] message failed', err);

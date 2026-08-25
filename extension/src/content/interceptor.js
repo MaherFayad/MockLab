@@ -388,17 +388,21 @@
      * it parsed. The captured body is always the REAL one — `mocked` records that a
      * Change was applied on the way out, so the panel can show real vs new.
      */
-    function reportBody(info, via, status, contentType, text, mocked, changeDropped) {
+    function reportBody(info, via, status, contentType, text, mocked, changeDropped, truncated, bytesHint) {
       var chars = text ? text.length : 0;
       var parsed = null;
       var isJson = false;
-      if (text !== null && chars <= MAX_BODY_CHARS) {
+      // A truncated read is a PREFIX of the body, so parsing it would either fail or —
+      // worse — succeed on a prefix that happens to be valid JSON and present a partial
+      // body as the whole thing. §4 says such a body is a preview and nothing more.
+      if (!truncated && text !== null && chars <= MAX_BODY_CHARS) {
         try {
           parsed = JSON.parse(text);
           isJson = true;
         } catch (err) { isJson = false; }
       }
-      report(info, via, status, contentType, isJson ? parsed : unparsed(text), chars, mocked, changeDropped);
+      var bytes = typeof bytesHint === 'number' && bytesHint > chars ? bytesHint : chars;
+      report(info, via, status, contentType, isJson ? parsed : unparsed(text), bytes, mocked, changeDropped);
       return isJson;
     }
 
@@ -462,11 +466,12 @@
       } catch (err) { return null; }
     }
 
-    function tooLarge(response) {
+    /** The declared body size, or null when the response does not say. */
+    function declaredLength(response) {
       try {
         var length = Number(response.headers.get('content-length'));
-        return Number.isFinite(length) && length > MAX_BODY_CHARS;
-      } catch (err) { return false; }
+        return Number.isFinite(length) && length >= 0 ? length : null;
+      } catch (err) { return null; }
     }
 
     function finishFetch(info, response, status, contentType, text, changes) {
@@ -503,9 +508,17 @@
      * Holding the reader ourselves makes `reader.cancel()` legal (we hold the lock),
      * its promise ours to handle, and the release real.
      *
-     * Resolves with the decoded text, or null when the deadline or the size cap hit.
+     * Resolves with `{text, truncated}`:
+     *   - the whole body               -> {text: "…", truncated: false}
+     *   - stopped at `maxChars`        -> {text: "<prefix>", truncated: true}
+     *   - deadline, or a read error    -> {text: null,  truncated: false}
+     *
+     * The size cap USED to resolve null as well, which is how a body over §4's 2 MB
+     * limit ended up reported with an empty preview instead of the 512-character one
+     * §4 asks for: the caller could not tell "never arrived" from "arrived, too big".
+     * They are different facts and the panel says different things about them.
      */
-    function readWithDeadline(clone, ms) {
+    function readWithDeadline(clone, ms, maxChars) {
       return new Promise(function (resolve) {
         var settled = false;
         var reader = null;
@@ -514,15 +527,19 @@
         var text = '';
         var bytes = 0;
 
-        function finish(value) {
+        function finish(value, truncated) {
           if (settled) return;
           settled = true;
           if (timer !== null) clearTimeout(timer);
-          resolve(value);
+          resolve({ text: value, truncated: Boolean(truncated) });
         }
 
-        /** Deadline or size cap: let the stream go, and handle cancel()'s promise. */
-        function abandon() {
+        /**
+         * Let the stream go, and handle cancel()'s promise. `keep` is the prefix worth
+         * reporting: a size-capped read still has a real preview to show, a timed-out
+         * one has nothing trustworthy.
+         */
+        function abandon(keep) {
           if (settled) return;
           if (reader) {
             try {
@@ -532,23 +549,25 @@
               }
             } catch (err) { /* already released */ }
           }
-          finish(null);
+          if (keep) finish(text, true);
+          else finish(null, false);
         }
 
         try {
           if (!clone.body || typeof clone.body.getReader !== 'function') {
             // No stream at all (an empty body): there is nothing to read or release.
-            finish('');
+            finish('', false);
             return;
           }
           reader = clone.body.getReader();
           decoder = new TextDecoder();
         } catch (err) {
-          finish(null);
+          finish(null, false);
           return;
         }
 
-        timer = setTimeout(abandon, ms);
+        var cap = typeof maxChars === 'number' && maxChars > 0 ? maxChars : MAX_BODY_CHARS;
+        timer = setTimeout(function () { abandon(false); }, ms);
 
         function pump() {
           reader.read().then(
@@ -556,19 +575,20 @@
               if (settled) return;
               if (chunk.done) {
                 try { text += decoder.decode(); } catch (err) { /* trailing bytes */ }
-                finish(text);
+                finish(text, false);
                 return;
               }
               bytes += chunk.value ? chunk.value.length : 0;
               try {
                 text += decoder.decode(chunk.value, { stream: true });
               } catch (err) { /* undecodable chunk: keep what we have */ }
-              // Bounded memory as well as bounded time: an endless body is released
-              // as soon as it passes the size a capture could ever use (§4).
-              if (bytes > MAX_BODY_CHARS) { abandon(); return; }
+              // Bounded memory as well as bounded time: an endless body is released as
+              // soon as it passes the size this read could ever use — and the prefix
+              // already decoded is kept, because that is the §4 preview.
+              if (bytes > cap || text.length > cap) { abandon(true); return; }
               pump();
             },
-            function () { finish(null); }
+            function () { finish(null, false); }
           );
         }
         pump();
@@ -580,7 +600,7 @@
      * page IMMEDIATELY — its promise resolves exactly when it would without MockLab —
      * and the clone is read afterwards purely so the Sources list has something in it.
      */
-    function captureInBackground(info, response, status, contentType) {
+    function captureInBackground(info, response, status, contentType, cap, bytesHint, changeDropped) {
       var clone;
       try {
         clone = response.clone();
@@ -591,9 +611,12 @@
       var deadline = String(contentType || '').toLowerCase().indexOf('json') !== -1
         ? CAPTURE_READ_TIMEOUT_MS
         : CAPTURE_READ_TIMEOUT_OTHER_MS;
-      readWithDeadline(clone, deadline).then(function (text) {
+      readWithDeadline(clone, deadline, cap).then(function (result) {
         try {
-          reportBody(info, 'fetch', status, contentType, text, false);
+          reportBody(
+            info, 'fetch', status, contentType,
+            result.text, false, Boolean(changeDropped), result.truncated, bytesHint
+          );
         } catch (err) { /* capture is best-effort */ }
       });
     }
@@ -604,11 +627,14 @@
       try { status = response.status; } catch (err) { /* opaque */ }
       try { contentType = response.headers.get('content-type') || ''; } catch (err) { /* opaque */ }
 
-      // §5.1.4 — opaque, binary, streamed or oversized: metadata only, never read,
-      // never cloned, never modified.
+      // §5.1.4 — opaque, binary or streamed: metadata only, never read, never cloned,
+      // never modified. (An oversized body is handled below: it CAN be read far enough
+      // for a preview, which a live stream cannot.)
       var opaque = false;
       try { opaque = response.type === 'opaque' || response.type === 'opaqueredirect' || response.bodyUsed; } catch (err) { /* ignore */ }
-      if (opaque || !isTextual(contentType) || isStreamingType(contentType) || tooLarge(response)) {
+      if (opaque || !isTextual(contentType) || isStreamingType(contentType)) {
+        // Never read, never cloned: there is no preview to be had, and pretending
+        // otherwise would mean holding a live stream open to get one.
         report(info, 'fetch', status, contentType, unparsed(''), 0, false);
         return response;
       }
@@ -616,6 +642,22 @@
       // Matching needs only the method, the URL and the REQUEST body — never the
       // response body — so the decision to buffer at all is made before buffering.
       var changes = findChanges(info.method, info.url, requestFacts(info).gql);
+      var declared = declaredLength(response);
+      var oversized = declared !== null && declared > MAX_BODY_CHARS;
+
+      // §4: over 2 MB the body is stored as `{__unparsed}` with a preview. So it is
+      // still read — just far enough for the 512 characters §4 asks for, and no
+      // further. Reporting an empty preview here used to leave the panel showing an
+      // apparently blank source with no way to tell what it was.
+      if (oversized) {
+        // A Change that matched a body this large is DROPPED, not applied. Deviation 16's
+        // flag rides along on the one capture, rather than arriving as a second capture
+        // that the preview would then overwrite.
+        var dropped = Boolean(changes && changes.length);
+        captureInBackground(info, response, status, contentType, PREVIEW_CHARS, declared, dropped);
+        return response;
+      }
+
       if (!changes || !changes.length) {
         captureInBackground(info, response, status, contentType);
         return response;
@@ -629,16 +671,22 @@
         return response;
       }
 
-      return readWithDeadline(clone, MODIFY_READ_TIMEOUT_MS).then(function (text) {
+      return readWithDeadline(clone, MODIFY_READ_TIMEOUT_MS, MAX_BODY_CHARS).then(function (result) {
         try {
-          if (text === null) {
+          if (result.text === null) {
             // Never arrived in time: hand back the untouched original rather than hang.
             // A Change DID match, so the capture is flagged — the panel must be able to
             // say the edit did not apply instead of leaving the user guessing.
             report(info, 'fetch', status, contentType, unparsed(''), 0, false, true);
             return response;
           }
-          return finishFetch(info, response, status, contentType, text, changes);
+          if (result.truncated) {
+            // No content-length, but it went past 2 MB while we read it. Same honest
+            // outcome as the declared-oversize path: preview only, edit not applied.
+            reportBody(info, 'fetch', status, contentType, result.text, false, true, true);
+            return response;
+          }
+          return finishFetch(info, response, status, contentType, result.text, changes);
         } catch (err) { return response; }
       });
     }
@@ -729,11 +777,17 @@
         text = text == null ? '' : String(text);
 
         var changes = findChanges(state.method, state.url, requestFacts(state).gql);
-        if (changes && changes.length && text.length <= MAX_BODY_CHARS) {
+        var oversized = text.length > MAX_BODY_CHARS;
+        if (changes && changes.length && !oversized) {
           state.mockText = applyChanges(text, changes);
         }
 
-        reportBody(state, 'xhr', status, contentType, text, state.mockText != null);
+        // Over §4's 2 MB the body is a preview only, so a matching Change cannot be
+        // applied — Deviation 16's flag says so rather than letting it look applied.
+        reportBody(
+          state, 'xhr', status, contentType, text,
+          state.mockText != null, Boolean(changes && changes.length && oversized)
+        );
       } catch (err) { /* a failed capture must not disturb the request */ }
     }
 

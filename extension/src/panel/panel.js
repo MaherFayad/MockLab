@@ -1,12 +1,394 @@
 /**
  * Side panel UI logic (PLAN.md §10). No framework, no build step.
  *
- * OWNER: panel-designer. Filled in at milestone M2.
+ * OWNER: panel-designer.
  *
- * Rule §17.6: every user-visible string comes from strings.js.
- * Rule §17.8: every message uses a constant from messages.js.
+ * Rule §17.6: every user-visible string comes from strings.js — including the ones in
+ *   panel.html, which are `data-s` keys filled in by fillStatic() below.
+ * Rule §17.7: every colour comes from panel.css.
+ * Rule §17.8: every message uses a constant from ../background/messages.js.
  */
 import { S } from './strings.js';
+import { MSG } from '../background/messages.js';
+import { el, clear, ICON, withTip } from './dom.js';
+import { renderSources } from './sources.js';
 
-const boot = document.getElementById('boot');
-if (boot) boot.textContent = S.boot.loading;
+const TOAST_MS = 3200;
+
+const state = {
+  tab: 'pick',
+  tabId: null,
+  origin: '',
+  hostname: '',
+  faviconUrl: '',
+  captured: false,
+  sources: [],
+  changes: [],
+  changeCount: 0,
+  settings: { advancedMode: false, paranoid: false },
+  query: '',
+  open: null,
+  body: undefined,
+  expanded: new Set(),
+  editing: null,
+  confirm: null, // 'site' | 'all'
+  restoreFocus: false
+};
+
+const dom = {
+  tabs: document.getElementById('tabs'),
+  sitebar: document.getElementById('sitebar'),
+  pickCta: document.getElementById('pick-cta'),
+  sourceList: document.getElementById('source-list'),
+  scenarioActions: document.getElementById('scenario-actions'),
+  settingsRows: document.getElementById('settings-rows'),
+  settingsCompanion: document.getElementById('settings-companion'),
+  settingsDanger: document.getElementById('settings-danger'),
+  toastHost: document.getElementById('toast-host'),
+  search: document.getElementById('source-search')
+};
+
+/* ────────────────────────────────────────────────────────── strings & messaging */
+
+/** Resolve "sources.fields" against strings.js. */
+function lookup(key) {
+  return key.split('.').reduce((node, part) => (node == null ? undefined : node[part]), S);
+}
+
+/** Fill every data-s / data-s-placeholder in panel.html. §17.6 covers the markup too. */
+function fillStatic(root = document) {
+  for (const node of root.querySelectorAll('[data-s]')) {
+    const value = lookup(node.dataset.s);
+    if (typeof value === 'string') node.textContent = value;
+  }
+  for (const node of root.querySelectorAll('[data-s-placeholder]')) {
+    const value = lookup(node.dataset.sPlaceholder);
+    if (typeof value === 'string') node.placeholder = value;
+  }
+}
+
+async function send(type, payload = {}) {
+  try {
+    const res = await chrome.runtime.sendMessage({ type, payload });
+    return res || { ok: false, reason: 'no-answer' };
+  } catch (err) {
+    return { ok: false, reason: String(err && err.message) };
+  }
+}
+
+function toast(text, danger = false) {
+  clear(dom.toastHost);
+  const node = el('div', { class: 'toast' + (danger ? ' toast--danger' : ''), role: 'status', text });
+  dom.toastHost.append(node);
+  setTimeout(() => node.remove(), TOAST_MS);
+}
+
+/* ──────────────────────────────────────────────────────────────────── the shell */
+
+function setTab(name) {
+  state.tab = name;
+  const order = ['pick', 'sources', 'scenarios', 'settings'];
+  dom.tabs.style.setProperty('--seg', String(Math.max(0, order.indexOf(name))));
+  for (const tab of order) {
+    document.getElementById(`panel-${tab}`).classList.toggle('hidden', tab !== name);
+  }
+  render();
+}
+
+function wireTabs() {
+  for (const opt of dom.tabs.querySelectorAll('.segmented__opt')) {
+    const label = opt.querySelector('label');
+    const icon = ICON[opt.dataset.icon];
+    if (icon) label.prepend(icon());
+    const input = opt.querySelector('input');
+    input.addEventListener('change', () => input.checked && setTab(input.value));
+  }
+}
+
+/* ─────────────────────────────────────────────────── site bar — §10, §1.5, §10.6 */
+
+function renderSiteBar() {
+  clear(dom.sitebar);
+  if (state.confirm === 'site') {
+    dom.sitebar.append(
+      el('span', { class: 'sitebar__host help', text: S.site.resetConfirm }),
+      ghost(S.editor.cancel, () => {
+        state.confirm = null;
+        render();
+      }),
+      danger(S.site.reset, resetSite)
+    );
+    return;
+  }
+
+  const icon = el('span', { class: 'sitebar__icon' });
+  if (state.faviconUrl) {
+    const img = el('img', { src: state.faviconUrl, alt: '', width: 16, height: 16 });
+    img.addEventListener('error', () => img.remove());
+    icon.append(img);
+  } else if (state.hostname) {
+    icon.textContent = state.hostname.replace(/^www\./, '').charAt(0);
+  }
+  dom.sitebar.append(icon);
+  dom.sitebar.append(
+    el('span', { class: 'sitebar__host truncate', text: state.hostname || S.site.noPage })
+  );
+  if (state.changeCount > 0) {
+    dom.sitebar.append(el('span', { class: 'chip chip--changed sitebar__count', text: S.site.changes(state.changeCount) }));
+    dom.sitebar.append(
+      danger(S.site.reset, () => {
+        state.confirm = 'site';
+        render();
+      })
+    );
+  }
+}
+
+function ghost(text, onClick) {
+  return el('button', { type: 'button', class: 'btn btn--ghost', text, onClick });
+}
+
+function danger(text, onClick) {
+  return el('button', { type: 'button', class: 'btn btn--danger', text, onClick });
+}
+
+async function resetSite() {
+  state.confirm = null;
+  const res = await send(MSG.RESET_SITE, { tabId: state.tabId });
+  if (!res.ok) {
+    toast(S.errors.pageBroke, true);
+    return;
+  }
+  state.open = null;
+  state.editing = null;
+  await refresh();
+}
+
+/* ─────────────────────────────────────────────────────── tabs: pick & scenarios */
+
+/**
+ * §10.1 State A. The picker itself is §16 M3 work, so the button is present — it is the
+ * hero of this screen — but disabled, with the reason in plain sight rather than in a
+ * tooltip a keyboard user could never reach.
+ */
+function renderPick() {
+  clear(dom.pickCta);
+  const cta = el('button', { type: 'button', class: 'btn btn--primary', disabled: true }, ICON.pick(), el('span', { text: S.pick.cta }));
+  dom.pickCta.append(cta, el('p', { class: 'help', text: S.soon }));
+}
+
+/** §10.4. CRUD is §16 M5; the idle copy is real today. */
+function renderScenarios() {
+  clear(dom.scenarioActions);
+  const make = el('button', { type: 'button', class: 'btn btn--primary', disabled: true, text: S.scenarios.new });
+  const bring = el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.scenarios.import });
+  dom.scenarioActions.append(make, bring, el('p', { class: 'help', text: S.soon }));
+}
+
+/* ───────────────────────────────────────────────────────────── settings — §10.5 */
+
+function checkRow({ label, help, checked, disabled, onChange }) {
+  const input = el('input', { type: 'checkbox', disabled: Boolean(disabled) });
+  input.checked = Boolean(checked);
+  if (onChange) input.addEventListener('change', () => onChange(input.checked));
+  return el(
+    'label',
+    { class: 'check-row' },
+    input,
+    el('span', { class: 'check-box' }),
+    el(
+      'span',
+      { class: 'check-row__text' },
+      el('span', { class: 'check-row__label', text: label }),
+      help && el('span', { class: 'check-row__help', text: help })
+    )
+  );
+}
+
+function renderSettings() {
+  clear(dom.settingsRows);
+  dom.settingsRows.append(
+    checkRow({
+      label: S.settings.advanced,
+      help: S.settings.advancedHelp,
+      checked: state.settings.advancedMode,
+      onChange: (value) => saveSetting({ advancedMode: value })
+    }),
+    checkRow({
+      label: S.settings.paranoid,
+      help: S.settings.paranoidHelp,
+      checked: state.settings.paranoid,
+      onChange: (value) => saveSetting({ paranoid: value })
+    }),
+    // Deep mode attaches the debugger (§8) and lands at §16 M7.
+    withTip(checkRow({ label: S.deep.label, help: S.deep.help, checked: false, disabled: true }), [S.soon], { up: true })
+  );
+
+  clear(dom.settingsCompanion);
+  dom.settingsCompanion.append(
+    el(
+      'div',
+      { class: 'check-row' },
+      el('span', { class: 'dot' }),
+      el('span', { class: 'check-row__text' }, el('span', { class: 'check-row__label', text: S.companion.disconnected }))
+    ),
+    withTip(el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.companion.setup }), [S.soon], { up: true })
+  );
+
+  clear(dom.settingsDanger);
+  dom.settingsDanger.append(el('p', { class: 'section-title', text: S.settings.dangerTitle }));
+  const site = el('button', { type: 'button', class: 'btn btn--secondary', text: S.settings.resetSite, disabled: state.changeCount === 0 });
+  site.addEventListener('click', () => {
+    state.confirm = 'site';
+    setTab('sources');
+  });
+  dom.settingsDanger.append(site);
+
+  if (state.confirm === 'all') {
+    dom.settingsDanger.append(
+      el('p', { class: 'help', text: S.settings.resetAllConfirm }),
+      el(
+        'div',
+        { class: 'editor__actions' },
+        el('button', { type: 'button', class: 'btn btn--secondary', text: S.settings.resetAll, onClick: resetEverything }),
+        ghost(S.editor.cancel, () => {
+          state.confirm = null;
+          render();
+        })
+      )
+    );
+  } else {
+    const all = el('button', { type: 'button', class: 'btn btn--secondary', text: S.settings.resetAll });
+    all.addEventListener('click', () => {
+      state.confirm = 'all';
+      render();
+    });
+    dom.settingsDanger.append(all);
+  }
+}
+
+async function saveSetting(patch) {
+  const res = await send(MSG.UPDATE_SETTINGS, { patch });
+  if (res.ok && res.settings) state.settings = res.settings;
+  else toast(S.errors.pageBroke, true);
+  render();
+}
+
+/**
+ * "Reset everything" (§10.5 danger zone) spans every origin, and there is no message
+ * type for it: RESET_SITE is scoped to one site by design. The panel therefore clears
+ * the shared store itself — legal, because chrome.storage IS the shared source of truth
+ * (§1.6) and the service worker's storage.onChanged listener re-pushes every affected
+ * tab's match list, recomputes the badges and notifies every open panel exactly as it
+ * does for a Change made anywhere else. Requested for M6 so an agent can do it too.
+ */
+async function resetEverything() {
+  state.confirm = null;
+  try {
+    const all = await chrome.storage.local.get(null);
+    const doomed = Object.keys(all).filter(
+      (key) => key.startsWith('changes:') || key.startsWith('presets:') || key.startsWith('bindings:')
+    );
+    if (doomed.length) await chrome.storage.local.remove(doomed);
+  } catch {
+    toast(S.errors.pageBroke, true);
+    return;
+  }
+  state.open = null;
+  state.editing = null;
+  await send(MSG.REFRESH_TAB, { tabId: state.tabId });
+  await refresh();
+}
+
+/* ─────────────────────────────────────────────────────────────────── rendering */
+
+/**
+ * A full re-render of the active tab. Cheap at this size, and it removes a whole class
+ * of bug (a stale row surviving a store update). The one thing it would otherwise cost
+ * is the caret in whatever the user is typing in, so that is carried across by hand.
+ */
+function render() {
+  const active = document.activeElement;
+  const focusId = active && active.id ? active.id : null;
+  const caret = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+  state.restoreFocus = Boolean(focusId);
+
+  renderSiteBar();
+  if (state.tab === 'pick') renderPick();
+  if (state.tab === 'sources') renderSources(dom.sourceList, ctx);
+  if (state.tab === 'scenarios') renderScenarios();
+  if (state.tab === 'settings') renderSettings();
+
+  if (focusId) {
+    const next = document.getElementById(focusId);
+    if (next && next !== document.activeElement) {
+      next.focus();
+      if (caret !== null && typeof next.setSelectionRange === 'function') {
+        try {
+          next.setSelectionRange(caret, caret);
+        } catch {
+          /* an input type that has no selection — nothing to restore */
+        }
+      }
+    }
+  }
+  state.restoreFocus = false;
+}
+
+const ctx = { state, send, refresh, toast, rerender: render };
+
+/* ─────────────────────────────────────────────────────────────────── data flow */
+
+async function refresh() {
+  const site = await send(MSG.GET_SITE_STATE, {});
+  if (site.ok) {
+    if (site.origin !== state.origin) {
+      state.open = null;
+      state.editing = null;
+      state.body = undefined;
+    }
+    state.tabId = site.tabId;
+    state.origin = site.origin;
+    state.hostname = site.hostname || '';
+    state.faviconUrl = site.faviconUrl || '';
+    state.captured = Boolean(site.captured);
+    state.changes = (site.changes || []).filter((change) => !change.probe);
+    state.changeCount = site.changeCount || 0;
+  }
+  const list = await send(MSG.LIST_SOURCES, { tabId: state.tabId });
+  if (list.ok) state.sources = list.sources || [];
+  render();
+}
+
+async function loadSettings() {
+  const res = await send(MSG.GET_SETTINGS, {});
+  if (res.ok && res.settings) state.settings = res.settings;
+}
+
+function wireEvents() {
+  chrome.runtime.onMessage.addListener((message) => {
+    const type = message && message.type;
+    if (type === MSG.SOURCES_CHANGED || type === MSG.CHANGES_CHANGED) void refresh();
+    return false;
+  });
+  chrome.tabs.onActivated.addListener(() => void refresh());
+  chrome.tabs.onUpdated.addListener((tabId, info) => {
+    if (tabId === state.tabId && (info.status === 'complete' || info.url)) void refresh();
+  });
+  dom.search.addEventListener('input', () => {
+    state.query = dom.search.value;
+    render();
+  });
+}
+
+async function boot() {
+  fillStatic();
+  dom.tabs.style.setProperty('--seg', '0');
+  document.getElementById('search-icon').append(ICON.search());
+  wireTabs();
+  wireEvents();
+  await loadSettings();
+  await refresh();
+}
+
+void boot();

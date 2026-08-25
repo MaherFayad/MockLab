@@ -1,13 +1,85 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MockLab</title>
   <link rel="stylesheet" href="panel.css">
 </head>
+<!--
+  Side panel shell (PLAN.md §10). OWNER: panel-designer.
+
+  Not one user-visible word is written here: every `data-s` attribute names a key in
+  strings.js and panel.js fills the text at boot, so §17.6 holds for the markup too and
+  translating MockLab still means translating one file. Icons are injected by dom.js.
+-->
 <body>
-  <p id="boot"></p>
+  <div class="app">
+    <header class="app__head">
+      <div class="segmented" id="tabs" role="tablist" aria-label="MockLab">
+        <div class="segmented__opt tip" data-icon="pick">
+          <input type="radio" name="mocklab-tab" id="tab-pick" value="pick" role="tab" aria-controls="panel-pick" checked>
+          <label for="tab-pick"><span class="sr-only" data-s="tab.pick"></span></label>
+          <span class="tip__bubble" role="tooltip" data-s="tab.pick"></span>
+        </div>
+        <div class="segmented__opt tip" data-icon="sources">
+          <input type="radio" name="mocklab-tab" id="tab-sources" value="sources" role="tab" aria-controls="panel-sources">
+          <label for="tab-sources"><span class="sr-only" data-s="tab.sources"></span></label>
+          <span class="tip__bubble" role="tooltip" data-s="tab.sources"></span>
+        </div>
+        <div class="segmented__opt tip" data-icon="scenarios">
+          <input type="radio" name="mocklab-tab" id="tab-scenarios" value="scenarios" role="tab" aria-controls="panel-scenarios">
+          <label for="tab-scenarios"><span class="sr-only" data-s="tab.scenarios"></span></label>
+          <span class="tip__bubble" role="tooltip" data-s="tab.scenarios"></span>
+        </div>
+        <div class="segmented__opt tip" data-icon="settings">
+          <input type="radio" name="mocklab-tab" id="tab-settings" value="settings" role="tab" aria-controls="panel-settings">
+          <label for="tab-settings"><span class="sr-only" data-s="tab.settings"></span></label>
+          <span class="tip__bubble" role="tooltip" data-s="tab.settings"></span>
+        </div>
+      </div>
+      <div class="sitebar" id="sitebar"></div>
+    </header>
+
+    <main class="app__body">
+      <!-- §10.1 State A — the calm idle screen. States B–D land at M3/M4. -->
+      <section class="panel" id="panel-pick" role="tabpanel" aria-labelledby="tab-pick">
+        <h2 data-s="pick.title"></h2>
+        <p class="help" data-s="pick.body"></p>
+        <div id="pick-cta"></div>
+        <div id="pick-recent"></div>
+      </section>
+
+      <!-- §10.2 — the M2 hero. -->
+      <section class="panel hidden" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources">
+        <h2 data-s="sources.title"></h2>
+        <label class="search">
+          <span class="sr-only" data-s="sources.search"></span>
+          <span id="search-icon"></span>
+          <input type="search" id="source-search" data-s-placeholder="sources.search" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="stack" id="source-list"></div>
+      </section>
+
+      <!-- §10.4 — CRUD lands at M5; the idle state is real copy today. -->
+      <section class="panel hidden" id="panel-scenarios" role="tabpanel" aria-labelledby="tab-scenarios">
+        <h2 data-s="scenarios.title"></h2>
+        <div class="stack" id="scenario-actions"></div>
+        <p class="empty" data-s="scenarios.empty"></p>
+      </section>
+
+      <!-- §10.5 -->
+      <section class="panel hidden" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
+        <h2 data-s="settings.title"></h2>
+        <div class="stack" id="settings-rows"></div>
+        <p class="section-title" data-s="settings.companionTitle"></p>
+        <div id="settings-companion"></div>
+        <div class="danger-zone" id="settings-danger"></div>
+        <p class="help" data-s="settings.limitations"></p>
+      </section>
+    </main>
+  </div>
+  <div id="toast-host" aria-live="polite"></div>
   <script type="module" src="panel.js"></script>
 </body>
 </html>

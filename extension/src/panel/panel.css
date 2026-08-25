@@ -1,40 +1,344 @@
 /* MockLab side panel — design system per PLAN.md §9.
  *
- * OWNER: panel-designer. The §9.1 token block is copied VERBATIM at milestone M2,
- * along with the DGA component recipes in §9.2.
+ * OWNER: panel-designer.
  *
  * Rule §17.7: no colour hex may appear outside a :root block in this file.
+ * The §9.1 token block below is VERBATIM — do not edit it, extend it in the
+ * "extension tokens" block that follows.
  */
+
+/* ─────────────────────────────────────────── PLAN.md §9.1 — verbatim, do not edit */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code&display=swap');
 
 :root {
   --transition-rule: 250ms cubic-bezier(0.4, 0, 0.2, 1);
-  --gap-l: 1.25rem; --gap-m: 0.875rem; --gap-s: 0.5rem;
-  --font-size-m: 0.875rem; --font-size-s: 0.75rem;
-  --radius-m: 0.625rem;
+  --transition-spring: 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  --bg: #FFFFFF;
-  --text: #1E1F24;
-  --text-secondary: #6B6F76;
+  --gap-l: 1.25rem;  --gap-m: 0.875rem;  --gap-s: 0.5rem;  --gap-xs: 0.25rem;
+  --font-size-m: 0.875rem;  --font-size-s: 0.75rem;  --font-size-xs: 0.625rem;
+  --radius-m: 0.625rem;  --radius-s: 0.375rem;
+
+  /* Light theme (default) — standalone equivalents of the Figma theme vars */
+  --bg: #FFFFFF;           --bg-secondary: #F5F6F8;   --bg-hover: #F0F2F5;
+  --bg-tertiary: #E9EBEF;  --bg-inverse: #1E1F24;
+  --text: #1E1F24;         --text-secondary: #6B6F76; --text-tertiary: #9AA0A6;
+  --text-oninverse: #FFFFFF;
+  --border: #E3E5E8;       --border-strong: #C9CDD3;
+  --icon: #6B6F76;         --icon-secondary: #9AA0A6; --icon-tertiary: #C9CDD3;
+
+  --accent: #0066FF;       --accent-hover: #0052CC;
+  --danger: #D93025;       --bg-danger: #FDECEA;      --border-danger: #F5B7B1;
+  --success: #1E8E3E;      --bg-success: #E6F4EA;
+  --warning: #B26A00;      --bg-warning: #FFF4E0;
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+  --shadow-button: 0 2px 8px rgba(0,102,255,0.25);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1E1F24;
-    --text: #F0F1F3;
-    --text-secondary: #A6AAB1;
+    --bg: #1E1F24;           --bg-secondary: #26272C;   --bg-hover: #2C2D33;
+    --bg-tertiary: #33343A;  --bg-inverse: #F5F6F8;
+    --text: #F0F1F3;         --text-secondary: #A6AAB1; --text-tertiary: #7A7E86;
+    --text-oninverse: #1E1F24;
+    --border: #34363C;       --border-strong: #4A4D55;
+    --icon: #A6AAB1;         --icon-secondary: #7A7E86; --icon-tertiary: #4A4D55;
+
+    --accent: #4A90FF;       --accent-hover: #5EA0FF;
+    --danger: #F28B82;       --bg-danger: #3A2523;      --border-danger: #6B3A35;
+    --success: #81C995;      --bg-success: #22372A;
+    --warning: #FDD663;      --bg-warning: #3A3323;
+
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.5);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.6);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.8);
+    --shadow-button: 0 2px 12px rgba(74,144,255,0.5);
   }
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, system-ui, sans-serif; }
-
-body {
-  min-inline-size: 320px;
-  padding: var(--gap-l);
-  background: var(--bg);
-  color: var(--text);
-  font-size: var(--font-size-m);
+/* ───────────────────────────────────── extension tokens (additive, never overriding)
+ *
+ * §9.2 styles the four status chips from the semantic colour pairs above, but those
+ * pairs were drawn for icons and 14px body text. At the chip's 10px / 600 they fall
+ * under WCAG 2.2 AA 1.4.3 (measured: verified 3.70, possible 3.89, stale 2.21,
+ * changed 4.08 in light; stale 3.05, changed 4.43 in dark). §16 M7 requires AA on all
+ * four chips in both themes, so each chip gets a text token tuned to the SAME hue and
+ * background, at >= 4.6:1. Nothing in the §9.1 block is touched.
+ */
+:root {
+  --on-accent: #FFFFFF;              /* button label on --accent, both themes */
+  --chip-verified-text: #1A7B36;     /* 4.71 on --bg-success */
+  --chip-possible-text: #A05F00;     /* 4.66 on --bg-warning */
+  --chip-stale-text: #636970;        /* 4.65 on --bg-tertiary */
+  --chip-changed-text: #005EEB;      /* 4.66 on --chip-changed-bg */
+  --chip-changed-bg: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  --json-string: var(--chip-verified-text);
+  --json-number: var(--chip-changed-text);
+  --json-boolean: var(--chip-possible-text);
+  --scrollbar-size: 10px;
+  --dir: 1;
 }
 
-*:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chip-verified-text: #81C995;   /* 6.51 on --bg-success */
+    --chip-possible-text: #FDD663;   /* 8.93 on --bg-warning */
+    --chip-stale-text: #9B9EA4;      /* 4.62 on --bg-tertiary */
+    --chip-changed-text: #5295FF;    /* 4.68 on --chip-changed-bg */
+  }
+}
 
-#boot { color: var(--text-secondary); font-size: var(--font-size-s); }
+[dir='rtl'] { --dir: -1; }
+
+/* ───────────────────────────────────────────────────────────────────────── base */
+
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif; }
+
+body {
+  min-inline-size: 320px; background: var(--bg); color: var(--text);
+  font-size: var(--font-size-m); line-height: 1.45; -webkit-font-smoothing: antialiased;
+}
+
+*:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-s); }
+:focus:not(:focus-visible) { outline: none; }
+
+::-webkit-scrollbar { inline-size: var(--scrollbar-size); block-size: var(--scrollbar-size); }
+::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: var(--radius-s); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-s); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+::-webkit-scrollbar-corner { background: var(--bg-secondary); }
+
+.mono { font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--font-size-s); }
+.sr-only { position: absolute; inline-size: 1px; block-size: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hidden { display: none !important; }
+svg { flex: none; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes tabSwitch { 0% { transform: scale(1) rotate(0); } 50% { transform: scale(1.15) rotate(8deg); } 100% { transform: scale(1) rotate(0); } }
+@keyframes checkboxPop { 0% { transform: scale(1); } 50% { transform: scale(1.2); } 100% { transform: scale(1); } }
+@keyframes checkmarkDraw { from { border-block-end-width: 0; border-inline-end-width: 0; } to { border-block-end-width: 2px; border-inline-end-width: 2px; } }
+@keyframes spin { from { transform: rotate(0) scaleX(-1); } to { transform: rotate(360deg) scaleX(-1); } }
+@keyframes chipPop { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+@keyframes toastIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+/* ──────────────────────────────────────────────────────────────────────── shell */
+
+.app { display: flex; flex-direction: column; block-size: 100vh; }
+.app__head { position: sticky; inset-block-start: 0; z-index: 5; padding: var(--gap-m) var(--gap-m) 0; background: var(--bg); }
+.app__body { flex: 1; overflow-y: auto; padding: var(--gap-m); }
+.panel { animation: fadeIn 300ms cubic-bezier(0.4, 0, 0.2, 1) both; display: flex; flex-direction: column; gap: var(--gap-m); }
+
+.section-title { font-size: var(--font-size-s); font-weight: 600; color: var(--text-secondary); letter-spacing: 0.02em; }
+.help { font-size: var(--font-size-s); color: var(--text-secondary); }
+.empty { padding: var(--gap-l) var(--gap-m); border: 1.5px dashed var(--border); border-radius: var(--radius-m); text-align: center; color: var(--text-secondary); font-size: var(--font-size-s); }
+h2 { font-size: 1rem; font-weight: 600; }
+
+/* ──────────────────────────────────────── segmented control — §9.2 (DGA "segmented") */
+
+.segmented { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px; background: var(--bg-secondary); border: 1.5px solid var(--border); border-radius: var(--radius-m); }
+.segmented::before {
+  content: ''; position: absolute; inset-block: 4px; inset-inline-start: 4px;
+  inline-size: calc((100% - 8px) / 4);   /* §9.2's calc(25% - 4px), landed exactly on a cell */
+  background: var(--bg); border-radius: calc(var(--radius-m) - 3px); box-shadow: var(--shadow-sm);
+  transform: translateX(calc(var(--seg, 0) * 100% * var(--dir)));
+  transition: transform var(--transition-spring);
+}
+.segmented__opt { position: relative; }
+.segmented__opt input { position: absolute; opacity: 0; inline-size: 100%; block-size: 100%; margin: 0; cursor: pointer; }
+.segmented__opt label { position: relative; display: flex; align-items: center; justify-content: center; block-size: 2.25rem; color: var(--icon); opacity: 0.5; transition: opacity var(--transition-rule), color var(--transition-rule); cursor: pointer; }
+.segmented__opt:hover label { opacity: 0.75; }
+.segmented__opt input:checked ~ label { opacity: 1; color: var(--accent); }
+.segmented__opt input:checked ~ label svg { animation: tabSwitch var(--transition-spring); }
+.segmented__opt input:focus-visible ~ label { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--radius-s); }
+
+/* ─────────────────────────────────────────────────── tooltips — §9.2 (DGA tooltip) */
+
+.tip { position: relative; }
+.tip__bubble {
+  position: absolute; inset-inline-start: 50%; inset-block-start: 100%; z-index: 20;
+  margin-inline-start: -0.5px; padding: 0.375rem 0.5rem; inline-size: max-content; max-inline-size: 14rem;
+  background: var(--bg-inverse); color: var(--text-oninverse); border-radius: var(--radius-s); box-shadow: var(--shadow-lg);
+  font-size: var(--font-size-s); font-weight: 500; line-height: 1.35; text-align: center;
+  opacity: 0; pointer-events: none; transform: translate(calc(-50% * var(--dir)), 90%);
+  transition: opacity var(--transition-rule), transform var(--transition-rule);
+}
+.tip__bubble span { display: block; opacity: 0.65; font-weight: 400; }
+.tip:hover .tip__bubble, .tip:focus-within .tip__bubble { opacity: 1; transform: translate(calc(-50% * var(--dir)), 100%); }
+.tip--up .tip__bubble { inset-block-start: auto; inset-block-end: 100%; transform: translate(calc(-50% * var(--dir)), -90%); }
+.tip--up:hover .tip__bubble, .tip--up:focus-within .tip__bubble { transform: translate(calc(-50% * var(--dir)), -100%); }
+
+/* ──────────────────────────────────────────────────────────── site bar — §10 shell */
+
+.sitebar { display: flex; align-items: center; gap: var(--gap-s); padding: var(--gap-s) 0 var(--gap-m); border-block-end: 1px solid var(--border); margin-block-start: var(--gap-s); }
+.sitebar__icon { flex: none; display: grid; place-items: center; inline-size: 1.25rem; block-size: 1.25rem; border-radius: var(--radius-s); background: var(--bg-tertiary); color: var(--text-secondary); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; }
+.sitebar__host { flex: 1; min-inline-size: 0; font-size: var(--font-size-s); font-weight: 500; color: var(--text-secondary); }
+.sitebar__count { flex: none; }
+
+/* ────────────────────────────────────────────────────── status chips — §9.2 / §10.6 */
+
+.chip { display: inline-flex; align-items: center; gap: var(--gap-xs); border-radius: 999px; padding: 2px 8px; font-size: var(--font-size-xs); font-weight: 600; border: 1px solid transparent; white-space: nowrap; animation: chipPop var(--transition-spring) both; }
+.chip--verified { color: var(--chip-verified-text); background: var(--bg-success); }
+.chip--candidate { color: var(--chip-possible-text); background: var(--bg-warning); border: 1px dashed var(--warning); }
+.chip--stale { color: var(--chip-stale-text); background: var(--bg-tertiary); }
+.chip--changed { color: var(--chip-changed-text); background: var(--chip-changed-bg); }
+.chip--neutral { color: var(--text-secondary); background: var(--bg-secondary); border-color: var(--border); }
+
+/* ──────────────────────────────────────────────────────────── buttons — §9.2 (DGA) */
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-s); border: none; background: none; font-size: var(--font-size-m); font-weight: 600; cursor: pointer; border-radius: var(--radius-m); transition: all var(--transition-rule); }
+.btn:disabled { cursor: not-allowed; }
+
+.btn--primary { position: relative; overflow: hidden; inline-size: 100%; padding: 0.6875rem 1rem; background: var(--accent); color: var(--on-accent); box-shadow: var(--shadow-button); }
+.btn--primary::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, color-mix(in srgb, var(--on-accent) 22%, transparent), transparent); opacity: 0; transition: opacity var(--transition-rule); }
+.btn--primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); box-shadow: var(--shadow-md), var(--shadow-button); }
+.btn--primary:hover:not(:disabled)::before { opacity: 1; }
+.btn--primary:active:not(:disabled) { transform: scale(0.98); }
+.btn--primary:disabled { box-shadow: none; opacity: 0.7; filter: saturate(0.7) brightness(0.85); }
+
+.btn--secondary { padding: 0.5rem 0.875rem; background: var(--bg-secondary); color: var(--text); border: 1.5px solid var(--border); }
+.btn--secondary:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+.btn--secondary:active:not(:disabled) { transform: scale(0.98); }
+.btn--secondary:disabled { opacity: 0.6; }
+
+.btn--danger { padding: 0.375rem 0.625rem; color: var(--danger); background: none; font-size: var(--font-size-s); }
+.btn--danger:hover:not(:disabled) { background: var(--bg-danger); }
+.btn--danger:active:not(:disabled) { transform: scale(0.98); }
+
+.btn--ghost { padding: 0.375rem 0.625rem; color: var(--text-secondary); font-size: var(--font-size-s); font-weight: 500; }
+.btn--ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+
+.icon-btn { display: grid; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; border: none; background: none; border-radius: var(--radius-s); color: var(--icon); cursor: pointer; transition: all var(--transition-rule); }
+.icon-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--accent); }
+.icon-btn:active:not(:disabled) { transform: scale(0.92); }
+.icon-btn:disabled { color: var(--icon-tertiary); cursor: not-allowed; }
+.icon-btn--danger:hover:not(:disabled) { background: var(--bg-danger); color: var(--danger); }
+
+.spinner { inline-size: 1rem; block-size: 1rem; animation: spin 1s linear infinite; }
+.spinner .s-from { stop-color: var(--on-accent); stop-opacity: 0; }
+.spinner .s-to { stop-color: var(--on-accent); stop-opacity: 1; }
+
+/* ────────────────────────────────────── selection cards — §9.2 (DGA "library-card") */
+
+.card { position: relative; display: block; inline-size: 100%; text-align: start; border: 1.5px solid var(--border); border-radius: var(--radius-m); padding: 1rem; background: var(--bg); box-shadow: var(--shadow-sm); cursor: pointer; transition: all var(--transition-rule); }
+.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--border-strong); }
+.card:has(.card__head > input:checked):hover { transform: none; }
+.card__head { display: block; cursor: pointer; }
+.card:active { transform: scale(0.995) translateY(-1px); }
+.card:has(.card__head > input:checked) { box-shadow: 0 0 0 2px var(--accent), var(--shadow-button); border-color: transparent; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, var(--bg)), var(--bg)); }
+.card__head > input { position: absolute; opacity: 0; pointer-events: none; }
+.card__title { display: flex; align-items: center; gap: var(--gap-s); font-weight: 600; }
+.card__title span:first-child { flex: none; }
+.card__meta > span + span::before { content: '\00B7'; margin-inline-end: var(--gap-xs); color: var(--text-tertiary); }
+.card__meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--gap-xs) var(--gap-s); margin-block-start: var(--gap-xs); color: var(--text-secondary); font-size: var(--font-size-s); }
+.card__chevron { margin-inline-start: auto; color: var(--icon-secondary); transition: transform var(--transition-rule); }
+.card:has(.card__head > input:checked) .card__chevron { transform: rotate(calc(90deg * var(--dir))); color: var(--accent); }
+.card__note { margin-block-start: var(--gap-s); padding: var(--gap-s); border-radius: var(--radius-s); background: var(--bg-warning); color: var(--chip-possible-text); font-size: var(--font-size-s); }
+
+/* ─────────────────────────────────────────────────────── checkbox rows — §9.2 (DGA) */
+
+.check-row { display: flex; align-items: flex-start; gap: var(--gap-s); padding: 0.75rem; border: 1.5px solid var(--border); border-radius: var(--radius-m); cursor: pointer; transition: all var(--transition-rule); }
+.check-row:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.check-row:has(input:disabled) { cursor: not-allowed; opacity: 0.6; }
+.check-row input { position: absolute; opacity: 0; inline-size: 1.25rem; block-size: 1.25rem; margin: 0; }
+.check-box { position: relative; flex: none; inline-size: 1.25rem; block-size: 1.25rem; border: 1.5px solid var(--border-strong); border-radius: var(--radius-s); background: var(--bg); transition: background var(--transition-rule), border-color var(--transition-rule); }
+input:checked + .check-box { background: var(--accent); border-color: var(--accent); animation: checkboxPop var(--transition-spring); }
+input:checked + .check-box::after { content: ''; position: absolute; inset-block-start: 2px; inset-inline-start: 6px; inline-size: 5px; block-size: 10px; border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg); animation: checkmarkDraw 300ms cubic-bezier(0.4, 0, 0.2, 1); }
+input:focus-visible + .check-box { outline: 2px solid var(--accent); outline-offset: 2px; }
+.check-row__text { display: flex; flex-direction: column; gap: 2px; }
+.check-row__label { font-weight: 500; }
+.check-row__help { font-size: var(--font-size-s); color: var(--text-secondary); }
+
+/* ──────────────────────────────────────────────────────── search field — §10.2 */
+
+.search { display: flex; align-items: center; gap: var(--gap-s); padding: 0.5rem 0.625rem; border: 1.5px solid var(--border); border-radius: var(--radius-m); background: var(--bg-secondary); transition: all var(--transition-rule); }
+.search:focus-within { border-color: var(--accent); background: var(--bg); box-shadow: var(--shadow-sm); }
+.search svg { color: var(--icon-secondary); }
+.search input { flex: 1; min-inline-size: 0; border: none; background: none; color: var(--text); font-size: var(--font-size-m); outline: none; }
+.search input::placeholder { color: var(--text-secondary); }
+
+/* ─────────────────────────────────────────────────────── response tree — §10.2 */
+
+.tree { animation: slideDown 300ms cubic-bezier(0.4, 0, 0.2, 1) both; margin-block-start: var(--gap-s); border-block-start: 1px solid var(--border); padding-block-start: var(--gap-s); }
+.tree__group { display: block; }
+.tree__children { padding-inline-start: 0.75rem; border-inline-start: 1px solid var(--border); margin-inline-start: 0.375rem; }
+.tree__row { display: flex; align-items: center; gap: var(--gap-xs); min-block-size: 1.75rem; padding: 2px var(--gap-xs); border-radius: var(--radius-s); transition: transform var(--transition-rule), background var(--transition-rule), box-shadow var(--transition-rule); }
+.tree__row:hover { background: var(--bg-hover); transform: translateX(calc(2px * var(--dir))); box-shadow: var(--shadow-sm); }
+.tree__row:active { transform: scale(0.98) translateX(calc(2px * var(--dir))); }
+.tree__toggle { display: flex; align-items: center; gap: var(--gap-xs); border: none; background: none; padding: 0; color: var(--text); cursor: pointer; font: inherit; }
+.tree__caret { color: var(--icon-secondary); transition: transform var(--transition-rule); }
+.tree__toggle[aria-expanded='true'] .tree__caret { transform: rotate(calc(90deg * var(--dir))); }
+.tree__key { font-weight: 500; }
+.tree__count { color: var(--text-secondary); font-size: var(--font-size-s); }
+.tree__value { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree__value--string { color: var(--json-string); }
+.tree__value--number { color: var(--json-number); }
+.tree__value--boolean { color: var(--json-boolean); }
+.tree__value--null { color: var(--text-secondary); }
+.tree__value--old { color: var(--text-secondary); text-decoration: line-through; }
+.tree__arrow { color: var(--icon-secondary); }
+.tree__actions { margin-inline-start: auto; display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--transition-rule); }
+.tree__row:hover .tree__actions, .tree__row:focus-within .tree__actions, .tree__actions--pinned { opacity: 1; }
+.tree__row--changed { background: var(--chip-changed-bg); }
+
+/* ───────────────────────────────────────────────── value editor — §10.1 State D */
+
+.editor { animation: slideDown 300ms cubic-bezier(0.4, 0, 0.2, 1) both; display: flex; flex-direction: column; gap: var(--gap-m); padding: var(--gap-m); border: 1.5px solid var(--border); border-radius: var(--radius-m); background: var(--bg-secondary); box-shadow: var(--shadow-md); }
+.editor__head { display: flex; align-items: center; gap: var(--gap-s); }
+.editor__head h2 { flex: 1; }
+.editor__where { display: flex; flex-direction: column; gap: var(--gap-xs); font-size: var(--font-size-s); color: var(--text-secondary); }
+.editor__field { color: var(--text); font-weight: 500; }
+.editor__input { inline-size: 100%; padding: 0.5rem 0.625rem; border: 1.5px solid var(--border-strong); border-radius: var(--radius-s); background: var(--bg); color: var(--text); font-family: 'Fira Code', ui-monospace, monospace; font-size: var(--font-size-s); transition: all var(--transition-rule); }
+.editor__input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.editor__label { font-size: var(--font-size-s); font-weight: 600; color: var(--text-secondary); }
+.editor__note { display: flex; gap: var(--gap-s); padding: var(--gap-s); border-radius: var(--radius-s); background: var(--bg-warning); color: var(--chip-possible-text); font-size: var(--font-size-s); }
+.editor__error { color: var(--danger); font-size: var(--font-size-s); }
+.editor__bool { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-xs); padding: 4px; background: var(--bg-tertiary); border-radius: var(--radius-m); }
+.editor__bool label { padding: 0.375rem; text-align: center; border-radius: var(--radius-s); font-size: var(--font-size-s); font-weight: 500; cursor: pointer; transition: all var(--transition-rule); }
+.editor__bool input { position: absolute; opacity: 0; }
+.editor__bool input:checked + label { background: var(--bg); color: var(--accent); box-shadow: var(--shadow-sm); }
+.editor__bool input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+.editor__actions { display: flex; align-items: center; gap: var(--gap-s); }
+.editor__actions .btn--primary { flex: 1; }
+
+/* ───────────────────────────────────────────────────────────────────── toast */
+
+.toast { position: fixed; inset-block-end: var(--gap-m); inset-inline: var(--gap-m); z-index: 40; display: flex; align-items: center; gap: var(--gap-s); padding: 0.625rem 0.875rem; border-radius: var(--radius-m); background: var(--bg-inverse); color: var(--text-oninverse); box-shadow: var(--shadow-lg); font-size: var(--font-size-s); font-weight: 500; animation: toastIn var(--transition-spring) both; }
+.toast--danger { background: var(--danger); color: var(--on-accent); }
+
+/* ───────────────────────────────────────────────────── settings & danger zone */
+
+.stack { display: flex; flex-direction: column; gap: var(--gap-s); }
+.danger-zone { display: flex; flex-direction: column; gap: var(--gap-s); padding: var(--gap-m); border: 1.5px solid var(--border-danger); border-radius: var(--radius-m); background: var(--bg-danger); }
+.danger-zone .section-title { color: var(--danger); }
+.danger-zone .btn--secondary { background: var(--bg); border-color: var(--border-danger); color: var(--danger); }
+.danger-zone .btn--secondary:hover:not(:disabled) { background: var(--bg); border-color: var(--danger); }
+.dot { inline-size: 0.5rem; block-size: 0.5rem; border-radius: 999px; background: var(--icon-tertiary); flex: none; }
+.dot--on { background: var(--success); }
+
+
+/* small reusable checkbox (the per-row on/off switch in §10.2) */
+.check { position: relative; display: inline-grid; place-items: center; flex: none; inline-size: 1.5rem; block-size: 1.5rem; cursor: pointer; }
+.check input { position: absolute; opacity: 0; inline-size: 100%; block-size: 100%; margin: 0; cursor: pointer; }
+.check .check-box { inline-size: 1rem; block-size: 1rem; }
+.check input:checked + .check-box::after { inset-block-start: 1px; inset-inline-start: 4.5px; inline-size: 4px; block-size: 8px; }
+.tree__row--off { opacity: 0.6; }
+.tree__row--off .tree__value--old { text-decoration: none; }
+.tree__branch { display: block; }
+.tip > .btn:disabled, .tip > .icon-btn:disabled, .tip > .check-row:has(input:disabled) { pointer-events: none; }
+.sitebar__icon img { border-radius: 3px; }
+#toast-host:empty { display: none; }
+
+/* ──────────────────────────────────── §16 M7 / §9: motion is a preference, not a rule */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+  .segmented::before { transition: none; }
+  .card:hover, .tree__row:hover, .btn--primary:hover:not(:disabled) { transform: none; }
+  .spinner { animation: spin 1.2s linear infinite !important; }
+}

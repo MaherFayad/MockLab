@@ -36,6 +36,9 @@ export const KEY = {
 /** Signature cache is bounded so a long-lived browser profile cannot grow forever. */
 const MAX_SIGNATURES_PER_ORIGIN = 400;
 
+/** PLAN.md §4: a Binding remembers at most 10 distinct real values. */
+const MAX_OBSERVED_VALUES = 10;
+
 const DEFAULT_SETTINGS = {
   advancedMode: false,
   paranoid: false,
@@ -196,6 +199,33 @@ export async function clearChanges(origin) {
   });
 }
 
+/**
+ * How many Changes are ACTIVE on an origin — the number the toolbar badge shows and
+ * the site bar's "{n} changes on" chip repeats (PLAN.md §1.5, §10).
+ *
+ * Probe scaffolding is excluded deliberately. A `probe:true` Change exists only inside
+ * a running probe (§7.1), the panel is showing its own full-screen progress card at that
+ * moment, and the badge flickering 1 -> 2 -> 0 through a bisection run would say nothing
+ * true to the user. Every probe Change is deleted in CLEANUP and on service-worker
+ * startup (§17.5), so this can never hide a lasting modification.
+ *
+ * @param {string} origin
+ * @returns {Promise<number>}
+ */
+export async function countActiveChanges(origin) {
+  if (!origin) return 0;
+  const list = await getEnabledChanges(origin);
+  return list.filter((change) => change.probe !== true).length;
+}
+
+/**
+ * @param {string} origin @param {string} id @returns {Promise<Change|null>}
+ */
+export async function getChange(origin, id) {
+  const list = await getChanges(origin);
+  return list.find((change) => change && change.id === id) || null;
+}
+
 /* --------------------------------------------------------------- signature cache */
 
 /** @param {string} origin @returns {Promise<Record<string, RequestSignature>>} */
@@ -241,6 +271,75 @@ export async function getBindings(origin) {
 /** @param {string} origin @param {Binding[]} bindings */
 export async function setBindings(origin, bindings) {
   return write(KEY.bindings(origin), bindings);
+}
+
+/**
+ * Record that a Change now exists at (sigId, path) WITHOUT claiming anything was
+ * proved.
+ *
+ * PLAN.md §10.2: "a Change created here without a probe is applied but its binding
+ * stays `candidate` — chip 'not verified, will still apply'". §17.4 is the hard half of
+ * that rule: nothing outside probe.js may ever put a Binding into the verified state,
+ * so this function only ever writes `candidate`, and when a Binding for the path
+ * ALREADY exists it does not touch `state` at all — neither raising a candidate nor
+ * silently downgrading something the probe proved (§1.1 forbids silent downgrades).
+ *
+ * The real value seen at the path is folded into `observedValues`, which is what powers
+ * the value dropdown in §10.1D and the probe's enum flips in §7.4.
+ *
+ * @param {string} origin
+ * @param {string} sigId
+ * @param {string} path
+ * @param {any} [observedValue] the REAL value currently at that path, if known
+ * @returns {Promise<Binding>}
+ */
+export async function noteChangedPath(origin, sigId, path, observedValue) {
+  return withLock(KEY.bindings(origin), async () => {
+    const list = await getBindings(origin);
+    const seen =
+      observedValue === undefined || observedValue === null || typeof observedValue === 'object'
+        ? null
+        : String(observedValue);
+
+    const index = list.findIndex((b) => b && b.sigId === sigId && b.path === path);
+    if (index !== -1) {
+      const existing = list[index];
+      const values = Array.isArray(existing.observedValues) ? existing.observedValues.slice() : [];
+      if (seen !== null && !values.includes(seen)) values.unshift(seen);
+      // `state` is deliberately absent from this patch. See the note above.
+      list[index] = { ...existing, observedValues: values.slice(0, MAX_OBSERVED_VALUES) };
+      await setBindings(origin, list);
+      return list[index];
+    }
+
+    /** @type {Binding} */
+    const binding = {
+      id: crypto.randomUUID(),
+      origin,
+      sigId,
+      path,
+      elements: [],
+      // §17.4: the ONLY state this file may ever write. "candidate" is the honest
+      // answer — a value edit proves the field exists, never what it renders.
+      state: 'candidate',
+      lastVerifiedAt: 0,
+      observedValues: seen === null ? [] : [seen],
+      probeMode: 'refresh'
+    };
+    list.push(binding);
+    await setBindings(origin, list);
+    return binding;
+  });
+}
+
+/**
+ * The Binding for one exact field, or null. Used to label a Change honestly.
+ * @param {string} origin @param {string} sigId @param {string} path
+ * @returns {Promise<Binding|null>}
+ */
+export async function findBinding(origin, sigId, path) {
+  const list = await getBindings(origin);
+  return list.find((b) => b && b.sigId === sigId && b.path === path) || null;
 }
 
 /** @param {string} origin @returns {Promise<Preset[]>} */

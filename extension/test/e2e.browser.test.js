@@ -20,13 +20,17 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// This file runs in Node, which HAS a module graph — unlike the two content scripts,
+// whose mirrored constants are a genuine necessity (§17.2). Nothing here needs to
+// duplicate the contract, so nothing here does: these are the real constants the
+// service worker answers to, and a rename in messages.js breaks this suite loudly.
+import { MSG } from '../src/background/messages.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_DIR = path.resolve(HERE, '..');
-
-/** Message types the panel uses — mirrored from src/background/messages.js. */
-const MSG = { LIST_SOURCES: 'msg:listSources', GET_RESPONSE: 'msg:getResponse' };
 
 /**
  * In-page read deadlines for a capture-only body, mirrored from interceptor.js. The
@@ -48,14 +52,50 @@ const SHAPES = [
   'hotelId=44212114&cb=RANDOM'        // starred value + a dropped cache-buster
 ];
 
+/**
+ * Directories where a GLOBALLY installed package lives. A global install is not on this
+ * workspace's resolution path, so `import('playwright')` misses it — which is why an
+ * earlier version of this file carried an absolute path from one machine. That path
+ * would have shipped and resolved nowhere for anyone else; these are all derived at run
+ * time from the running Node.
+ */
+function globalPackageRoots() {
+  const roots = [];
+  try {
+    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+  } catch {
+    /* npm is not on PATH — the other two guesses still stand */
+  }
+  // node lives at <prefix>/bin/node; global packages at <prefix>/lib/node_modules.
+  roots.push(path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules'));
+  for (const entry of String(process.env.NODE_PATH || '').split(path.delimiter)) {
+    if (entry) roots.push(entry);
+  }
+  return [...new Set(roots.filter(Boolean))];
+}
+
 async function loadChromium() {
-  const candidates = ['playwright', 'playwright-core', '/opt/node22/lib/node_modules/playwright/index.mjs'];
-  for (const spec of candidates) {
+  for (const name of ['playwright', 'playwright-core']) {
     try {
-      const mod = await import(spec);
+      const mod = await import(name);
       if (mod && mod.chromium) return mod.chromium;
     } catch {
-      /* try the next one */
+      /* not installed locally */
+    }
+  }
+  for (const root of globalPackageRoots()) {
+    for (const name of ['playwright', 'playwright-core']) {
+      for (const entry of ['index.mjs', 'index.js']) {
+        const file = path.join(root, name, entry);
+        if (!fs.existsSync(file)) continue;
+        try {
+          const mod = await import(pathToFileURL(file).href);
+          const chromium = (mod && mod.chromium) || (mod && mod.default && mod.default.chromium);
+          if (chromium) return chromium;
+        } catch {
+          /* try the next candidate */
+        }
+      }
     }
   }
   return null;
@@ -165,6 +205,29 @@ function fixtureHandler(req, res) {
     return;
   }
 
+  if (url.pathname === '/very-slow-body') {
+    // Headers now, body after 4 s — past interceptor.js's 3 s MODIFY_READ_TIMEOUT_MS.
+    // A Change on this source CANNOT be applied, and Deviation 16 says the capture must
+    // say so rather than letting the user think the edit took.
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.flushHeaders();
+    setTimeout(() => res.end(JSON.stringify({ label: 'REAL' })), 4000);
+    return;
+  }
+
+  if (url.pathname === '/huge') {
+    // Declares its size and exceeds PLAN.md §4's 2 MB cap, so it is stored as an
+    // {__unparsed} PREVIEW — 512 characters of it, not an empty string.
+    const body = JSON.stringify({ marker: 'HUGE-BODY-MARKER', filler: 'x'.repeat(2.5 * 1024 * 1024) });
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store'
+    });
+    res.end(body);
+    return;
+  }
+
   if (url.pathname === '/blank') {
     send(200, 'text/html; charset=utf-8', '<!doctype html><title>blank</title><body>');
     return;
@@ -241,14 +304,76 @@ if (!chromium) {
       panel.evaluate(([type, payload]) => chrome.runtime.sendMessage({ type, payload }), [MSG.LIST_SOURCES, { tabId }]);
     const getResponse = (tabId, sigId, jsonPath) =>
       panel.evaluate(([type, payload]) => chrome.runtime.sendMessage({ type, payload }), [MSG.GET_RESPONSE, { tabId, sigId, path: jsonPath }]);
-    const tabIdOf = (page) =>
-      sw.evaluate(async (u) => {
+    /**
+     * Chrome tab ids are not exposed to Playwright, so a tab is found by its URL. That
+     * only works while URLs are UNIQUE per tab — two pages on the same URL silently
+     * resolve to whichever Chrome lists first, and every assertion afterwards is about
+     * some other tab. Each subtest below therefore gives its page a distinguishing
+     * query string, and this throws rather than returning null.
+     */
+    const tabIdOf = async (page) => {
+      const url = page.url();
+      const ids = await sw.evaluate(async (u) => {
         const tabs = await chrome.tabs.query({});
-        const hit = tabs.find((tab) => tab.url === u);
-        return hit ? hit.id : null;
-      }, page.url());
+        return tabs.filter((tab) => tab.url === u).map((tab) => tab.id);
+      }, url);
+      assert.equal(ids.length, 1, `exactly one tab is at ${url} (found ${ids.length})`);
+      return ids[0];
+    };
     const plantChanges = (origin, changes) =>
       sw.evaluate(async ([key, list]) => chrome.storage.local.set({ ['changes:' + key]: list }), [origin, changes]);
+
+    const sendMessage = (type, payload) =>
+      panel.evaluate(([t, p]) => chrome.runtime.sendMessage({ type: t, payload: p }), [type, payload]);
+    const badgeText = (tabId) => sw.evaluate((id) => chrome.action.getBadgeText({ tabId: id }), tabId);
+
+    /**
+     * §17.2's whole point is that a broken MockLab leaves the page working — which
+     * means a DEAD extension and a healthy one look identical from the page. Every
+     * no-degradation assertion below therefore checks the patch is actually installed
+     * first, so a silently-dead interceptor can never read as a pass.
+     */
+    const assertInterceptorInstalled = async (page) => {
+      const installed = await page.evaluate(() => window.__mocklabInterceptorInstalled);
+      assert.equal(installed, true, 'the MAIN-world patch is installed — otherwise this subtest proves nothing');
+    };
+
+    /** The badge is written asynchronously after a store read; poll rather than sleep. */
+    async function waitForBadge(tabId, expected, timeoutMs = 5000) {
+      const deadline = Date.now() + timeoutMs;
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await badgeText(tabId);
+        if (last === expected) return last;
+        await sleep(80);
+      }
+      return last;
+    }
+
+    /** Poll the demo's pill; a reload driven from the worker destroys the context. */
+    async function waitForPill(page, expected, timeoutMs = 10000) {
+      const deadline = Date.now() + timeoutMs;
+      let last = null;
+      while (Date.now() < deadline) {
+        try {
+          last = await page.evaluate(() => {
+            const pill = document.getElementById('status-pill');
+            if (!pill) return null;
+            return {
+              text: pill.textContent,
+              cls: pill.className,
+              color: getComputedStyle(pill).color,
+              banner: (document.getElementById('alert-banner') || {}).textContent || ''
+            };
+          });
+          if (last && last.text === expected) return last;
+        } catch {
+          /* mid-navigation — try again */
+        }
+        await sleep(80);
+      }
+      return last;
+    }
 
     async function waitForSources(tabId, count, timeoutMs = 8000) {
       const deadline = Date.now() + timeoutMs;
@@ -307,6 +432,7 @@ if (!chromium) {
       await t.test('streamed responses resolve at their headers and keep flowing', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/streams', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
         await page.waitForFunction(
           () => window.__r.sseSecond && window.__r.rscHeaders !== undefined && window.__r.slowBody !== undefined,
           null,
@@ -325,6 +451,7 @@ if (!chromium) {
       await t.test('a fetch with no matching Change resolves at its headers, not its body', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/streams', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
         await page.waitForFunction(() => window.__r.slowBody !== undefined, null, { timeout: 10000 });
         // Measured again after load, so the one-time match-list wait is long over.
         const measured = await page.evaluate(async () => {
@@ -347,6 +474,7 @@ if (!chromium) {
       await t.test('an endless response is released and no rejection reaches the page', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/streams', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
         await page.waitForFunction(() => window.__r.endlessReleased === true, null, { timeout: 10000 });
 
         const deadline = Date.now() + CAPTURE_READ_TIMEOUT_OTHER_MS + 6000;
@@ -403,7 +531,7 @@ if (!chromium) {
       await t.test('a param whose value is literally * does not match other values', async () => {
         const page = await ctx.newPage();
         // A document load is not a fetch, so the URL has to be requested from a page.
-        await page.goto(fixtureOrigin + '/blank', { waitUntil: 'load' });
+        await page.goto(fixtureOrigin + '/blank?case=literal-star', { waitUntil: 'load' });
         await page.evaluate(() => fetch('/shape/0?star=%2A').then((r) => r.json()));
         const tabId = await tabIdOf(page);
         await waitForSources(tabId, 1);
@@ -468,10 +596,190 @@ if (!chromium) {
         await page.close();
       });
 
+      /* ═══════════════════════ §16 M2 DoD — the Changes engine, end to end ═══════
+       *
+       * "set `status=CANCELLED` in tree -> refresh -> demo pill is red WITHOUT any
+       *  probe; change survives 10 refreshes; Reset site restores."
+       *
+       * Every step below goes through the REAL panel message surface (MSG.SET_VALUE,
+       * MSG.RESET_SITE) — the same handlers the Sources tab calls. Nothing plants
+       * storage directly, and no probe exists yet: probe.js is still a stub at M2, so
+       * the pill turning red is the value edit alone.
+       * ══════════════════════════════════════════════════════════════════════════ */
+      await t.test('M2 DoD: a value edit turns the pill red, survives 10 refreshes, and Reset site restores', async (tt) => {
+        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+        const page = await ctx.newPage();
+        const pageErrors = [];
+        page.on('pageerror', (e) => pageErrors.push(String(e)));
+        page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()); });
+
+        await page.goto(demoOrigin + '/demo/', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
+        const tabId = await tabIdOf(page);
+        const sources = await waitForSources(tabId, 2);
+        const tripSig = sources.sources.find((s) => s.via === 'fetch').sigId;
+
+        const before = await waitForPill(page, 'On time');
+        assert.equal(before.text, 'On time', 'the real site starts on time');
+        assert.equal(await waitForBadge(tabId, ''), '', 'nothing is modified yet, so the badge is empty');
+
+        /* ---- the edit: exactly what "✏️ Change this value" in §10.2 sends ---- */
+        const applied = await sendMessage(MSG.SET_VALUE, {
+          tabId, sigId: tripSig, path: '$.status', value: 'CANCELLED'
+        });
+        assert.equal(applied.ok, true);
+        assert.equal(applied.refreshed, true, 'Apply & refresh page actually refreshed');
+        assert.equal(applied.change.originalValue, 'ON_TIME', 'the REAL value was captured for "Real value: …"');
+
+        // §10.2 / §17.4: applied, but nothing has been proved.
+        assert.equal(applied.change.linkState, 'candidate', 'a tree-view edit is never verified');
+        const bindings = await sendMessage(MSG.GET_BINDINGS, { tabId });
+        assert.deepEqual(
+          [...new Set(bindings.bindings.map((b) => b.state))],
+          ['candidate'],
+          'no probe has run, so nothing may claim to be verified'
+        );
+
+        /* ---- the site itself renders the new state ---- */
+        const red = await waitForPill(page, 'Cancelled');
+        assert.equal(red.text, 'Cancelled', 'the site re-rendered its own pill');
+        assert.equal(red.cls, 'is-cancelled', 'the site applied its own class — MockLab never touched the DOM');
+        assert.equal(red.color, 'rgb(217, 48, 37)', 'the pill is genuinely RED, computed by the site CSS');
+        assert.equal(red.banner, 'Your flight was cancelled', 'the derived banner appeared too');
+
+        /* ---- §1.5: the badge mirrors the count, on this tab ---- */
+        assert.equal(await waitForBadge(tabId, '1'), '1', 'the badge says one Change is on');
+
+        const second = await ctx.newPage();
+        await second.goto(demoOrigin + '/demo/?tab=2', { waitUntil: 'load' });
+        assert.equal(await waitForBadge(await tabIdOf(second), '1'), '1', 'a second tab on the same site shows it too');
+        // A THIRD origin, with no Changes of its own. Same server, but `localhost` and
+        // `127.0.0.1` are different origins — and the fixture origin cannot be used
+        // here, because earlier subtests deliberately left Changes on it.
+        const cleanOrigin = fixtureOrigin.replace('127.0.0.1', 'localhost');
+        await second.goto(cleanOrigin + '/blank?case=other-origin', { waitUntil: 'load' });
+        assert.equal(
+          await waitForBadge(await tabIdOf(second), ''), '',
+          'navigating that tab to a site with no Changes clears the badge — the count is per origin'
+        );
+        await second.close();
+
+        /* ---- survives 10 consecutive refreshes ---- */
+        for (let i = 1; i <= 10; i += 1) {
+          await page.reload({ waitUntil: 'load' });
+          const shown = await waitForPill(page, 'Cancelled');
+          assert.equal(shown.text, 'Cancelled', `still cancelled on refresh ${i} of 10`);
+          assert.equal(shown.color, 'rgb(217, 48, 37)', `still red on refresh ${i} of 10`);
+        }
+        assert.equal(await waitForBadge(tabId, '1'), '1', 'the badge survived ten refreshes as well');
+
+        // The captured body is still the REAL one: the Sources tree must show the site's
+        // data, not MockLab's own edit reflected back at the user.
+        const captured = await sendMessage(MSG.GET_RESPONSE, { tabId, sigId: tripSig, path: '$.status' });
+        assert.equal(captured.body, 'ON_TIME', 'the capture holds the real value, and the page holds the mock');
+
+        /* ---- the per-row toggle turns it off without deleting it (§10.2) ---- */
+        const off = await sendMessage(MSG.TOGGLE_CHANGE, { tabId, changeId: applied.change.id });
+        assert.equal(off.change.enabled, false);
+        assert.equal((await waitForPill(page, 'On time')).text, 'On time', 'switching it off restores the site');
+        assert.equal(await waitForBadge(tabId, ''), '', 'a switched-off Change is not an active one');
+        await sendMessage(MSG.TOGGLE_CHANGE, { tabId, changeId: applied.change.id });
+        assert.equal((await waitForPill(page, 'Cancelled')).text, 'Cancelled', 'and back on again');
+
+        /* ---- §1.5 Reset site ---- */
+        const reset = await sendMessage(MSG.RESET_SITE, { tabId });
+        assert.equal(reset.ok, true);
+        assert.equal(reset.cleared, 1);
+        assert.equal(reset.changeCount, 0);
+
+        const restored = await waitForPill(page, 'On time');
+        assert.equal(restored.text, 'On time', 'Reset site restored the real state');
+        assert.equal(restored.cls, '', 'and the real styling');
+        assert.equal(restored.banner, '', 'and removed the derived banner');
+        assert.equal(await waitForBadge(tabId, ''), '', 'and cleared the badge');
+        assert.deepEqual((await sendMessage(MSG.LIST_CHANGES, { tabId })).changes, [], 'the store is empty');
+
+        assert.deepEqual(pageErrors, [], 'the demo console stayed clean throughout');
+        await page.close();
+      });
+
+      /* ---- Deviation 16: a Change that could not be applied is never silent ---- */
+      await t.test('a Change on a too-slow response is reported dropped, not applied', async () => {
+        const page = await ctx.newPage();
+        await page.goto(fixtureOrigin + '/blank?case=dropped', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
+        const tabId = await tabIdOf(page);
+
+        // First visit with no Change: the capture read has a longer deadline, so the
+        // source is learned and its identity is remembered.
+        await page.evaluate(() => fetch('/very-slow-body').then((r) => r.json()));
+        const seen = await waitForSources(tabId, 1, 12000);
+        const slow = seen.sources.find((s) => s.url.includes('/very-slow-body'));
+        assert.ok(slow, 'the slow source was captured');
+        assert.equal(slow.changeDropped, false, 'nothing was dropped when nothing matched');
+
+        const applied = await sendMessage(MSG.SET_VALUE, {
+          tabId, sigId: slow.sigId, path: '$.label', value: 'MOCKED', refresh: false
+        });
+        assert.equal(applied.ok, true);
+        await sleep(400);
+
+        const label = await page.evaluate(() => fetch('/very-slow-body').then((r) => r.json()).then((d) => d.label));
+        assert.equal(label, 'REAL', 'the page got the real response rather than hanging');
+
+        const deadline = Date.now() + 8000;
+        let dropped = null;
+        while (Date.now() < deadline && !dropped) {
+          const res = await listSources(tabId);
+          const row = res.sources.find((s) => s.url.includes('/very-slow-body'));
+          if (row && row.changeDropped) dropped = row;
+          else await sleep(150);
+        }
+        assert.ok(dropped, 'the capture is flagged changeDropped, so the panel can say the edit did not apply');
+        assert.equal(dropped.mocked, false, 'and it is NOT flagged as mocked — that would be the lie');
+        await page.close();
+      });
+
+      /* ---- §4: over 2 MB the body is a 512-character preview, not an empty one ---- */
+      await t.test('a body over the 2 MB cap is stored as a real preview', async () => {
+        const page = await ctx.newPage();
+        await page.goto(fixtureOrigin + '/blank?case=huge', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
+        const tabId = await tabIdOf(page);
+
+        const pageSaw = await page.evaluate(() =>
+          fetch('/huge').then((r) => r.json()).then((d) => ({ marker: d.marker, filler: d.filler.length }))
+        );
+        assert.equal(pageSaw.marker, 'HUGE-BODY-MARKER', 'the page still received the WHOLE real body');
+        assert.equal(pageSaw.filler, 2.5 * 1024 * 1024, 'every byte of it');
+
+        const deadline = Date.now() + 8000;
+        let row = null;
+        while (Date.now() < deadline && !row) {
+          const res = await listSources(tabId);
+          row = res.sources.find((s) => s.url.includes('/huge')) || null;
+          if (!row) await sleep(150);
+        }
+        assert.ok(row, 'the oversized source is still listed');
+        assert.equal(row.unparsed, true, '§4 — stored unparsed');
+        assert.ok(row.bodyBytes > 2 * 1024 * 1024, `the real size is reported (${row.bodyBytes})`);
+
+        const body = await sendMessage(MSG.GET_RESPONSE, { tabId, sigId: row.sigId });
+        assert.equal(body.body.__unparsed, true);
+        assert.equal(typeof body.body.preview, 'string');
+        assert.equal(body.body.preview.length, 512, '§4 asks for a 512-character preview');
+        assert.ok(
+          body.body.preview.includes('HUGE-BODY-MARKER'),
+          'and it is the real start of the body, not an empty string'
+        );
+        await page.close();
+      });
+
       /* ------------------------------------------- §17.2: the original Response */
       await t.test('an unmatched fetch hands back the original, unconsumed Response', async () => {
         const page = await ctx.newPage();
-        await page.goto(fixtureOrigin + '/blank', { waitUntil: 'load' });
+        await page.goto(fixtureOrigin + '/blank?case=identity', { waitUntil: 'load' });
+        await assertInterceptorInstalled(page);
         const identity = await page.evaluate(async () => {
           const r = await fetch('/shape/0?identity=1');
           return { isResponse: r instanceof Response, bodyUsed: r.bodyUsed, hasStream: !!r.body, type: r.type, url: r.url };
@@ -489,6 +797,132 @@ if (!chromium) {
       await ctx.close();
       fixtures.close();
       if (demoServer) demoServer.close();
+      fs.rmSync(profile, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * §16 M2 DoD, "persistence": a Change must survive a browser restart AND take effect
+   * on the very first load afterwards — not on the second, once something has been
+   * captured. That is the whole reason for the `signatures:<origin>` key (Deviation 8),
+   * and it is the one guarantee a same-session test cannot possibly cover, because the
+   * service worker's in-memory capture state makes the first load look easy.
+   *
+   * Two real Chromium launches share one profile directory and one demo server, so the
+   * origin is byte-identical across the restart.
+   */
+  test('a Change survives a browser restart and applies on the FIRST load after it', async (t) => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-restart-'));
+    let demoServer = null;
+    let demoOrigin = null;
+    try {
+      const { createServer } = await import('../../companion/src/index.js');
+      demoServer = createServer();
+      demoOrigin = `http://127.0.0.1:${await listen(demoServer)}`;
+    } catch {
+      demoServer = null;
+    }
+    if (!demoServer) {
+      fs.rmSync(profile, { recursive: true, force: true });
+      t.skip('the companion demo site is not available');
+      return;
+    }
+
+    /** Boot Chromium on the shared profile and hand back everything a subtest needs. */
+    async function boot() {
+      const ctx = await chromium.launchPersistentContext(profile, {
+        channel: 'chromium',
+        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
+      });
+      let sw = ctx.serviceWorkers()[0];
+      if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
+      const panel = await ctx.newPage();
+      await panel.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
+      return { ctx, sw, panel };
+    }
+
+    let first = null;
+    try {
+      first = await boot();
+    } catch (err) {
+      if (demoServer) demoServer.close();
+      fs.rmSync(profile, { recursive: true, force: true });
+      t.skip(`Chromium could not be launched (${err.message.split('\n')[0]})`);
+      return;
+    }
+
+    try {
+      /* ---------------------------------------------------- launch 1: make the edit */
+      const page = await first.ctx.newPage();
+      await page.goto(demoOrigin + '/demo/?run=1', { waitUntil: 'load' });
+
+      const tabId = await first.sw.evaluate(async (u) => {
+        const tabs = await chrome.tabs.query({});
+        const hit = tabs.find((tab) => tab.url === u);
+        return hit ? hit.id : null;
+      }, page.url());
+
+      let sources = null;
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        sources = await first.panel.evaluate(
+          ([type, payload]) => chrome.runtime.sendMessage({ type, payload }),
+          [MSG.LIST_SOURCES, { tabId }]
+        );
+        if (sources && sources.sources.length >= 2) break;
+        await sleep(50);
+      }
+      const tripSig = sources.sources.find((s) => s.via === 'fetch').sigId;
+
+      const applied = await first.panel.evaluate(
+        ([type, payload]) => chrome.runtime.sendMessage({ type, payload }),
+        [MSG.SET_VALUE, { tabId, sigId: tripSig, path: '$.status', value: 'CANCELLED', refresh: false }]
+      );
+      assert.equal(applied.ok, true, 'the Change was stored before the restart');
+    } finally {
+      await first.ctx.close();
+    }
+
+    /* ------------------------------------ launch 2: a genuinely cold service worker */
+    const second = await boot();
+    try {
+      const page = await second.ctx.newPage();
+      const pageErrors = [];
+      page.on('pageerror', (e) => pageErrors.push(String(e)));
+      // ONE load. No reload, no second chance: this is the load that must already be
+      // mocked, or the persistence guarantee is not real.
+      await page.goto(demoOrigin + '/demo/?run=2', { waitUntil: 'load' });
+
+      const deadline = Date.now() + 6000;
+      let shown = null;
+      while (Date.now() < deadline) {
+        shown = await page.evaluate(() => {
+          const pill = document.getElementById('status-pill');
+          return pill ? { text: pill.textContent, color: getComputedStyle(pill).color } : null;
+        });
+        if (shown && shown.text !== '…') break;
+        await sleep(60);
+      }
+      assert.equal(shown.text, 'Cancelled', 'the Change applied on the first load after a cold start');
+      assert.equal(shown.color, 'rgb(217, 48, 37)', 'and the site rendered it red');
+
+      const tabId = await second.sw.evaluate(async (u) => {
+        const tabs = await chrome.tabs.query({});
+        const hit = tabs.find((tab) => tab.url === u);
+        return hit ? hit.id : null;
+      }, page.url());
+      let badge = '';
+      const badgeDeadline = Date.now() + 5000;
+      while (Date.now() < badgeDeadline) {
+        badge = await second.sw.evaluate((id) => chrome.action.getBadgeText({ tabId: id }), tabId);
+        if (badge === '1') break;
+        await sleep(80);
+      }
+      assert.equal(badge, '1', 'the badge was repainted from storage on the cold start');
+      assert.deepEqual(pageErrors, [], 'the demo console stays clean across the restart');
+    } finally {
+      await second.ctx.close();
+      demoServer.close();
       fs.rmSync(profile, { recursive: true, force: true });
     }
   });

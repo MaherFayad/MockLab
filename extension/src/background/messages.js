@@ -183,8 +183,13 @@ export const MSG = {
   LIST_SOURCES: 'msg:listSources',
 
   /**
-   * Panel -> SW. `{tabId, sigId, path?}` -> `{ok:true, body}` — the whole parsed body,
-   * or the subtree at `path`. Feeds the tree view in §10.2.
+   * Panel -> SW. `{tabId, sigId, path?}` -> `{ok:true, body, summary?}` — the whole
+   * parsed body, or the subtree at `path`. Feeds the tree view in §10.2.
+   *
+   * `ok:false` with `reason:"not-captured"` means this tab has not seen that source on
+   * the current page load. With a `path` that does not exist, `ok` is false and `body`
+   * is undefined — an absent field and a field whose value IS undefined are the same
+   * thing in JSON, so there is nothing to distinguish.
    */
   GET_RESPONSE: 'msg:getResponse',
 
@@ -193,7 +198,115 @@ export const MSG = {
    * The panel re-reads with LIST_SOURCES; the event itself carries no data so it can
    * never go stale.
    */
-  SOURCES_CHANGED: 'msg:sourcesChanged'
+  SOURCES_CHANGED: 'msg:sourcesChanged',
+
+  /* ═══════════════════════════════ M2 — Changes engine (§1.5, §10.1D, §10.2) ══════
+   *
+   * Every mutation below is honest about two things and the panel must show both:
+   *   - `change.linkState` is NEVER "verified" here. A Change made from the tree view
+   *     applies, but nothing has PROVED which elements it drives (§10.2, §17.4). Only
+   *     the probe (M4) may ever raise a link to verified.
+   *   - `change.applies` is false when MockLab has never seen the request this Change
+   *     targets on this origin, so it cannot be compiled into the in-page match list
+   *     yet. Saying "applied" then would be a lie (§1.1).
+   *
+   * Every mutation takes `refresh` and DEFAULTS IT TO TRUE, matching §12.4's rule for
+   * the MCP tools, and answers with `refreshed:boolean` — what actually happened, not
+   * what was asked for.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Panel -> SW. Everything the persistent site bar (§10) needs in one round trip, so
+   * the bar never renders a hostname from one tab beside a count from another.
+   *
+   * `{tabId?}` -> `{ok:true, tabId, url, origin, hostname, faviconUrl, changeCount,
+   *                 changes:ChangeSummary[], captured:boolean}`
+   *
+   * `changeCount` is the number of ENABLED, non-probe Changes on the origin — the exact
+   * number the toolbar badge shows (§1.5). `changes` is the full list including disabled
+   * ones. `captured` says whether this tab has any captured sources yet.
+   * `faviconUrl` is Chrome's own cached favicon for the tab, or '' when there is none.
+   */
+  GET_SITE_STATE: 'msg:getSiteState',
+
+  /**
+   * Panel -> SW. `{tabId?} | {origin}` -> `{ok:true, origin, changes:ChangeSummary[],
+   * changeCount}`. Ordered newest-first. Pass `origin` to read a site other than the
+   * one in the tab (the Scenarios tab does this at M5).
+   */
+  LIST_CHANGES: 'msg:listChanges',
+
+  /**
+   * Panel -> SW. Create or replace the Change at one field of one source — the "✏️
+   * Change this value" action in the tree view (§10.2) and the editor's "Apply &
+   * refresh page" (§10.1D). Also the MCP `set_value` tool (§12.4 #7).
+   *
+   * `{tabId?, sigId, path, value, note?, refresh?:true}`
+   *   -> `{ok:true, change:ChangeSummary, refreshed:boolean}`
+   *
+   * One Change per (sigId, path): editing a field that already has one UPDATES it
+   * rather than stacking a second. `originalValue` is filled in from the captured
+   * response when this tab has it, and is never overwritten by a later edit — it is the
+   * REAL value, which is what "Real value: …" in §11 promises.
+   */
+  SET_VALUE: 'msg:setValue',
+
+  /**
+   * Panel -> SW. Edit an existing Change by id.
+   * `{tabId?|origin, changeId, value?, note?, enabled?, refresh?:true}`
+   *   -> `{ok:true, change:ChangeSummary, refreshed:boolean}` | `{ok:false, reason:"no-such-change"}`
+   */
+  UPDATE_CHANGE: 'msg:updateChange',
+
+  /**
+   * Panel -> SW. The per-row on/off switch in §10.2. `enabled` absent = flip it.
+   * `{tabId?|origin, changeId, enabled?, refresh?:true}`
+   *   -> `{ok:true, change:ChangeSummary, refreshed:boolean}`
+   */
+  TOGGLE_CHANGE: 'msg:toggleChange',
+
+  /**
+   * Panel -> SW. The per-row trash button in §10.2, and the MCP `clear_changes` tool
+   * with an id (§12.4 #8).
+   * `{tabId?|origin, changeId, refresh?:true}` -> `{ok:true, deleted:number, refreshed:boolean}`
+   */
+  DELETE_CHANGE: 'msg:deleteChange',
+
+  /**
+   * Panel -> SW. "Reset site" (§1.5, §10 site bar): remove EVERY Change on this origin
+   * — enabled, disabled and probe scaffolding alike — and reload the tab.
+   * `{tabId?, refresh?:true}` -> `{ok:true, cleared:number, origin, refreshed:boolean}`
+   */
+  RESET_SITE: 'msg:resetSite',
+
+  /**
+   * Panel -> SW. Reload the tab without touching the store — the second half of
+   * "Apply & refresh page" when the caller batched several edits with `refresh:false`.
+   * `{tabId?}` -> `{ok:true, refreshed:boolean}`
+   */
+  REFRESH_TAB: 'msg:refreshTab',
+
+  /**
+   * Panel -> SW. `{tabId?|origin}` -> `{ok:true, origin, bindings:Binding[]}`.
+   * The MCP `get_bindings` tool (§12.4 #6) reads the same handler. Until M4 every
+   * binding here is `candidate` — see §17.4.
+   */
+  GET_BINDINGS: 'msg:getBindings',
+
+  /** Panel -> SW. `{}` -> `{ok:true, settings}` (§4 settings key, §10.5). */
+  GET_SETTINGS: 'msg:getSettings',
+
+  /** Panel -> SW. `{patch}` -> `{ok:true, settings}` — merged, not replaced. */
+  UPDATE_SETTINGS: 'msg:updateSettings',
+
+  /**
+   * SW -> panel broadcast. `{origin, count}` — a Change was created, edited, toggled,
+   * deleted or reset ANYWHERE: this panel, another window's panel, or an MCP agent
+   * (§1.6 agent/human parity). Data-free by the same reasoning as SOURCES_CHANGED: the
+   * panel re-reads GET_SITE_STATE / LIST_CHANGES, so the event cannot go stale.
+   * `count` is included only so a panel can skip a re-read it does not need.
+   */
+  CHANGES_CHANGED: 'msg:changesChanged'
 };
 
 /**
@@ -213,4 +326,30 @@ export const MSG = {
  * @property {boolean} unparsed
  * @property {boolean} changeDropped  a Change matched this source but could not be
  *   applied because the response body did not arrive in time
+ */
+
+/**
+ * One Change as the panel and the MCP tools see it: the stored §4 Change plus the three
+ * facts that only the service worker can supply.
+ *
+ * @typedef {Object} ChangeSummary
+ * @property {string} id
+ * @property {string} origin
+ * @property {string} sigId
+ * @property {string} path
+ * @property {any} value
+ * @property {any} originalValue   the REAL value last seen at this path, or undefined
+ * @property {boolean} enabled
+ * @property {number} createdAt
+ * @property {string} [note]
+ * @property {boolean} [probe]     internal probe scaffolding (§7.1) — never shown
+ * @property {string} sourceName   the friendly source name, same one the Sources tab shows
+ * @property {"verified"|"candidate"|"stale"|null} linkState
+ *   The state of the Binding for this exact (sigId, path), or null when there is none.
+ *   A Change created from the tree view without a probe leaves this at "candidate", and
+ *   the panel must render §11's `editor.unverified` copy for it (§10.2, §17.4).
+ * @property {boolean} applies
+ *   False when this origin has no remembered signature for `sigId`, so the Change
+ *   cannot be compiled into the in-page match list and will do nothing until MockLab
+ *   sees that request again. Never report such a Change as applied (§1.1).
  */
