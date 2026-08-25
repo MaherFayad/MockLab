@@ -14,19 +14,16 @@
  * may write that word.
  */
 
-import { PICK_MSG, PICK_PORT_MSG } from './pickMessages.js';
+import { MSG, PORT_MSG, PHASE } from './messages.js';
 import { findCandidates } from './candidates.js';
 import { friendlyName } from './signatures.js';
 
 /** Every message type this module answers. background.js routes on this set. */
 export const PICK_MESSAGE_TYPES = new Set([
-  PICK_MSG.START_PICK,
-  PICK_MSG.CANCEL_PICK,
-  PICK_MSG.GET_PICK
+  MSG.START_PICK,
+  MSG.CANCEL_PICK,
+  MSG.GET_PICK
 ]);
-
-/** §10.1's three Pick-tab states, named. Not a link state — see the header. */
-export const PHASE = { IDLE: 'idle', PICKING: 'picking', PICKED: 'picked' };
 
 /**
  * @param {{
@@ -207,11 +204,11 @@ export function createPickApi(deps) {
     const record = recordFor(tabId);
 
     switch (message.type) {
-      case PICK_MSG.START_PICK: {
+      case MSG.START_PICK: {
         // A tab MockLab has no agent in (a chrome:// page, or one opened before the
         // extension was installed) can never answer. Say so now rather than leaving
         // the panel on "Click something on the page…" for ever (§1.1).
-        if (!sendToTab(tabId, PICK_PORT_MSG.PICK_START, {})) {
+        if (!sendToTab(tabId, PORT_MSG.PICK_START, {})) {
           return { ok: false, reason: 'no-content-script' };
         }
         record.origin = originOf(tabId) || record.origin;
@@ -225,8 +222,8 @@ export function createPickApi(deps) {
         return { ok: true, tabId };
       }
 
-      case PICK_MSG.CANCEL_PICK: {
-        sendToTab(tabId, PICK_PORT_MSG.PICK_CANCEL, {});
+      case MSG.CANCEL_PICK: {
+        sendToTab(tabId, PORT_MSG.PICK_CANCEL, {});
         record.phase = PHASE.IDLE;
         record.element = null;
         record.fingerprint = null;
@@ -237,7 +234,7 @@ export function createPickApi(deps) {
         return { ok: true, tabId };
       }
 
-      case PICK_MSG.GET_PICK:
+      case MSG.GET_PICK:
         return view(tabId, record);
 
       default:

@@ -33,7 +33,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // The real constants: a rename in the contract breaks this suite loudly.
 import { MSG } from '../src/background/messages.js';
-import { PICK_MSG } from '../src/background/pickMessages.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_DIR = path.resolve(HERE, '..');
@@ -185,7 +184,7 @@ if (!chromium) {
       const deadline = Date.now() + timeoutMs;
       let last = null;
       while (Date.now() < deadline) {
-        last = await send(PICK_MSG.GET_PICK, { tabId });
+        last = await send(MSG.GET_PICK, { tabId });
         if (last && last.phase === phase) return last;
         await sleep(60);
       }
@@ -248,7 +247,7 @@ if (!chromium) {
         await page.goto(fixtureOrigin + '/hostile?case=overlay', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
 
-        assert.deepEqual(await send(PICK_MSG.START_PICK, { tabId }), { ok: true, tabId });
+        assert.deepEqual(await send(MSG.START_PICK, { tabId }), { ok: true, tabId });
         const rect = await hover(page, '#inner');
         const ui = await overlayState(page);
 
@@ -271,7 +270,7 @@ if (!chromium) {
         assert.ok(ui.rect.width > rect.width, 'which is wider than the span inside it');
         assert.equal(ui.chipText, 'div “On time”', '§6.1: the label chip is tag + trimmed text');
 
-        await send(PICK_MSG.CANCEL_PICK, { tabId });
+        await send(MSG.CANCEL_PICK, { tabId });
         await page.close();
       });
 
@@ -280,12 +279,12 @@ if (!chromium) {
         await page.emulateMedia({ colorScheme: 'dark' });
         await page.goto(fixtureOrigin + '/hostile?case=dark', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
-        await send(PICK_MSG.START_PICK, { tabId });
+        await send(MSG.START_PICK, { tabId });
         await hover(page, '#inner');
         const ui = await overlayState(page);
         assert.equal(ui.border, '2px solid rgb(74, 144, 255)', '§9.1 dark --accent');
         assert.equal(ui.chipBg, 'rgb(74, 144, 255)');
-        await send(PICK_MSG.CANCEL_PICK, { tabId });
+        await send(MSG.CANCEL_PICK, { tabId });
         await page.close();
       });
 
@@ -300,7 +299,7 @@ if (!chromium) {
         await page.click('#btn');
         assert.deepEqual(await counters(), { clicks: 1, downs: 1 }, 'the fixture counts a normal click');
 
-        await send(PICK_MSG.START_PICK, { tabId });
+        await send(MSG.START_PICK, { tabId });
         await hover(page, '#btn');
         await page.mouse.down();
         await page.mouse.up();
@@ -312,7 +311,7 @@ if (!chromium) {
         // The wait is load-bearing: the confirm flash above schedules its own teardown
         // 400 ms after the click, and that timer must not remove the NEXT pick's
         // overlay. Asserting sooner than 400 ms would pass either way.
-        await send(PICK_MSG.START_PICK, { tabId });
+        await send(MSG.START_PICK, { tabId });
         await hover(page, '#btn');
         await sleep(500);
         assert.equal((await overlayState(page)).shown, true,
@@ -345,9 +344,9 @@ if (!chromium) {
         const sources = await waitForSources(tabId, 2);
         assert.equal(sources.sources.length, 2, 'both demo sources are captured before the pick');
 
-        assert.equal((await send(PICK_MSG.GET_PICK, { tabId })).phase, 'idle');
-        await send(PICK_MSG.START_PICK, { tabId });
-        assert.equal((await send(PICK_MSG.GET_PICK, { tabId })).phase, 'picking');
+        assert.equal((await send(MSG.GET_PICK, { tabId })).phase, 'idle');
+        await send(MSG.START_PICK, { tabId });
+        assert.equal((await send(MSG.GET_PICK, { tabId })).phase, 'picking');
 
         await hover(page, '#status-pill');
         await page.mouse.down();
@@ -410,7 +409,7 @@ if (!chromium) {
         const tabId = await tabIdOf(page);
         await waitForSources(tabId, 2);
 
-        await send(PICK_MSG.START_PICK, { tabId });
+        await send(MSG.START_PICK, { tabId });
         await hover(page, '#price-total');
         await page.mouse.down();
         await page.mouse.up();
@@ -427,7 +426,7 @@ if (!chromium) {
 
       /* ══════════════════════════════════════════════════ honest failure, no fantasy */
       await t.test('§1.1 a tab with no page agent is told so, not left waiting', async () => {
-        const answer = await send(PICK_MSG.START_PICK, { tabId: 987654321 });
+        const answer = await send(MSG.START_PICK, { tabId: 987654321 });
         assert.deepEqual(answer, { ok: false, reason: 'no-content-script' });
       });
 

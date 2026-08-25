@@ -37,8 +37,7 @@
     CAPTURED: 'port:captured',
     SOFT_NAV: 'port:softNav',
     MATCH_LIST: 'port:matchList',
-    // M3 pick mode. These three live in background/pickMessages.js until their owner
-    // merges them into messages.js — same mirroring rule, same commit discipline.
+    // M3 pick mode — same mirroring rule, same commit discipline.
     PICK_START: 'port:pickStart',
     PICK_CANCEL: 'port:pickCancel',
     PICKED: 'port:picked'

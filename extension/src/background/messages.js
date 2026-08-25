@@ -7,6 +7,12 @@
  * Rule §17.8: all async messaging uses these constants. No magic strings anywhere.
  * The typedefs below are the source of truth for the shapes in PLAN.md §4.
  *
+ * M3's pick types were staged in `background/pickMessages.js` while this file was
+ * read-only to their author; they were folded in here — values byte-for-byte, so the
+ * mirrored block in `agent.js` did not move — and that file is gone. `PHASE` came with
+ * them out of `pickApi.js` for the same reason: it is payload vocabulary, so the panel
+ * should not import a service-worker module to read a word off the wire.
+ *
  * ── The one place §17.8 cannot reach ────────────────────────────────────────────
  * `src/content/interceptor.js` runs in the MAIN world and `src/content/agent.js` runs
  * as a classic (non-module) content script. Neither has a module graph, so neither can
@@ -126,6 +132,18 @@
  * @property {{path:string, tokens:{type:"key"|"index", value:string|number}[], value:any}[]} changes
  */
 
+/**
+ * @typedef {Object} ElementSnapshot   PLAN.md §7.3, produced by agent.js
+ * @property {string} tag
+ * @property {string} text             innerText, trimmed, ≤ 300 chars
+ * @property {Record<string,string>} attrs   every attribute except style and class
+ * @property {string[]} cls            sorted class list
+ * @property {Record<string,string>} style   computed color, backgroundColor,
+ *   borderColor, display, visibility, opacity
+ * @property {number} childCount
+ * @property {string[]} childTexts     first 5 children, ≤ 30 chars each
+ */
+
 /* ───────────────────────────────────────── MIRRORED in both content scripts (see top) */
 
 /** Tag on every MAIN <-> ISOLATED postMessage frame (PLAN.md §2). */
@@ -169,7 +187,28 @@ export const PORT_MSG = {
   /** agent -> SW. `{url}` */
   SOFT_NAV: 'port:softNav',
   /** SW -> agent. `{entries: MatchEntry[]}` — forwarded straight into the MAIN world. */
-  MATCH_LIST: 'port:matchList'
+  MATCH_LIST: 'port:matchList',
+
+  /* ───────────────────────────────────── M3 — pick mode (PLAN.md §6.1, §10.1B/C) ─── */
+
+  /**
+   * SW -> agent. Enter pick mode (§6.1): crosshair cursor, hover overlay, capture-phase
+   * listeners. Payload `{}`. Sending it twice is harmless — the second is ignored.
+   */
+  PICK_START: 'port:pickStart',
+
+  /** SW -> agent. Leave pick mode and remove every listener and overlay. `{}` */
+  PICK_CANCEL: 'port:pickCancel',
+
+  /**
+   * agent -> SW. The pick ended.
+   *
+   * `{ok:true, fingerprint:ElementFingerprint, snapshot:ElementSnapshot}` when the user
+   * clicked an element, or `{ok:false, reason:"cancelled"}` when they pressed Escape.
+   * A cancel is reported rather than silently dropped: the panel is showing "Click
+   * something on the page… (Esc to cancel)" and has to be told to stop.
+   */
+  PICKED: 'port:picked'
 };
 
 /* ───────────────────────────────────────── panel / MCP <-> service worker, one-shot */
@@ -326,8 +365,67 @@ export const MSG = {
    * panel re-reads GET_SITE_STATE / LIST_CHANGES, so the event cannot go stale.
    * `count` is included only so a panel can skip a re-read it does not need.
    */
-  CHANGES_CHANGED: 'msg:changesChanged'
+  CHANGES_CHANGED: 'msg:changesChanged',
+
+  /* ═══════════════════════ M3 — pick mode (§6.1, §6.3, §10.1A/B/C) ════════════════
+   *
+   * Nothing here is or becomes a Link. Every candidate below is a GUESS — a value
+   * match, with false positives — and only the §7 probe may raise one to verified
+   * (§0.2, §17.4).
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Panel -> SW. "Pick an element" (§10.1A). `{tabId?}` ->
+   * `{ok:true, tabId}` | `{ok:false, reason:"no-content-script"}` when MockLab has no
+   * live agent in that tab (a chrome:// page, or a tab opened before install) — the
+   * panel must say so rather than leaving the button spinning.
+   */
+  START_PICK: 'msg:startPick',
+
+  /** Panel -> SW. Escape's twin, from the panel side. `{tabId?}` -> `{ok:true}` */
+  CANCEL_PICK: 'msg:cancelPick',
+
+  /**
+   * Panel -> SW. The whole Pick tab state in one read. `{tabId?}` ->
+   * `{ok:true, tabId, origin, phase, element, candidates, searched, pickedAt}`
+   *
+   * `phase` is one of `PHASE` below. `element` is the picked element's §7.3 snapshot
+   * plus a `label` for the mini card, or null. `candidates` is §6.3's ranked list,
+   * `{sigId, sourceName, path, value, score, via, rules}[]`, empty when nothing matched
+   * — which the panel renders as `pick.noCandidates` (§11), never as a silent empty
+   * list.
+   *
+   * `searched` is `{sources, bounded, complete}` — how much of this tab's data the
+   * search actually reached. A response nests deeper or wider than MockLab enumerates
+   * (`candidates.js` MAX_DEPTH / MAX_PATHS) counts in `bounded` and makes `complete`
+   * false. It exists because `pick.noCandidates` says "MockLab couldn't find this text
+   * in any data the page loaded", which is a claim about the DATA; showing it after a
+   * bounded search would state a fact MockLab never established (§1.1). With
+   * `complete:false` and no candidates, the panel needs a different sentence — see the
+   * note in BUILD_LOG: the string for it is not invented here.
+   */
+  GET_PICK: 'msg:getPick',
+
+  /**
+   * SW -> panel broadcast. `{tabId, phase}` — pick mode started, was cancelled, or an
+   * element was picked. Data-free beyond the phase, by the same reasoning as
+   * `SOURCES_CHANGED` and `CHANGES_CHANGED`: the panel re-reads `GET_PICK`, so the
+   * event cannot go stale.
+   */
+  PICK_CHANGED: 'msg:pickChanged'
 };
+
+/**
+ * §10.1's three Pick-tab states, named — the vocabulary of `GET_PICK`'s `phase` and of
+ * `PICK_CHANGED`'s payload, which is why it lives here beside them and not in the
+ * service-worker module that happens to write it. The panel reads this word off the
+ * wire; it should not have to import a worker module to learn what it can say.
+ *
+ * NOT a link state. §17.4's three states (`verified` / `candidate` / `stale`) describe
+ * what MockLab has PROVED about a field; these three describe what the Pick tab is
+ * currently doing. Nothing here ever becomes the other.
+ */
+export const PHASE = { IDLE: 'idle', PICKING: 'picking', PICKED: 'picked' };
 
 /**
  * @typedef {Object} SourceSummary

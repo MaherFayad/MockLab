@@ -28,7 +28,6 @@ import { originOf, rememberSignature, groupChangesBySignature, countActiveChange
 import { parsePath, enumeratePaths, getByPath } from '../shared/jsonpath.js';
 import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
 import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
-import { PICK_MSG, PICK_PORT_MSG } from './pickMessages.js';
 import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
 
 /**
@@ -299,7 +298,7 @@ function handlePortMessage(tabId, message) {
         console.error('[MockLab] capture failed', err)
       );
       break;
-    case PICK_PORT_MSG.PICKED:
+    case PORT_MSG.PICKED:
       pickApi.onPicked(tabId, message.payload);
       break;
     case PORT_MSG.SOFT_NAV: {
@@ -462,7 +461,7 @@ const pickApi = createPickApi({
   /** Data-free beyond the phase, like every other panel broadcast in this file. */
   notify(tabId, phase) {
     chrome.runtime
-      .sendMessage({ type: PICK_MSG.PICK_CHANGED, payload: { tabId, phase } })
+      .sendMessage({ type: MSG.PICK_CHANGED, payload: { tabId, phase } })
       .catch(() => {
         /* no panel open — expected, not an error */
       });

@@ -10,7 +10,6 @@
  */
 import { S } from './strings.js';
 import { MSG } from '../background/messages.js';
-import { PICK_MSG } from '../background/pickMessages.js';
 import { el, clear, ICON, withTip } from './dom.js';
 import { renderSources } from './sources.js';
 import { renderPickTab, pickingChrome, cancelPick, loadPick } from './pick.js';
@@ -397,7 +396,7 @@ function wireEvents() {
     // Pick mode can also be entered or cancelled from somewhere that is not this panel
     // — the page's own Escape key, or an agent over MCP (§1.6) — so the tab follows the
     // worker rather than only its own clicks.
-    else if (type === PICK_MSG.PICK_CHANGED) void refresh();
+    else if (type === MSG.PICK_CHANGED) void refresh();
     return false;
   });
   chrome.tabs.onActivated.addListener(() => void refresh());

@@ -34,7 +34,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { S } from '../src/panel/strings.js';
-import { PICK_MSG } from '../src/background/pickMessages.js';
+import { MSG } from '../src/background/messages.js';
 import { createServer } from '../../companion/src/index.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -615,7 +615,7 @@ if (!chromium) {
         // Hand the worker back to idle. Everything below simulates a Pick-tab state by
         // rendering into this same panel, and a live pick would re-render over it the
         // next time the worker broadcast anything.
-        await panel.evaluate((type) => chrome.runtime.sendMessage({ type, payload: {} }), PICK_MSG.CANCEL_PICK);
+        await panel.evaluate((type) => chrome.runtime.sendMessage({ type, payload: {} }), MSG.CANCEL_PICK);
         await panel.waitForTimeout(400);
       });
 

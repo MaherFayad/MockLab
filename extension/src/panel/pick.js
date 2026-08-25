@@ -34,12 +34,7 @@
  * cannot pick instead of posting `undefined` at the worker and appearing to hang.
  */
 import { S } from './strings.js';
-import { PICK_MSG } from '../background/pickMessages.js';
-// `PHASE` is §10.1's three states, named — and named, by its own comment, for this tab.
-// It should sit in `pickMessages.js` beside `PICK_MSG` (it is payload vocabulary, not
-// worker internals) so the panel need not reach into a service-worker module for it;
-// that is a one-line move for whoever lands the merge commit pickMessages.js describes.
-import { PHASE } from '../background/pickApi.js';
+import { MSG, PHASE } from '../background/messages.js';
 import { el, clear, ICON } from './dom.js';
 import { formatValue } from './sources.js';
 import { parsePath } from '../shared/jsonpath.js';
@@ -59,7 +54,7 @@ export const PICK_CONTRACT = ['START_PICK', 'CANCEL_PICK', 'GET_PICK', 'PICK_CHA
 
 /** @returns {string[]} contract names the message module does not define. */
 export function missingPickContract() {
-  return PICK_CONTRACT.filter((name) => typeof PICK_MSG[name] !== 'string');
+  return PICK_CONTRACT.filter((name) => typeof MSG[name] !== 'string');
 }
 
 /** Can the picker actually be entered right now? */
@@ -337,7 +332,7 @@ export function pickingChrome(picking) {
  */
 export async function startPick(ctx) {
   if (!canPick(ctx)) return;
-  const res = await ctx.send(PICK_MSG.START_PICK, { tabId: ctx.state.tabId });
+  const res = await ctx.send(MSG.START_PICK, { tabId: ctx.state.tabId });
   if (!res || !res.ok) {
     ctx.state.pick = { ...EMPTY_PICK };
     ctx.toast(S.errors.pageBroke, true);
@@ -358,7 +353,7 @@ export async function cancelPick(ctx) {
   if (missingPickContract().length) return;
   ctx.state.pick = { ...EMPTY_PICK };
   ctx.rerender();
-  await ctx.send(PICK_MSG.CANCEL_PICK, { tabId: ctx.state.tabId });
+  await ctx.send(MSG.CANCEL_PICK, { tabId: ctx.state.tabId });
 }
 
 /**
@@ -371,7 +366,7 @@ export async function loadPick(ctx) {
     ctx.state.pick = { ...EMPTY_PICK };
     return;
   }
-  const res = await ctx.send(PICK_MSG.GET_PICK, { tabId: ctx.state.tabId });
+  const res = await ctx.send(MSG.GET_PICK, { tabId: ctx.state.tabId });
   const phase = res && res.ok ? res.phase : PHASE.IDLE;
   ctx.state.pick = {
     picking: phase === PHASE.PICKING,
