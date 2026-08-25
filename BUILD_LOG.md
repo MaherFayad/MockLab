@@ -618,10 +618,23 @@ from M2 in the same window. Owned files did not overlap.
   enabled — hidden, the screen misdescribes itself; enabled, it promises an experiment
   that cannot run.
 
-**The DoD, which is the milestone.** Picking the demo pill lists `status` in the top 3
-when the pill reads "On time" and the data says `"ON_TIME"`. No substring or numeric match
-connects those; it works only through §6.3's sibling-key heuristic. Picking the price finds
-`price.total` by numeric match. Both proven end to end in real Chromium.
+**The DoD, which is the milestone.** Picking the demo pill lists `status` in the top 3 when
+the pill reads "On time" and the data says `"ON_TIME"`. Picking the price finds
+`price.total` by numeric match. Both proven end to end in real Chromium, by QA's own
+harness as well as ours.
+
+**What actually connects "On time" to `"ON_TIME"` — corrected.** This paragraph first said
+"no substring or numeric match connects those; it works only through §6.3's sibling-key
+heuristic". That is false. §6.3 derives the word needle `time`, and `"ON_TIME".toLowerCase()`
+contains it, so the spec's own substring rule scores `$.status` at **0.50 — rank 1**, above
+sibling-key's 0.45. The shipped product reports it plainly: `via: substring`. The heuristic
+also fires, which is what made the wrong story easy to believe.
+
+The demo's own pill is therefore the *weakest* possible evidence for the heuristic, because
+English "On time" and the constant `ON_TIME` happen to share a substring. `"Delayed"`/`"LATE"`,
+`"Sold out"`/`"OOS"`, and any localized interface share none — which is the real reason the
+gate is broadened (Deviation 31), and why `candidates.test.js` carries a Spanish fixture
+where nothing but the heuristic can find the field.
 
 **Three spec problems, found by measuring rather than by assuming**
 

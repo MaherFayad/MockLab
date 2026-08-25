@@ -360,11 +360,21 @@ function record(byField, source, hit) {
  * anywhere, add it with score 0.45 (this is how `ON_TIME` gets found when the pill
  * shows localized 'On time' text with no verbatim match)".
  *
- * Read strictly — "a hit for the FULL-TEXT needle" — the rule can never fire in the
- * case the sentence itself gives as its example: a pill reading "On time" has no
- * verbatim match anywhere in `{"status":"ON_TIME"}`, so there is no full-text hit for
- * the heuristic to hang off, and `ON_TIME` is never found. The strict reading forbids
- * its own example.
+ * Read strictly — "a hit for the FULL-TEXT needle" — the gate never fires in the case
+ * the sentence itself gives as its example: a pill reading "On time" has no verbatim
+ * match anywhere in `{"status":"ON_TIME"}`, so there is no full-text hit to hang off.
+ *
+ * `ON_TIME` is still FOUND, though — and an earlier version of this comment claimed it
+ * was not, which was wrong. `needlesFrom` also derives the word needle `time`, and
+ * `"ON_TIME".toLowerCase()` contains it, so the plain substring rule scores `$.status`
+ * at 0.50, above the 0.45 this heuristic would give it. The demo passes either way.
+ *
+ * The cost of the strict reading is subtler than a failed example, which is why it was
+ * easy to mis-state: it makes enum discovery depend on English "On time" and the
+ * constant `ON_TIME` happening to share a substring. `"Delayed"`/`"LATE"`,
+ * `"Sold out"`/`"OOS"` and any localized interface share none, and there the strict gate
+ * finds nothing at all. See the LOCALIZED fixture in `candidates.test.js`, where the
+ * heuristic is the only thing that can find the field.
  *
  * So "hit" here means any hit from any needle derived from the element (see
  * `needlesFrom`) — the test being "this response demonstrably renders part of this
