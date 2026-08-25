@@ -16,7 +16,8 @@ agent depends on.
 - Repository tree exactly per PLAN.md §2.1, plus `.gitignore` and `BUILD_LOG.md`.
 - Root `package.json` with `extension` + `companion` workspaces and the `test` / `zip`
   scripts from §2.1.
-- `extension/manifest.json` written verbatim from PLAN.md §3.
+- `extension/manifest.json` written verbatim from PLAN.md §3, plus the `sidePanel`
+  permission the spec omits (Deviation 1 — see the QA verdict below).
 - `extension/icons/{16,32,48,128}.png` — a white flask on an accent-blue (`#0066FF`)
   rounded square, generated from pixel data with `node:zlib` so there is no image
   dependency and no build step. Legible at 16px.
@@ -50,7 +51,7 @@ one session, so §7.2 noise masking has something real to mask.
 
 **Tests:** `npm test -ws` — extension 3/3 pass, companion 5/5 pass.
 
-**QA verdict:** FAIL on first pass -> fixed -> re-verified.
+**QA verdict:** FAIL on first pass -> fixed -> **PASS** on re-verification (commit `a73aa41`).
 
 The verifier loaded the unpacked extension in real Chromium and found one blocking
 defect plus five smaller ones. All are fixed:
@@ -91,6 +92,13 @@ scripts have no module graph, so `interceptor.js` **cannot** import `MOCKLAB_TAG
 `TOKEN_ATTRIBUTE` from `messages.js`. It must duplicate those two literals with a
 comment pointing back at `messages.js`. Nobody should "fix" this by adding an import —
 that silently breaks the MAIN-world patch.
+
+**§17.5 is proven end-to-end, not statically.** The verifier planted three Changes in
+`chrome.storage.local` (two `probe:true`, one real), closed the browser, and relaunched
+against the same user-data directory to force a genuine cold service-worker start. Both
+probe Changes were swept, the real Change survived, and the service-worker console was
+empty. The module-top-level call in `background.js` — not the `onStartup` listener — is
+what does that work, which is the case that matters after a crash.
 
 **Automated end-to-end testing is available.** Playwright can load the real unpacked
 extension (`launchPersistentContext` + `--load-extension`), and the MV3 service worker
