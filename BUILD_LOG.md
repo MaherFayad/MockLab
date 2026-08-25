@@ -277,9 +277,11 @@ are now treated as ids, and when a path holds nothing meaningful the friendly na
 back to the host rather than to an id or to "Api" (PLAN.md §1.2's zero-jargon
 rule; the banned word list is in §11's closing note).
 D6 — the delimited-token rule now applies to single-word names too, so a bare
-`tracelogid` and an `x_tracelogid` are treated alike. D7 — README deviation 11 now reads
-"866 lines (644 code)" — the file length §17.10 actually talks about, not just the code
-count — and gives the real reason the file cannot be split: the manifest
+`tracelogid` and an `x_tracelogid` are treated alike. D7 — README deviation 11 was rewritten at the
+time to state the file length §17.10 actually talks about, not just the code count (at
+`8d236fb` that read "866 lines (644 code)"; `interceptor.js` has since grown and README's
+row — the guarded copy — reads 920/665 today, so no figure is repeated here) — and gives
+the real reason the file cannot be split: the manifest
 *would* accept several MAIN-world `js` entries, but they share the page's global scope,
 so splitting would publish the match list and patch internals on `window` where a hostile
 page could rewrite them. The §5.1.3 XHR-mechanism divergence the verifier flagged as
@@ -697,10 +699,18 @@ Removing §6.3's `related` gate now fails on the demo itself; before, only a syn
 fixture caught it. M2 spent a whole milestone with a code path no fixture could execute,
 and this is the cheapest available insurance against a repeat.
 
-**Evidence at the M3 commit:** `npm test -ws` extension 207/207, companion 5/5, 0 skipped,
-stable across three consecutive runs. Four browser suites against the real unpacked
-extension in real Chromium: `e2e` 14, `panel` 21, `picker` 7, `pickerdom` 6 — all four run
-individually and in the parallel run, and all four are wired into CI as their own steps.
+**Evidence at the M3 verdict commit (`6fc256c`):** `npm test -ws` extension 231/231,
+companion 5/5, 0 skipped. Four browser suites against the real unpacked extension in real
+Chromium: `e2e` 15, `panel` 23, `picker` 7, `pickerdom` 6 — each run individually as well as
+in the parallel run, all four wired into CI, and CI now fails the job unless each reports
+at least one pass and exactly zero skips.
+
+At the M3 code commit (`0ff2bd1`) the same suites were 207/207 and 14/21/7/6; the growth
+since is the follow-up work recorded below. **Both figures name their hash, because the
+first version of this paragraph named neither and reported the `0ff2bd1` numbers beside
+carry-forwards that only exist in later commits — the section described two different
+trees.** That is the failure the M2 entry's "Stale evidence" note was written about,
+recurring one milestone later in the paragraph reporting the evidence.
 
 **QA verdict:** _pending qa-verifier_
 
