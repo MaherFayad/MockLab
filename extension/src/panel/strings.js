@@ -150,6 +150,13 @@ export const S = {
     resetSite: 'Reset this site',
     resetAll: 'Reset everything',
     resetAllConfirm: 'Remove every change and scenario on every site?',
+    // The counts come back from the service worker, so this can be specific instead of
+    // a generic "done". The second sentence is the honest part: only THIS page reloads.
+    // Other open tabs are not disturbed — they stop seeing edited data from their next
+    // request onward, which is what the user will actually observe.
+    resetAllDone: (changes, scenarios) =>
+      `Removed ${changes} change${changes === 1 ? '' : 's'} and ${scenarios} scenario${scenarios === 1 ? '' : 's'}. This page is back to normal; other open tabs go back to real data the next time they load something.`,
+    resetAllNothing: 'There was nothing to remove.',
     limitations: 'MockLab works on the main page only, and cannot edit data that arrives as a live stream.'
   },
   // + not in §11 — labels that are only ever rendered while Advanced mode is ON, which

@@ -280,28 +280,29 @@ async function saveSetting(patch) {
 }
 
 /**
- * "Reset everything" (§10.5 danger zone) spans every origin, and there is no message
- * type for it: RESET_SITE is scoped to one site by design. The panel therefore clears
- * the shared store itself — legal, because chrome.storage IS the shared source of truth
- * (§1.6) and the service worker's storage.onChanged listener re-pushes every affected
- * tab's match list, recomputes the badges and notifies every open panel exactly as it
- * does for a Change made anywhere else. Requested for M6 so an agent can do it too.
+ * "Reset everything" (§10.5 danger zone) spans every origin, so it is its own message
+ * rather than a loop over RESET_SITE — and it goes through the contract, not around it
+ * into chrome.storage, so an MCP agent can do exactly what the human just did (§1.6).
+ *
+ * The worker deliberately spares `settings` (it holds the companion pairing token, and
+ * §10.5's copy never warns that a data reset would unpair the user's AI) and the
+ * derived signature cache. The toast reports the counts it actually cleared, and says
+ * plainly that only THIS page reloads — the other open tabs are left alone and simply
+ * stop receiving edited data.
  */
 async function resetEverything() {
   state.confirm = null;
-  try {
-    const all = await chrome.storage.local.get(null);
-    const doomed = Object.keys(all).filter(
-      (key) => key.startsWith('changes:') || key.startsWith('presets:') || key.startsWith('bindings:')
-    );
-    if (doomed.length) await chrome.storage.local.remove(doomed);
-  } catch {
+  const res = await send(MSG.RESET_ALL, { tabId: state.tabId, refresh: true });
+  if (!res.ok) {
     toast(S.errors.pageBroke, true);
     return;
   }
   state.open = null;
   state.editing = null;
-  await send(MSG.REFRESH_TAB, { tabId: state.tabId });
+  const cleared = res.cleared || {};
+  const changes = Number(cleared.changes) || 0;
+  const presets = Number(cleared.presets) || 0;
+  toast(changes + presets === 0 ? S.settings.resetAllNothing : S.settings.resetAllDone(changes, presets));
   await refresh();
 }
 
