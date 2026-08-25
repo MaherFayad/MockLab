@@ -198,7 +198,9 @@ test('22 trip.com: the trace-log param is dropped, the hotel id is starred, the 
   assert.ok(pattern.includes('cityEnName=Makkah'), 'stable params must survive');
   assert.ok(pattern.includes('curr=SAR') && pattern.includes('locale=en-SA'));
   assert.ok(pattern.includes('checkIn=2026-08-25'), 'dates must survive');
-  assert.ok(pattern.includes('detailFilters=17|1~17~1*80|0|1~80~0'), 'filter sets must survive');
+  // Kept values are percent-encoded so urlPattern is unambiguous (see case 32); the
+  // literal `*` inside the filter set becomes %2A so it cannot be read as a wildcard.
+  assert.ok(pattern.includes('detailFilters=17%7C1~17~1%2A80%7C0%7C1~80~0'), 'filter sets must survive');
 });
 
 test('23 trip.com: two loads differing only in volatile params produce the SAME sigId', async () => {
@@ -238,6 +240,11 @@ test('26 the delimited-token rule drops trace ids without touching meaningful na
   assert.equal(isVolatileParamName('checkInTime'), false, 'generic "time" must not merge real params');
   assert.equal(isVolatileParamName('signInMethod'), false, 'generic "sign" must not merge real params');
   assert.equal(isVolatileParamName('hoteluniquekey'), false);
+  // The token rule applies to one-word names too: a bare `tracelogid` and an
+  // `x_tracelogid` must not be treated differently.
+  assert.equal(isVolatileParamName('tracelogid'), true);
+  assert.equal(isVolatileParamName('x_tracelogid'), true);
+  assert.equal(isVolatileParamName('trace'), true);
 });
 
 test('27 isVolatileValue covers all four §5.2 value shapes and nothing else', () => {
@@ -261,6 +268,16 @@ test('28 friendly names are the sentence-case, jargon-free names the panel shows
   assert.equal(friendlyName(buildSignature('GET', 'https://a.test/v2/booking-summary')), 'Booking summary');
   assert.equal(friendlyName(buildSignature('POST', 'https://a.test/graphql', { operationName: 'getHotelDetail' })), 'Get hotel detail');
   assert.equal(friendlyName(buildSignature('GET', 'https://a.test/')), 'a.test');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/orders/44212114/items')), 'Orders items');
+});
+
+test('28b a path with nothing meaningful in it falls back to the host, never to an id', () => {
+  // /api/58 used to be named "58". "Api" would be worse still: §11 forbids that word
+  // in default copy. The host is the only honest name left.
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/api/58')), 'a.test');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/v1/2024/1042')), 'a.test');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/api/58/booking')), 'Booking');
+  assert.equal(friendlyName(buildSignature('GET', 'https://a.test/v2/seat/12')), 'Seat');
 });
 
 /* --------------------------------------------------------------- match list */
@@ -301,4 +318,95 @@ test('31 compileMatchList carries the GraphQL operation through', () => {
   ]);
   assert.equal(entry.gqlOperation, 'HotelDetail');
   assert.deepEqual(entry.params, []);
+});
+
+/* ------------------------------------------------- the round-trip invariant (D3) */
+
+/**
+ * Mirror of the in-page matcher in `interceptor.js` (findChanges). It has to be
+ * duplicated here because that file is a MAIN-world IIFE with no exports — see
+ * README "Deviations" 11 and 12. The invariant it checks is the important part:
+ *
+ *   a compiled match entry MUST match the concrete URL its signature was built from.
+ *
+ * When it does not, nothing throws and nothing is logged — the user's change simply
+ * never applies, which is exactly the kind of silent lie PLAN.md §1 forbids.
+ */
+function matchesOwnUrl(entry, method, url) {
+  const parsed = new URL(url);
+  const base = parsed.protocol + '//' + parsed.host.toLowerCase() + parsed.pathname;
+  if (entry.method !== String(method).toUpperCase()) return false;
+  if (!new RegExp(entry.urlRegex).test(base)) return false;
+
+  const groups = new Map();
+  for (const [name, value] of entry.params) {
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(value);
+  }
+  for (const [name, wants] of groups) {
+    const pool = parsed.searchParams.getAll(name);
+    if (pool.length < wants.length) return false;
+    let wildcards = 0;
+    for (const want of wants) {
+      if (want === '*') { wildcards += 1; continue; }
+      const at = pool.indexOf(want);
+      if (at === -1) return false;
+      pool.splice(at, 1);
+    }
+    if (pool.length < wildcards) return false;
+  }
+  return true;
+}
+
+const ROUND_TRIP_URLS = [
+  'https://a.test/api/x',
+  'https://a.test/api/x?a=1&b=2',
+  'https://a.test/orders/44212114/items?curr=SAR',
+  'https://a.test/api/x?q=a%26b',                       // encoded & inside a kept value
+  'https://a.test/api/x?q=a%3Db',                       // encoded = inside a kept value
+  'https://a.test/api/x?q=%D9%85%D8%AF%D9%8A%D9%86%D8%A9', // unicode value
+  'https://a.test/api/x?q=hello+world',                 // + means space
+  'https://a.test/api/x?a=1&a=2',                       // repeated param name
+  'https://a.test/api/x?a=1&a=1',                       // repeated identical values
+  'https://a.test/api/x?empty=&b=2',
+  'https://a.test/api/x?star=%2A',                      // a literal * is not a wildcard
+  'https://a.test/api/x?hotelId=44212114&t=99',         // starred value + dropped param
+  'https://a.test/api/x?filters=17%7C1~17~1*80%7C0',    // pipes and a literal *
+  'https://a.test/api/x?path=%2Fa%2Fb%2Fc',
+  TRIP_BASE + '&masterhotelid_tracelogid=100051355-0a8e3544-496571-67667&subStamp=1440'
+];
+
+test('32 INVARIANT: a compiled entry always matches the URL its signature came from', async () => {
+  for (const url of ROUND_TRIP_URLS) {
+    const signature = await normalize('GET', url);
+    const [entry] = compileMatchList([
+      { sigId: signature.sigId, signature, changes: [{ path: '$.a', tokens: [{ type: 'key', value: 'a' }], value: 1 }] }
+    ]);
+    assert.ok(entry, 'an entry must be compiled for ' + url);
+    assert.equal(matchesOwnUrl(entry, 'GET', url), true, 'entry must match its own URL: ' + url);
+  }
+});
+
+test('33 the round-trip does not make the matcher indiscriminate', async () => {
+  const signature = await normalize('GET', 'https://a.test/api/x?q=a%26b');
+  const [entry] = compileMatchList([
+    { sigId: signature.sigId, signature, changes: [{ path: '$.a', tokens: [], value: 1 }] }
+  ]);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?q=a%26b'), true);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?q=a'), false);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?q=b'), false);
+  assert.equal(matchesOwnUrl(entry, 'POST', 'https://a.test/api/x?q=a%26b'), false);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/y?q=a%26b'), false);
+  // Extra params are volatile by construction, so they must not block a match.
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?q=a%26b&_=1770000000'), true);
+});
+
+test('34 repeated param names are matched as a multiset, not by the first value', async () => {
+  const signature = await normalize('GET', 'https://a.test/api/x?tag=red&tag=blue');
+  const [entry] = compileMatchList([
+    { sigId: signature.sigId, signature, changes: [{ path: '$.a', tokens: [], value: 1 }] }
+  ]);
+  assert.deepEqual(entry.params, [['tag', 'blue'], ['tag', 'red']]);
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?tag=blue&tag=red'), true, 'order must not matter');
+  assert.equal(matchesOwnUrl(entry, 'GET', 'https://a.test/api/x?tag=red'), false, 'a missing value must not match');
 });

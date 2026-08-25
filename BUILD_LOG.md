@@ -209,4 +209,77 @@ and dynamic `import()` of an extension URL would require adding `messages.js` to
 carry a clearly-marked mirrored-literals block, and `messages.js`'s header names both
 files. Do not "fix" either with an import.
 
-**Deviations:** 6 new (7–12) — see README "Deviations".
+**Deviations:** 8 new (7–14) — see README "Deviations".
+
+### M1 QA round 2 — FAIL → fixed
+
+Adversarial verification in real Chromium reproduced every DoD bullet independently
+(2 sources in 131 ms, no duplicates across 5 soft navs, 60 distinct sources, a planted
+Change re-rendering the site with its own `is-cancelled` class, the original-Response
+guarantee proven through the unforgeable `type`/`url` fields, stable trip.com sigIds),
+re-proved the §17.5 cold-restart sweep, and confirmed every mirrored constant is
+byte-equal to `messages.js`. It also found two defects worth the whole exercise.
+
+**D1 (blocking) — MockLab froze every streaming page.** `isTextual()` admitted
+`text/event-stream` through its `text/` prefix, and `handleFetchResponse` awaited
+`clone.text()` before handing the Response back. `response.bodyUsed` is always `false`
+at that moment, so §5.1.4's streaming guard could never fire. An open Server-Sent
+Events fetch therefore **never resolved**: any live ticker, chat view or streaming-SSR
+page was permanently stuck — on every site, with zero Changes configured, merely by
+having MockLab installed. Measured on the same page, extension off vs on:
+`text/x-component` took 3 ms → 1506 ms (exactly the stream's duration), and SSE never
+rendered at all within 5 s.
+
+Fixed in two independent layers, because either one alone would have left a hole:
+
+1. **Match first, buffer second.** Matching needs the method, the URL and the *request*
+   body — never the response body. So `findChanges()` now runs before anything is read:
+   when nothing matches, the ORIGINAL Response goes back to the page immediately and the
+   clone is read afterwards purely to fill the Sources list. With no Changes configured —
+   the state every page is in most of the time — MockLab now adds no latency to any
+   response at all.
+2. **Streamed content types are never read and never cloned.** `text/event-stream`,
+   `text/x-component`, `x-ndjson`, `stream+json` and `multipart/*` are captured
+   metadata-only per §5.1.4, so they stay visible in Sources as read-only.
+   Both read paths also carry a deadline (3 s when rewriting, 5 s for a background
+   capture) that cancels the clone's stream, so a body that never ends can strand
+   neither the page nor the capture.
+
+Proved with a new regression harness that measures the same page with the extension off
+and on. **On the fixed build:** SSE first chunk 14 ms → 39 ms and the stream keeps
+flowing; `text/x-component` headers 109 ms → 134 ms; binary still skipped. The 25 ms
+delta is deviation 10's one-time match-list wait and is identical across SSE, RSC and
+binary — it is not a streaming stall. **On a deliberately re-broken copy of the build,
+the same harness reproduces the original defect exactly:** SSE never resolves and RSC
+takes 1527 ms. The test is a real guard, not a rubber stamp.
+
+**D3 (medium) — a silently non-applying Change.** `urlPattern` carried DECODED query
+values, so a kept param containing a literal `&` (`?q=a%26b`) became `q=a&b`, and
+`compileMatchList` read it back as two params. The compiled entry could then never match
+the very URL it was derived from: no error, no warning, the user's edit simply did
+nothing — precisely the silent lie §1 forbids. Query names and values are now
+percent-encoded into `urlPattern` (`*` stays bare as the volatile sentinel; a literal `*`
+becomes `%2A`), and decoded back out when compiling. The in-page matcher was also
+matching repeated param names with `searchParams.get()`, which only ever sees the first
+value, so `?tag=red&tag=blue` could not match either; it now matches as a multiset.
+Locked down by a general invariant test — *a compiled entry must match the URL its
+signature came from* — over 15 URL shapes including encoded `&`, encoded `=`, unicode
+values, `+`-as-space, repeated names, empty values, a literal `*`, and the full
+sa.trip.com vector. Proved in the browser too: a Change on `?q=a%26b&tag=red&tag=blue`
+applies.
+
+**Smaller items, all fixed.** D4 — failed and aborted XHRs (`status 0`) no longer appear
+in Sources as empty entries. D5 — `/api/58` used to be named "58"; bare-number segments
+are now treated as ids, and when a path holds nothing meaningful the friendly name falls
+back to the host rather than to an id or to "Api" (a word §11 bans from default copy).
+D6 — the delimited-token rule now applies to single-word names too, so a bare
+`tracelogid` and an `x_tracelogid` are treated alike. D7 — README deviation 11 now reads
+"792 lines (606 code)" — the file length §17.10 actually talks about, not just the code
+count — and gives the real reason the file cannot be split: the manifest
+*would* accept several MAIN-world `js` entries, but they share the page's global scope,
+so splitting would publish the match list and patch internals on `window` where a hostile
+page could rewrite them. The §5.1.3 XHR-mechanism divergence the verifier flagged as
+undocumented is now deviation 13.
+
+**Re-verified after the fixes:** `npm test -ws` — extension **81/81**, companion 5/5.
+Chromium end-to-end: M1 DoD 25/25, mock engine 15/15, streaming regression 11/11.

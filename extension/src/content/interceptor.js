@@ -50,6 +50,10 @@
      * load, for the table itself, and every request after it is fully synchronous.
      */
     var MATCH_LIST_GATE_MS = 1000;
+    /** Deadline for buffering a body we intend to REWRITE. Expiry = hand back the original. */
+    var MODIFY_READ_TIMEOUT_MS = 3000;
+    /** Deadline for the background read that only feeds the Sources list. */
+    var CAPTURE_READ_TIMEOUT_MS = 5000;
 
     /* ── save originals FIRST (PLAN.md §5.1.1) ──────────────────────────────── */
     var realFetch = window.fetch;
@@ -169,6 +173,21 @@
 
     /* ── §5.3 matching ──────────────────────────────────────────────────────── */
 
+    function groupParams(params) {
+      var groups = [];
+      var list = params || [];
+      for (var i = 0; i < list.length; i += 1) {
+        var name = list[i][0];
+        var group = null;
+        for (var j = 0; j < groups.length; j += 1) {
+          if (groups[j].name === name) { group = groups[j]; break; }
+        }
+        if (!group) { group = { name: name, values: [] }; groups.push(group); }
+        group.values.push(list[i][1]);
+      }
+      return groups;
+    }
+
     function installMatchList(entries) {
       var next = [];
       if (Object.prototype.toString.call(entries) === '[object Array]') {
@@ -179,7 +198,9 @@
               sigId: entry.sigId,
               method: String(entry.method || 'GET').toUpperCase(),
               re: new RegExp(entry.urlRegex),
-              params: entry.params || [],
+              // Grouped once, here, so a repeated param name (?a=1&a=2) is matched as a
+              // multiset rather than by searchParams.get(), which only sees the first.
+              paramGroups: groupParams(entry.params),
               gql: entry.gqlOperation || null,
               changes: entry.changes || []
             });
@@ -216,11 +237,20 @@
         if (!entry.re.test(base)) continue;
         if (entry.gql && entry.gql !== gqlOperation) continue;
         var ok = true;
-        for (var j = 0; j < entry.params.length; j += 1) {
-          var name = entry.params[j][0];
-          var want = entry.params[j][1];
-          if (!parsed.searchParams.has(name)) { ok = false; break; }
-          if (want !== '*' && parsed.searchParams.get(name) !== want) { ok = false; break; }
+        for (var j = 0; j < entry.paramGroups.length; j += 1) {
+          var group = entry.paramGroups[j];
+          var pool = parsed.searchParams.getAll(group.name);
+          if (pool.length < group.values.length) { ok = false; break; }
+          pool = pool.slice();
+          var wildcards = 0;
+          for (var k = 0; k < group.values.length; k += 1) {
+            var want = group.values[k];
+            if (want === '*') { wildcards += 1; continue; }
+            var at = pool.indexOf(want);
+            if (at === -1) { ok = false; break; }
+            pool.splice(at, 1);
+          }
+          if (!ok || pool.length < wildcards) { ok = false; break; }
         }
         if (ok) return entry.changes;
       }
@@ -285,8 +315,28 @@
         value.indexOf('text/') === 0 ||
         value.indexOf('javascript') !== -1 ||
         value.indexOf('xml') !== -1 ||
-        value.indexOf('x-component') !== -1 ||
         value.indexOf('x-www-form-urlencoded') !== -1
+      );
+    }
+
+    /**
+     * Content types that are a LIVE STREAM, not a document with an end.
+     *
+     * Reading one to completion never completes, so a patch that awaits the body before
+     * handing the Response back leaves the page hanging forever — a ticker or chat UI
+     * simply stops working, on every site, with zero Changes configured. `bodyUsed` is
+     * always false at that moment, so §5.1.4's streaming guard cannot catch this on its
+     * own: the content type has to. These are captured metadata-only (§5.1.4) and their
+     * body is never read and never cloned.
+     */
+    function isStreamingType(contentType) {
+      var value = String(contentType || '').toLowerCase();
+      return (
+        value.indexOf('event-stream') !== -1 ||   // Server-Sent Events
+        value.indexOf('x-component') !== -1 ||    // Next.js App Router RSC flight data
+        value.indexOf('x-ndjson') !== -1 ||
+        value.indexOf('stream+json') !== -1 ||
+        value.indexOf('multipart/') === 0
       );
     }
 
@@ -322,6 +372,25 @@
         else facts.keys = Object.keys(body).sort();
       } catch (err) { /* a non-JSON body simply has no facts */ }
       return facts;
+    }
+
+    /**
+     * Parse a body if it is JSON and small enough, report the capture, and say whether
+     * it parsed. The captured body is always the REAL one — `mocked` records that a
+     * Change was applied on the way out, so the panel can show real vs new.
+     */
+    function reportBody(info, via, status, contentType, text, mocked) {
+      var chars = text ? text.length : 0;
+      var parsed = null;
+      var isJson = false;
+      if (text !== null && chars <= MAX_BODY_CHARS) {
+        try {
+          parsed = JSON.parse(text);
+          isJson = true;
+        } catch (err) { isJson = false; }
+      }
+      report(info, via, status, contentType, isJson ? parsed : unparsed(text), chars, mocked);
+      return isJson;
     }
 
     /** @param {{method:string,url:string,bodyText:string|null}} info */
@@ -385,24 +454,11 @@
       } catch (err) { return false; }
     }
 
-    function finishFetch(info, response, status, contentType, text) {
-      var chars = text ? text.length : 0;
-      var parsed = null;
-      var isJson = false;
-      if (chars <= MAX_BODY_CHARS) {
-        try {
-          parsed = JSON.parse(text);
-          isJson = true;
-        } catch (err) { isJson = false; }
-      }
+    function finishFetch(info, response, status, contentType, text, changes) {
+      // applyChanges returns null for a non-JSON body, so nothing else needs checking.
+      var modified = applyChanges(text, changes);
 
-      var modified = null;
-      if (isJson) {
-        var changes = findChanges(info.method, info.url, requestFacts(info).gql);
-        if (changes && changes.length) modified = applyChanges(text, changes);
-      }
-
-      report(info, 'fetch', status, contentType, isJson ? parsed : unparsed(text), chars, modified !== null);
+      reportBody(info, 'fetch', status, contentType, text, modified !== null);
 
       // §17.2: nothing matched -> the ORIGINAL Response object leaves this function.
       if (modified === null) return response;
@@ -418,17 +474,78 @@
       } catch (err) { return response; }
     }
 
+    /**
+     * Read a cloned body with a deadline, so a body that never ends can never strand
+     * either the page or the capture. On timeout the clone's stream is cancelled.
+     */
+    function readWithDeadline(clone, ms) {
+      return new Promise(function (resolve) {
+        var settled = false;
+        var timer = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          try {
+            if (clone.body && typeof clone.body.cancel === 'function') clone.body.cancel();
+          } catch (err) { /* already locked or closed */ }
+          resolve(null);
+        }, ms);
+        clone.text().then(
+          function (text) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(text);
+          },
+          function () {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(null);
+          }
+        );
+      });
+    }
+
+    /**
+     * No Change can apply to this response, so the ORIGINAL Response goes back to the
+     * page IMMEDIATELY — its promise resolves exactly when it would without MockLab —
+     * and the clone is read afterwards purely so the Sources list has something in it.
+     */
+    function captureInBackground(info, response, status, contentType) {
+      var clone;
+      try {
+        clone = response.clone();
+      } catch (err) {
+        report(info, 'fetch', status, contentType, unparsed(''), 0, false);
+        return;
+      }
+      readWithDeadline(clone, CAPTURE_READ_TIMEOUT_MS).then(function (text) {
+        try {
+          reportBody(info, 'fetch', status, contentType, text, false);
+        } catch (err) { /* capture is best-effort */ }
+      });
+    }
+
     function handleFetchResponse(info, response) {
       var status = 0;
       var contentType = '';
       try { status = response.status; } catch (err) { /* opaque */ }
       try { contentType = response.headers.get('content-type') || ''; } catch (err) { /* opaque */ }
 
-      // §5.1.4 — opaque, binary or oversized: metadata only, never modified.
+      // §5.1.4 — opaque, binary, streamed or oversized: metadata only, never read,
+      // never cloned, never modified.
       var opaque = false;
       try { opaque = response.type === 'opaque' || response.type === 'opaqueredirect' || response.bodyUsed; } catch (err) { /* ignore */ }
-      if (opaque || !isTextual(contentType) || tooLarge(response)) {
+      if (opaque || !isTextual(contentType) || isStreamingType(contentType) || tooLarge(response)) {
         report(info, 'fetch', status, contentType, unparsed(''), 0, false);
+        return response;
+      }
+
+      // Matching needs only the method, the URL and the REQUEST body — never the
+      // response body — so the decision to buffer at all is made before buffering.
+      var changes = findChanges(info.method, info.url, requestFacts(info).gql);
+      if (!changes || !changes.length) {
+        captureInBackground(info, response, status, contentType);
         return response;
       }
 
@@ -440,16 +557,16 @@
         return response;
       }
 
-      return clone.text().then(
-        function (text) {
-          try {
-            return finishFetch(info, response, status, contentType, text);
-          } catch (err) { return response; }
-        },
-        function () {
-          return response;
-        }
-      );
+      return readWithDeadline(clone, MODIFY_READ_TIMEOUT_MS).then(function (text) {
+        try {
+          if (text === null) {
+            // Never arrived in time: hand back the untouched original rather than hang.
+            report(info, 'fetch', status, contentType, unparsed(''), 0, false);
+            return response;
+          }
+          return finishFetch(info, response, status, contentType, text, changes);
+        } catch (err) { return response; }
+      });
     }
 
     function patchedFetch(self, args, input, init) {
@@ -505,6 +622,12 @@
      * instance-level `responseText` / `response` getters installed at open() time.
      * Whoever reads first — the site's onload or our own readystatechange listener —
      * triggers the one-shot finalize below, so ordering cannot go wrong.
+     *
+     * This deliberately diverges from §5.1.3's capture-phase `readystatechange` recipe
+     * (README "Deviations"): XMLHttpRequest is not a DOM tree, so `{capture:true}` does
+     * NOT make a listener fire first — listeners run in registration order, and a site
+     * that assigns `onreadystatechange` before calling send() would read the real body
+     * before our listener ever ran. A lazy getter cannot lose that race.
      */
     function finalizeXhr(xhr, state) {
       if (state.done) return;
@@ -516,6 +639,10 @@
         var contentType = '';
         try { contentType = xhr.getResponseHeader('content-type') || ''; } catch (err) { /* ignore */ }
 
+        // status 0 means the request was aborted, blocked or failed at the network
+        // layer: there is no response to show, so it never becomes a data source.
+        if (!status) return;
+
         if (responseType !== '' && responseType !== 'text' && responseType !== 'json') {
           report(state, 'xhr', status, contentType, unparsed(''), 0, false);
           return;
@@ -526,23 +653,13 @@
           text = textDesc && textDesc.get ? textDesc.get.call(xhr) : xhr.responseText;
         } catch (err) { text = ''; }
         text = text == null ? '' : String(text);
-        var chars = text.length;
 
-        var parsed = null;
-        var isJson = false;
-        if (chars <= MAX_BODY_CHARS) {
-          try {
-            parsed = JSON.parse(text);
-            isJson = true;
-          } catch (err) { isJson = false; }
+        var changes = findChanges(state.method, state.url, requestFacts(state).gql);
+        if (changes && changes.length && text.length <= MAX_BODY_CHARS) {
+          state.mockText = applyChanges(text, changes);
         }
 
-        if (isJson) {
-          var changes = findChanges(state.method, state.url, requestFacts(state).gql);
-          if (changes && changes.length) state.mockText = applyChanges(text, changes);
-        }
-
-        report(state, 'xhr', status, contentType, isJson ? parsed : unparsed(text), chars, state.mockText != null);
+        reportBody(state, 'xhr', status, contentType, text, state.mockText != null);
       } catch (err) { /* a failed capture must not disturb the request */ }
     }
 

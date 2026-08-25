@@ -57,7 +57,7 @@ const GENERIC_SEGMENTS = new Set([
 /** Last-segment words that are qualifiers, so the segment before them is kept too. */
 const QUALIFIER_SEGMENTS = new Set([
   'status', 'detail', 'details', 'info', 'list', 'search', 'get', 'query',
-  'index', 'summary', 'state', 'result', 'results', 'view', 'page'
+  'index', 'summary', 'state', 'result', 'results', 'view', 'page', 'items'
 ]);
 
 /**
@@ -103,12 +103,38 @@ export function tokenizeParamName(name) {
  */
 export function isVolatileParamName(name) {
   if (RE_VOLATILE_PARAM_NAME.test(name)) return true;
-  const tokens = tokenizeParamName(name);
-  if (tokens.length < 2) return false; // single-token names are covered by the list above
-  return tokens.some((token) => VOLATILE_NAME_TOKENS.has(token));
+  // Applied to single-token names too, so a bare `tracelogid` and an `x_tracelogid` are
+  // treated the same way. An asymmetry there is a coin flip the user cannot see.
+  return tokenizeParamName(name).some((token) => VOLATILE_NAME_TOKENS.has(token));
 }
 
 /* --------------------------------------------------------------------- normalizing */
+
+/**
+ * Percent-encode one query name or value for the urlPattern.
+ *
+ * The pattern used to carry DECODED values, which made it ambiguous: a kept param whose
+ * value contains a literal `&` (`?q=a%26b`) turned into `q=a&b`, so the compiled match
+ * list read it back as two params and the entry could never match the very URL it came
+ * from — the user's change silently did nothing, with no error anywhere. Encoding makes
+ * urlPattern a real URL and the round-trip lossless.
+ *
+ * `*` is the volatile-value sentinel and stays bare; a literal `*` inside a kept value is
+ * encoded to `%2A` so the two can never be confused.
+ */
+function encodeQueryPart(text) {
+  if (text === '*') return '*';
+  return encodeURIComponent(text).replace(/\*/g, '%2A');
+}
+
+export function decodeQueryPart(text) {
+  if (text === '*') return '*';
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
 
 function normalizePathname(pathname) {
   return pathname
@@ -189,7 +215,7 @@ export function buildSignature(method, url, requestBody) {
   }
   kept.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
 
-  const query = kept.map(([name, value]) => name + '=' + value).join('&');
+  const query = kept.map(([name, value]) => encodeQueryPart(name) + '=' + encodeQueryPart(value)).join('&');
   /** @type {any} */
   const sig = { method: verb, urlPattern: origin + pathPattern + (query ? '?' + query : '') };
 
@@ -308,19 +334,24 @@ export function friendlyName(sig) {
     pathname = String(sig.urlPattern || '').split('?')[0];
   }
 
+  const bare = (segment) => segment.replace(/\.[a-z0-9]{1,5}$/i, '').toLowerCase();
+
+  // A segment is meaningful when it is not a wildcard, not a routing word, and not a
+  // bare number. Numbers are ids even when short: /api/58 must not be named "58", and
+  // naming it "Api" would put a forbidden word (§11) in front of the user — so when
+  // nothing meaningful is left, the host is the honest answer.
   const segments = pathname
     .split('/')
     .filter((s) => s && s !== '*')
-    .filter((s) => !GENERIC_SEGMENTS.has(s.replace(/\.[a-z0-9]{1,5}$/i, '').toLowerCase()));
+    .filter((s) => !GENERIC_SEGMENTS.has(bare(s)))
+    .filter((s) => !/^\d+$/.test(bare(s)));
 
   if (!segments.length) return host || 'Data';
 
-  const last = segments[segments.length - 1];
-  const lastWords = splitWords(last);
-  const lastKey = lastWords.join('');
+  const lastWords = splitWords(segments[segments.length - 1]);
   let words = lastWords;
 
-  if (segments.length > 1 && (QUALIFIER_SEGMENTS.has(lastKey) || lastWords.length === 0)) {
+  if (segments.length > 1 && (QUALIFIER_SEGMENTS.has(lastWords.join('')) || lastWords.length === 0)) {
     words = splitWords(segments[segments.length - 2]).concat(lastWords);
   }
 
@@ -364,7 +395,9 @@ export function compileMatchList(groups) {
       for (const pair of query.split('&')) {
         if (!pair) continue;
         const idx = pair.indexOf('=');
-        params.push(idx === -1 ? [pair, ''] : [pair.slice(0, idx), pair.slice(idx + 1)]);
+        const rawName = idx === -1 ? pair : pair.slice(0, idx);
+        const rawValue = idx === -1 ? '' : pair.slice(idx + 1);
+        params.push([decodeQueryPart(rawName), decodeQueryPart(rawValue)]);
       }
     }
 
