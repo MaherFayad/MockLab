@@ -21,11 +21,34 @@ const INITIAL_OPEN_DEPTH = 1;
  * How a value reads in the tree and in "Real value: …". Deliberately unquoted: a
  * quotation mark is punctuation a non-technical reader has to decode, and §1.2 asks
  * for the plainer option. Type still shows, through colour and through the editor.
+ *
+ * Two of these branches return a DESCRIPTION rather than the value's own text — a field
+ * holding no value, and a container drawn collapsed. Both words come from strings.js
+ * (§17.6): `null` was a literal here for one milestone, and it read out to the human in
+ * the tree and in "Real value: null" — the one programmer's word this panel showed.
+ * `panel.strings.test.js` fails if any word moves back into this function.
+ *
+ * A value that is absent (null) and one that was never there (undefined) read
+ * differently on purpose: the first is a field the site sent with nothing in it and is
+ * worth saying out loud, the second is a row that has no value slot at all.
  */
 export function formatValue(value) {
-  if (value === null) return 'null';
+  if (value === null) return S.glyph.nullValue;
   if (value === undefined) return '';
   if (typeof value === 'object') return Array.isArray(value) ? S.glyph.list(value.length) : S.glyph.collapsedObject;
+  return String(value);
+}
+
+/**
+ * What the editor's text box STARTS with, which is not what the tree shows.
+ * `formatValue` describes a value that has no text of its own ("nothing", "{…}"), and a
+ * description seeded into an editable box is applied as if the person had typed it — a
+ * null field would reach the site as the literal text "nothing". An absent value starts
+ * as an empty box instead, so whatever the site ends up seeing is something a human
+ * actually wrote.
+ */
+function draftFor(value) {
+  if (value === null || value === undefined || typeof value === 'object') return '';
   return String(value);
 }
 
@@ -267,7 +290,7 @@ function rowActions({ key, value, path, change, source, ctx }) {
       path,
       key: labelOf(key),
       real: change && change.originalValue !== undefined ? change.originalValue : value,
-      draft: formatValue(change ? change.value : value),
+      draft: draftFor(change ? change.value : value),
       bool: Boolean(change ? change.value : value),
       kind: valueKind(change ? change.value : value),
       error: '',

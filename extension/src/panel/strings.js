@@ -185,10 +185,19 @@ export const S = {
     list: (n) => `[${n}]`,
     index: (i) => `[${i}]`,
     collapsedObject: '{…}',
-    // + not in §11 — how a null leaf reads in the tree and in "Real value: …". §17.12
-    // picks the calmer word: `null` is a programmer's name for this, `empty` is what it
-    // means to the person reading it. panel-designer owns the wording.
-    nullValue: 'empty',
+    // + not in §11 — how a field that carries no value reads in the tree and in
+    // "Real value: …". `null` is a programmer's name for it, so §1.2 rules it out.
+    // Of the plain-English candidates this file settles on "nothing", not "empty":
+    //   - it is already this copy's word for absence ("Nothing captured yet", "Nothing
+    //     here matches that search", "arrived with nothing in it"), so it adds no new
+    //     vocabulary for a translator or a reader to learn;
+    //   - "empty" is the ambiguous one. An empty text and an empty list are DIFFERENT
+    //     real values that the tree draws differently (blank, and `[0]`), and §1 makes
+    //     honesty the tiebreaker whenever two words are equally calm.
+    // It is a description, not a value, so the tree draws it in italics — a string that
+    // happens to read "nothing" must not look identical to a field that holds none
+    // (.tree__value--null in panel.css; colour alone would be WCAG 1.4.1).
+    nullValue: 'nothing',
     joinDot: (a, b) => `${a} · ${b}`,
     joinLabel: (a, b) => `${a}: ${b}`
   },

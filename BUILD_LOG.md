@@ -445,9 +445,10 @@ two concurrent agents never edited the same file.
 
 **Evidence**
 
-`npm test -ws`: extension 142/142, companion 5/5, 0 skipped. Two browser suites now run
-against the real unpacked extension in real Chromium: `e2e.browser.test.js` (14) and
-`panel.browser.test.js` (10).
+`npm test -ws` at the M2 PASS commit: extension 156/156, companion 5/5, 0 skipped. Two
+browser suites run against the real unpacked extension in real Chromium:
+`e2e.browser.test.js` (14) and `panel.browser.test.js` (12). These totals are pinned to
+a commit rather than left as a standing claim — see "Stale evidence" below for why.
 
 M2 DoD, proven end to end: an edit from the tree turns the demo pill red — the site's own
 `is-cancelled` class and a computed `rgb(217,48,37)`, with the derived banner appearing —
@@ -515,6 +516,36 @@ were themselves verified, and the second pass found three defects nothing else h
    Scenarios tabs already solve this with visible `S.soon` help text, so M7's fix is to
    copy a pattern this codebase already has. **This item existed at the first M2 verdict
    and was left out of the record; only re-verification caught the omission.**
+
+**Two things the §17.6 fix uncovered that the breach itself did not.**
+
+1. `formatValue()` did not only *display* the word — it also seeded the value editor's
+   text box. Editing a field that held no value pre-filled the box with `null`, and one
+   click sent the site the four-character string `"null"`. The friendly word would have
+   made it worse, not better: `"nothing"` reads like real copy, so nobody would question
+   it. The editor now opens **empty** for an absent value or a container, so whatever the
+   site is told is something a human actually typed. A one-word copy fix turned out to be
+   sitting on a data bug.
+2. The word was distinguished from a genuine value by **colour alone** — WCAG 1.4.1. A
+   text value that happens to read "nothing" was indistinguishable from a field that holds
+   none. The row is now italic as well.
+
+The chosen word is **"nothing"**, not "empty": it is already this copy file's word for
+absence ("Nothing captured yet", "Nothing here matches that search"), so it adds no
+vocabulary for a reader or a translator, and "empty" is the ambiguous one — an empty text
+and an empty list are different real values the tree already draws differently.
+
+**A guard that measured the wrong number.** The tooltip geometry test pinned a hardcoded
+`4px` to mirror the CSS. Fixing it exposed that the constant was never load-bearing: it
+modelled the tooltip's *resting* offset, which does not move the shown box at all. Moving
+the CSS resting slide from `-4px` to `-24px` left the old test green **and** silently made
+its clearance figure 20px wrong. The decisive mutation is the shown position — pushing the
+revealed bubble down over "Reset site" leaves the old hardcoded test at **12 pass, 0 fail**
+while the control that undoes every change on the site sits underneath it. The rewritten
+subtest opens each tooltip the way a keyboard user does, measures the real box, and asserts
+it actually opened, so a tooltip that failed to open can never be scored as "covers
+nothing". This is the second guard this milestone that was green for a reason unrelated to
+what it claimed to check.
 
 **Stale evidence, and why it is worth its own entry.** The Evidence paragraph above and a
 CI comment both carried hand-maintained test totals ("142"). The suite grew and the

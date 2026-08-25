@@ -9,10 +9,14 @@
  * guarantee is a chip that must say "Possible" and must never say "Verified ✓". Neither
  * can be asserted without a browser, and a guard CI cannot run is not a guard.
  *
- * Rules this file follows, both learned the hard way in M1:
+ * Rules this file follows, the first two learned the hard way in M1:
  *   - it SKIPS, never fails, when Playwright or a Chromium build is absent, so
  *     `npm test -ws` stays green on a plain Node machine;
- *   - it resolves Playwright at run time and hardcodes no machine's path.
+ *   - it resolves Playwright at run time and hardcodes no machine's path;
+ *   - it MEASURES the panel and never restates a number panel.css already knows. A
+ *     constant copied out of the stylesheet keeps its old value after the stylesheet
+ *     changes, and a geometry test whose model is stale stays green while describing a
+ *     layout that no longer exists — the same silent drift §17.10's line counts had.
  *
  * Every expected string is imported from `../src/panel/strings.js`, so §17.6 holds here
  * too: this file cannot drift from §11's copy, because it has no copy of its own.
@@ -36,15 +40,6 @@ const EXTENSION_DIR = path.resolve(HERE, '..');
 
 /** The value the demo maps to a red pill and a banner (§14). */
 const CANCELLED = 'CANCELLED';
-
-/**
- * `.tip__bubble` rests at translateY(-4px) and slides to 0 on hover, so its shown box is
- * 4px lower than its laid-out box. The geometry subtest measures the resting box and
- * adds this, because :hover is not applied to a background tab and the panel must stay
- * in the background for the site bar to describe the DEMO tab rather than itself.
- * If the slide changes in panel.css, change it here.
- */
-const TOOLTIP_HOVER_SLIDE_PX = 4;
 
 /* ------------------------------------------------------- portable Playwright */
 
@@ -286,12 +281,39 @@ if (!chromium) {
         // A tooltip that hides the way to undo every change is worse than no tooltip.
         // The tab strip opens its bubbles downward into the site bar's margin, and that
         // margin is sized for them — a geometry relationship no other kind of test sees.
-        const measured = await panel.evaluate((slide) => {
+        const measured = await panel.evaluate(() => {
           const hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
           const box = (node) => {
             const b = node.getBoundingClientRect();
             return { top: b.top, bottom: b.bottom, left: b.left, right: b.right };
           };
+
+          /**
+           * One tooltip's box AS SHOWN — put into its shown state, then measured.
+           *
+           * `.tip__bubble` rests translated away from where it is read and slides in, so
+           * its resting box is not the box that covers anything. It is revealed the way a
+           * keyboard user reveals it (`.tip:focus-within`, which each tab's radio input
+           * satisfies) because :hover is not delivered to a background tab and this panel
+           * has to stay in the background for the site bar to describe the DEMO tab.
+           * The transition is suspended so this reads the end state and not a frame of
+           * the animation; focus and the inline style are both put back afterwards.
+           */
+          const shownBox = (opt) => {
+            const bubble = opt.querySelector('.tip__bubble');
+            const input = opt.querySelector('input');
+            const previous = document.activeElement;
+            const inline = bubble.style.transition;
+            bubble.style.transition = 'none';
+            input.focus({ preventScroll: true });
+            const shown = box(bubble);
+            const revealed = getComputedStyle(bubble).opacity === '1';
+            if (previous && previous.focus) previous.focus({ preventScroll: true });
+            else input.blur();
+            bubble.style.transition = inline;
+            return { ...shown, revealed };
+          };
+
           const reset = document.querySelector('#sitebar .btn--danger');
           const chip = document.querySelector('#sitebar .chip');
           const out = { reset: Boolean(reset), tabs: [] };
@@ -299,22 +321,24 @@ if (!chromium) {
           const resetBox = box(reset);
           const chipBox = chip ? box(chip) : null;
           for (const opt of document.querySelectorAll('.segmented__opt')) {
-            const bubble = opt.querySelector('.tip__bubble');
-            const rest = box(bubble);
-            const shown = { ...rest, top: rest.top + slide, bottom: rest.bottom + slide };
+            const shown = shownBox(opt);
             out.tabs.push({
               tab: opt.querySelector('input').value,
+              revealed: shown.revealed,
               hidesReset: hit(shown, resetBox),
               hidesChip: chipBox ? hit(shown, chipBox) : false,
               clearance: Math.round(resetBox.top - shown.bottom)
             });
           }
           return out;
-        }, TOOLTIP_HOVER_SLIDE_PX);
+        });
 
         assert.equal(measured.reset, true, 'this subtest is meaningless unless Reset site is on screen');
         assert.equal(measured.tabs.length, 4, 'all four tabs carry a tooltip');
         for (const tab of measured.tabs) {
+          // Without this, a tooltip that never opened would measure as a bubble that
+          // covers nothing, and the whole subtest would pass by measuring the wrong box.
+          assert.equal(tab.revealed, true, `the ${tab.tab} tooltip did not open on focus, so nothing below was measured`);
           assert.equal(tab.hidesReset, false, `the ${tab.tab} tooltip overlaps Reset site (clearance ${tab.clearance}px)`);
           assert.equal(tab.hidesChip, false, `the ${tab.tab} tooltip hides the active-changes count`);
           // Vertical, and checked for every tab: the lane has to be wide enough that

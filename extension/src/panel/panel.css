@@ -309,7 +309,12 @@ input:focus-visible + .check-box { outline: 2px solid var(--accent); outline-off
 .tree__value--string { color: var(--json-string); }
 .tree__value--number { color: var(--json-number); }
 .tree__value--boolean { color: var(--json-boolean); }
-.tree__value--null { color: var(--text-secondary); }
+/* A field with no value in it, and a collapsed container, are the two rows whose text
+ * MockLab writes ("nothing", "{…}") instead of showing what the site sent. Italic says
+ * so without punctuation: a real text value that happens to read "nothing" must not
+ * look identical to a field that holds none, and the colour difference alone would be
+ * information carried by colour only (WCAG 1.4.1, the §16 M7 pass). */
+.tree__value--null { color: var(--text-secondary); font-style: italic; }
 .tree__value--old { color: var(--text-secondary); text-decoration: line-through; }
 .tree__arrow { color: var(--icon-secondary); }
 .tree__actions { margin-inline-start: auto; display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--transition-rule); }
