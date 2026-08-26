@@ -147,7 +147,15 @@ test('§17.10 every line count README states is the file\'s real one', () => {
  * no verb reads as prose. "It passed 1000 lines" is deliberately on that side; the cost
  * is that a bare "…, 640 lines, …" written far from any path stays invisible. NEAR is
  * 80 because the two real defects sat at 16 and 21 characters and the nearest innocent
- * figure in today's table sits at 203 — the threshold is near neither.
+ * figure that REACHES this clause sits at 203 — the threshold is near neither.
+ *
+ * That sentence used to say "the nearest innocent figure in today's table", which was
+ * false: two innocent figures sit much closer, at 25 and 41 characters. Both are
+ * §17.10's own "~500 lines" cap, and clause (c) frees them one step earlier, before any
+ * distance is ever measured — so they never reach 80, and never tested it. The headroom
+ * between 21 and 80 is therefore only as wide as (c) is reliable, which is worth knowing
+ * before anyone moves either number: widen NEAR past 203 and the table's honest prose
+ * starts failing; narrow it below 21 and both historical defects come back.
  *
  * KNOWN BOUNDARY 2, stated rather than picked silently: (d) tolerates a quoted figure
  * only in a row that ALSO states a checked count, which is the documented-correction
