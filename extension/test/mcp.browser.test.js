@@ -193,7 +193,7 @@ if (!chromium) {
      * because nothing but `pair()` is asked of it — every tool check below goes through
      * the worker's own client instead, which has the real ones.
      */
-    const startClient = (code) =>
+    const startClient = (code, urlOverride) =>
       panel.evaluate(async ([url, pairingCode]) => {
         const { createWsClient } = await import('/src/background/wsClient.js');
         // One client at a time. Two would supersede each other on the hub for ever —
@@ -212,10 +212,19 @@ if (!chromium) {
           chrome: window.chrome
         });
         window.mocklabTestClient = client;
-        if (pairingCode !== null) return client.pair(pairingCode);
+        if (pairingCode !== null) {
+          // Bounded, for the same reason `within` exists in `wsClient.test.js`: the
+          // interesting refusals here are the ones where NOTHING arrives, and a `pair()`
+          // that never settled would hang this suite instead of failing it. The sentinel
+          // is a shape no real answer has, so it can only ever read as a failure.
+          return Promise.race([
+            client.pair(pairingCode),
+            new Promise((resolve) => setTimeout(() => resolve({ neverAnswered: true }), 8000))
+          ]);
+        }
         await client.start();
         return { ok: true };
-      }, [hubRig ? hubRig.url : '', code === undefined ? null : code]);
+      }, [urlOverride || (hubRig ? hubRig.url : ''), code === undefined ? null : code]);
 
     const stopClient = () => panel.evaluate(() => window.mocklabTestClient && window.mocklabTestClient.stop());
 
@@ -252,7 +261,7 @@ if (!chromium) {
         const wrong = String((Number(code) + 1) % 1000000).padStart(6, '0');
 
         const refused = await startClient(wrong);
-        assert.deepEqual(refused, { ok: false }, 'the extension is told no, and nothing else');
+        assert.deepEqual(refused, { ok: false, reached: true }, 'told no over a socket that opened: PAIR_FAIL.REFUSED');
         await sleep(200);
         assert.equal(hubRig.hub.isConnected(), false, 'a refused code leaves no authenticated socket');
         const stored = await panel.evaluate(() => chrome.storage.local.get('settings'));
@@ -265,10 +274,43 @@ if (!chromium) {
         await stopClient();
       });
 
+      await check('§12.3 a companion that never opens a socket is NO_COMPANION, either way it happens', async () => {
+        // §11's two refusals are decided at the TRANSPORT, and this is the branch a
+        // person actually hits. `wsClient.test.js` drives it with a fake socket that
+        // declines to open; only here is it a real Chromium WebSocket meeting a real
+        // closed port, and a real 401 from the real hub.
+        assert.ok(hubRig, 'the hub started');
+        const net = await import('node:net');
+        const deadPort = await new Promise((resolve) => {
+          const probe = net.createServer();
+          probe.listen(0, '127.0.0.1', () => {
+            const { port } = probe.address();
+            probe.close(() => resolve(port));
+          });
+        });
+
+        const notRunning = await startClient('123456', `ws://127.0.0.1:${deadPort}/ext`);
+        assert.deepEqual(notRunning, { ok: false, reached: false }, 'nothing is listening, so nothing opened');
+        await stopClient();
+
+        // The other cause, and the one no fake can imitate: a companion that IS running
+        // and refuses the upgrade outright because no pairing window is open (§12.3, a
+        // 401 before any WebSocket exists). Indistinguishable from the first at the
+        // socket, which is the point — both are fixed by starting the companion again,
+        // neither by retyping the code.
+        hubRig.pairing.close();
+        const noWindow = await startClient('123456');
+        assert.deepEqual(noWindow, { ok: false, reached: false }, 'refused at the upgrade: still no OPEN');
+        assert.equal(hubRig.hub.isConnected(), false, 'and no authenticated socket came of it');
+        const stored = await panel.evaluate(() => chrome.storage.local.get('settings'));
+        assert.ok(!stored.settings || !stored.settings.companionToken, 'nothing was stored either');
+        await stopClient();
+      });
+
       await check('§12.3 the right code hands the token over, and the extension reconnects with it', async () => {
         const { code } = hubRig.pairing.open();
         const paired = await startClient(code);
-        assert.deepEqual(paired, { ok: true });
+        assert.deepEqual(paired, { ok: true, reached: true });
         const stored = await panel.evaluate(() => chrome.storage.local.get('settings'));
         assert.equal(stored.settings.companionToken, hubRig.token, 'stored for every later connection');
 

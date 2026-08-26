@@ -31,6 +31,26 @@
  * lands in (§1.6), and `probe_element` fills the SAME pick record a human pick fills, so
  * there is one path to a verified Binding rather than two (§17.4, §17.12).
  *
+ * ── §10.5's STATUS DOT, AND HOW MANY TIMES IT MOVES ────────────────────────────────
+ * `onStatus()` is an optional, argument-free "read it again" for `background.js`, which
+ * turns it into `MSG.COMPANION_CHANGED`. It fires when a socket OPENS, when one CLOSES,
+ * and when a pairing stores a token — the three moments `GET_COMPANION`'s two booleans
+ * can move. It is deliberately given nothing to carry: a dot fed from the event would be
+ * as old as the event, and the panel re-reading is what keeps it honest (§1.1).
+ *
+ * One successful pairing therefore fires it FOUR times, in this order:
+ *   1. the pairing socket opens          → connected:false, paired:false
+ *   2. the token is stored               → connected:false, paired:true
+ *   3. the pairing socket closes         → connected:false, paired:true
+ *   4. the token socket opens            → connected:true,  paired:true
+ * and the dot moves ONCE, at 4. Neither 1 nor 3 is suppressed — the case that matters is
+ * the companion dying while Settings is open, and a rule of the form "not that close, it
+ * doesn't count" is how that one gets lost too. They are SILENT rather than skipped,
+ * because a pairing socket is not a connection: see `isConnected`, which draws with
+ * `presented` the line the hub draws with `live`. Three extra reads of a two-boolean
+ * answer is the price; the alternative is deciding per socket which closes are worth
+ * mentioning, and paying in wrong colours on the screen.
+ *
  * ── WHEN THIS CONNECTS, AND WHEN IT DOES NOT ───────────────────────────────────────
  * Only once the browser has been paired (§12.3). Before that there is no token, the hub
  * would refuse the socket anyway unless a pairing window happens to be open, and a
@@ -104,6 +124,7 @@ export const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
  *   portsFor: (tabId:number) => Set<any>|null,
  *   tabRecord: (tabId:number) => {origin:string, sources:Map<string,any>}|null,
  *   onPicked: (tabId:number, picked:any) => Promise<void>|void,
+ *   onStatus?: () => void,
  *   url?: string,
  *   WebSocketImpl?: any,
  *   chrome?: any,
@@ -120,11 +141,61 @@ export function createWsClient(deps) {
   let attempts = 0;
   let stopped = true;
   let reconnectTimer = null;
-  let pairWaiter = null;
+  /**
+   * The pairing attempt in flight, or null. ONE OBJECT PER ATTEMPT, because both fields
+   * belong to one attempt and to no other:
+   *
+   *   resolve  the panel waiting on `pair()`.
+   *   reached  did THIS attempt's socket reach OPEN before it ended? The extension's own
+   *            observation at the transport, never a disclosure from the companion —
+   *            `companion/src/pairing.js` hands the socket one indistinguishable `false`
+   *            for all four of §12.3's refusal causes and nothing here widens that.
+   *            `background.js` reads it as PAIR_FAIL's two values: a socket that never
+   *            opened is NO_COMPANION (not running, or running with no pairing window,
+   *            which the hub refuses at the upgrade with a 401 — no `onopen` either
+   *            way), and one that opened and was told no is REFUSED.
+   *
+   * A `let reached` beside `socket` would outlive the attempt that set it, and the next
+   * `pair()` would inherit a verdict about the previous one. Held here it cannot: the
+   * object is made by `pair()` and dropped when the attempt is settled, and each socket
+   * handler captures the attempt it was dialled FOR (`mine`) rather than reading
+   * whichever attempt happens to be current when it fires.
+   * @type {{resolve:(answer:{ok:boolean, reached:boolean}) => void, reached:boolean}|null}
+   */
+  let attempt = null;
   /** The token the live socket presented, so a token that CHANGES reconnects and one that did not, does not. */
   let presented = null;
   /** @type {Map<string, AbortController>} in-flight ops, by the frame id that started them. */
   const inflight = new Map();
+
+  /**
+   * "The companion status may have moved — read it again." Data-free on purpose: the
+   * panel answers it with `GET_COMPANION`, so the dot cannot show a value that was true
+   * when the event was sent and false when it arrived (see `MSG.COMPANION_CHANGED`).
+   *
+   * Optional: every caller but `background.js` builds this client without one.
+   *
+   * The callback belongs to the caller, so a failure inside it must not take the socket
+   * handler down with it — an exception thrown out of `onopen` would skip the pairing
+   * frame below it. Tests therefore RECORD their calls and assert afterwards; an
+   * assertion made inside the callback would be swallowed here and pass either way,
+   * which is the shape of silent success this build keeps producing.
+   */
+  function notifyStatus() {
+    if (typeof deps.onStatus !== 'function') return;
+    try {
+      deps.onStatus();
+    } catch (err) {
+      console.error('[MockLab] companion status listener failed', err);
+    }
+  }
+
+  /** Answer the pairing attempt in flight, once, and forget it. */
+  function settlePairing(answer) {
+    const waiting = attempt;
+    attempt = null;
+    if (waiting) waiting.resolve(answer);
+  }
 
   function post(frame) {
     try {
@@ -209,17 +280,35 @@ export function createWsClient(deps) {
     if (!token && !codeToSubmit) return;
     const protocols = token ? [SUBPROTOCOL, TOKEN_SUBPROTOCOL_PREFIX + token] : [SUBPROTOCOL];
     presented = token || null;
+    /**
+     * The attempt THIS socket is being dialled for, captured once, here.
+     *
+     * `null` for every ordinary connection, and that is half the point: `pair()` drops
+     * the working socket before it dials, a real `close()` completes a task or two
+     * later, and an `onclose` that read `attempt` at firing time would answer the panel
+     * "no companion" using the death of a socket that was never part of the pairing.
+     * The other half is `pair()` twice in a row: the first socket's `onclose` arrives
+     * after the second attempt exists, and `mine === attempt` is what stops it
+     * reporting the first attempt's `reached` as the second's verdict.
+     */
+    const mine = codeToSubmit ? attempt : null;
     let ws;
     try {
       ws = new Socket(url, protocols);
     } catch {
+      // Nothing was dialled, so nothing reached OPEN. Said now rather than left to a
+      // waiter that would never be answered at all.
+      if (mine && attempt === mine) settlePairing({ ok: false, reached: false });
       scheduleReconnect();
       return;
     }
     socket = ws;
     ws.onopen = () => {
       attempts = 0;
+      // The one place `reached` is ever set true: this socket, in the OPEN state.
+      if (mine) mine.reached = true;
       if (codeToSubmit) post({ id: 'pair', kind: KIND.REQ, op: HUB_OP.PAIR, payload: { code: codeToSubmit } });
+      notifyStatus();
     };
     ws.onmessage = (event) => {
       let frame = null;
@@ -229,17 +318,17 @@ export function createWsClient(deps) {
         return;
       }
       if (frame && frame.kind === KIND.RES && frame.op === HUB_OP.PAIR) {
-        void finishPairing(frame.payload);
+        void finishPairing(frame.payload, mine);
         return;
       }
       void handleFrame(frame);
     };
     ws.onclose = (event) => {
       if (socket === ws) socket = null;
-      if (pairWaiter) {
-        pairWaiter({ ok: false });
-        pairWaiter = null;
-      }
+      // The handler that answers a pairing nobody answered — and the one that reads
+      // `reached`, because this is the moment the attempt is over and the flag is final.
+      if (mine && attempt === mine) settlePairing({ ok: false, reached: mine.reached });
+      notifyStatus();
       // Another connection now owns the hub. Do not race it — the 25 s heartbeat tries
       // again, so if that one goes away this one comes back, without a loop in between.
       if (event && event.code === CLOSE.SUPERSEDED) return;
@@ -255,11 +344,19 @@ export function createWsClient(deps) {
    * either way: the next connection presents the token in the handshake, so exactly one
    * code path — the one every ordinary connection takes — grants access.
    */
-  async function finishPairing(payload) {
+  async function finishPairing(payload, mine) {
     const ok = Boolean(payload && payload.ok === true && payload.token);
-    if (ok) await updateSettings({ companionToken: payload.token });
-    const waiter = pairWaiter;
-    pairWaiter = null;
+    if (ok) {
+      await updateSettings({ companionToken: payload.token });
+      // §12.3's third state change: paired. `GET_COMPANION`'s two booleans move
+      // separately and this is the one that moved.
+      notifyStatus();
+    }
+    // Taken BEFORE `closeSocket()`, which can run `onclose` synchronously: the close
+    // handler above would otherwise answer this attempt `{ok:false}` about a handshake
+    // that had just succeeded.
+    const waiting = attempt && attempt === mine ? attempt : null;
+    if (waiting) attempt = null;
     closeSocket();
     // The storage write above reaches every context including this one, so the ordinary
     // token-presenting connection is opened by `watchStore`. Opening it here as well
@@ -268,7 +365,10 @@ export function createWsClient(deps) {
       attempts = 0;
       void open();
     }
-    if (waiter) waiter({ ok });
+    // `reached` even on success: it is a fact about this attempt's socket either way,
+    // and a shape that changes between the two answers is one `background.js` would
+    // have to branch on twice.
+    if (waiting) waiting.resolve({ ok, reached: mine.reached });
   }
 
   /**
@@ -295,7 +395,7 @@ export function createWsClient(deps) {
         // arrives HERE as well, and closing the pairing socket from under `finishPairing`
         // makes its own `onclose` answer the waiting panel `{ok:false}` about a pairing
         // that had just succeeded. `finishPairing` opens the token connection itself.
-        if (token && token !== presented && !pairWaiter) {
+        if (token && token !== presented && !attempt) {
           attempts = 0;
           closeSocket();
           void open();
@@ -337,7 +437,20 @@ export function createWsClient(deps) {
     OP_NAMES: Object.freeze(Object.keys(OPS)),
     /** Exposed so a test can drive one frame without a socket. */
     handleFrame,
-    isConnected: () => Boolean(socket && socket.readyState === 1),
+    /**
+     * Is there a socket an agent's call could travel over right now? §10.5's dot, and
+     * `GET_COMPANION`'s `connected`.
+     *
+     * `presented` is in the condition on purpose. A PAIRING socket is open, and carries
+     * exactly one frame in each direction; the hub adds it to `pairingSockets` and never
+     * sets `live` to it, so no `req` will ever arrive on it and no op can be answered
+     * over it. Reporting it as connected would put §11's "Connected — AI agents can
+     * control this site" on screen at the one moment no agent can — and, because the
+     * pairing socket opens and closes inside the pairing flow, it would make the dot go
+     * green, grey, green on a single successful pairing. The other end already draws the
+     * line here: `hub.isConnected()` is `Boolean(live)`, which a pairing socket never is.
+     */
+    isConnected: () => Boolean(socket && socket.readyState === 1 && presented),
 
     async start() {
       stopped = false;
@@ -361,14 +474,21 @@ export function createWsClient(deps) {
     },
 
     /**
-     * §12.3's pairing, from the panel's "set up AI access" flow. Resolves `{ok}` and
-     * nothing else — the hub tells this side no more than that, deliberately.
+     * §12.3's pairing, from the panel's "set up AI access" flow.
+     *
+     * Resolves `{ok, reached}`. `ok` is everything the COMPANION said — one bit, by its
+     * design. `reached` is everything THIS SIDE saw: whether the socket for this attempt
+     * ever opened. Nothing here can tell the panel which of §12.3's four refusals fired,
+     * and nothing here should be able to.
      */
     async pair(code) {
+      // A pairing already waiting is abandoned with its OWN attempt's observation, not
+      // the next one's, and not left hanging for a socket this call is about to close.
+      if (attempt) settlePairing({ ok: false, reached: attempt.reached });
       closeSocket();
       stopped = false;
       const answer = new Promise((resolve) => {
-        pairWaiter = resolve;
+        attempt = { resolve, reached: false };
       });
       await open(String(code || ''));
       return answer;
