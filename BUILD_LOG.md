@@ -714,7 +714,14 @@ carry-forwards that only exist in later commits — the section described two di
 trees.** That is the failure the M2 entry's "Stale evidence" note was written about,
 recurring one milestone later in the paragraph reporting the evidence.
 
-**QA verdict:** PASS on the code, across five passes. The §16 M3 DoD was re-run by QA on
+**QA verdict:** PASS on the code, across five passes — returned by qa-verifier against
+commit `ccf499d`, with its own Playwright harness and nine mutations across five guard
+files.
+
+*(This line first appeared in commit `59bbb77`, written **before** that verdict was
+returned. The conclusion happened to match what came back, which is luck rather than
+process — attributing a verifier's verdict in advance is exactly the class of defect the
+paragraphs below are corrections for. Caught by the verifier itself, in the same pass.)* The §16 M3 DoD was re-run by QA on
 its own Playwright harness — not ours — at four separate commits and passed every time,
 as did all twelve §17 rules. Four FAIL verdicts were returned, and **every one of them was
 a defect in this record or in README, never in shipped code**: a false justification, a
