@@ -12,13 +12,14 @@
  * looking at.
  *
  * Scope: shipping source in BOTH workspaces. `test/` is excluded on purpose — a fixture
- * quoting a copy string is a fixture, not copy.
+ * quoting a copy string is a fixture, not copy. The one audit below that DOES read the
+ * panel says why where it stands.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-import { SRC, SOURCE_FILES, read, rel, stripComments } from '../testlib/audit.js';
+import { SRC, SOURCE_FILES, jsFiles, read, rel, stripComments } from '../testlib/audit.js';
 
 /**
  * Every string literal in comment-free `code`, contents only — in ALL THREE quotes. QA
@@ -90,4 +91,193 @@ test('§17.6 the audit itself reads all three quotes, which is how the gap got i
   // every audit here. Deleting the second pattern must fail now, not silently later.
   const source = String.raw`const a = 'Data'; const b = "Data"; const c = ` + '`Data`;';
   assert.equal(stringLiterals(source).filter((literal) => literal === 'Data').length, 3);
+});
+
+/* ────────── §17.6's fifth door: copy that arrives as an ARGUMENT, not a property ─────
+ *
+ * `panel.strings.test.js` (OWNER: panel-designer) enumerates four ways a word reaches a
+ * reader from panel code: `el(…, {text})`, an accessible name / placeholder / title
+ * given as a named option, those three assigned to a node, and `setAttribute`. All four
+ * are named PROPERTIES, so a regex has a name to look for.
+ *
+ * There is a fifth, and it has no name. `el()` takes variadic children and hands each to
+ * `node.append(child)` (`panel/dom.js`), and `append` accepts a raw string — so
+ * `el('div', {}, 'Some words')` renders a text node that not one of those four regexes
+ * can see. `node.append('Some words')` is the same door reached directly, and
+ * `withTip(button, ['Some words'])` is the same door in the tooltip helper, whose lines
+ * are copy by definition (§9.2).
+ *
+ * There is not one instance today: QA found the hole, not a breach. It is guarded here
+ * rather than in `panel.strings.test.js` because that file belongs to another owner, and
+ * the rule being enforced is the same rule. The two audits deliberately overlap in
+ * scope — this one reads ARGUMENT POSITIONS, that one reads property names, and neither
+ * can see the other's door.
+ *
+ * KNOWN BOUNDARY, stated rather than pretended away: an argument only counts when the
+ * WHOLE of it is a literal, or when it is an array literal whose elements are. That is
+ * what keeps `el('p', { class: 'help' }, child)` from reporting its own class name, and
+ * it means copy assembled at the call site — `'Some ' + word`, a template that
+ * interpolates, a word held in a variable — is out of reach here exactly as it is in the
+ * whole-literal audit above. The panel's own suite covers the rendered result.
+ * ══════════════════════════════════════════════════════════════════════════════════ */
+
+/** A WHOLE string literal: a quoted string, or a template with no `${…}` in it. */
+const WHOLE_LITERAL = /^(?:(['"])(?:[^'"\\\n]|\\.)*\1|`(?:[^`\\$]|\\.|\$(?!\{))*`)$/;
+
+/**
+ * Argument positions that put their contents on screen, keyed by how the call opens.
+ * `to` is exclusive: `withTip`'s third argument is placement options, not copy.
+ */
+const ARGUMENT_SINKS = [
+  { what: 'a child of el()', opener: /(?<![\w$.])el\s*\(/g, from: 2, to: Infinity },
+  {
+    what: 'a child appended to a node',
+    opener: /\.\s*(?:append|prepend|replaceChildren)\s*\(/g,
+    from: 0,
+    to: Infinity
+  },
+  { what: 'a line of withTip()', opener: /(?<![\w$.])withTip\s*\(/g, from: 1, to: 2 }
+];
+
+/**
+ * The source text inside the parentheses opening at `open`, or null when they never
+ * close. Quotes and templates are tracked, so a bracket inside a string is not counted —
+ * an unterminated call is skipped rather than guessed at, which loses a call site
+ * instead of inventing one.
+ */
+function insideParens(code, open) {
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = open; index < code.length; index += 1) {
+    const character = code[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') quote = character;
+    else if ('([{'.includes(character)) depth += 1;
+    else if (')]}'.includes(character)) {
+      depth -= 1;
+      if (depth === 0) return code.slice(open + 1, index);
+    }
+  }
+  return null;
+}
+
+/**
+ * `text` split at the commas that are not inside a bracket, a quote or a template — the
+ * arguments of a call, or the elements of an array literal.
+ */
+function splitList(text) {
+  const parts = [];
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  let current = '';
+  for (const character of text) {
+    if (quote) {
+      current += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') quote = character;
+    else if ('([{'.includes(character)) depth += 1;
+    else if (')]}'.includes(character)) depth -= 1;
+    else if (character === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  const trimmed = parts.map((part) => part.trim());
+  return trimmed.length === 1 && trimmed[0] === '' ? [] : trimmed;
+}
+
+/**
+ * The copy an argument holds DIRECTLY: itself when the whole argument is a literal, and
+ * its literal elements when it is an array literal — which is how `withTip` receives its
+ * two lines. A nested `el(…)` child holds no copy attributable to THIS call site; it is
+ * audited at its own, which is why nothing here recurses.
+ */
+function literalCopy(argument) {
+  if (WHOLE_LITERAL.test(argument)) return [argument];
+  if (argument.startsWith('[') && argument.endsWith(']')) {
+    return splitList(argument.slice(1, -1)).filter((item) => WHOLE_LITERAL.test(item));
+  }
+  return [];
+}
+
+/**
+ * Every word `code` puts on screen through an argument, as `line: what — literal`.
+ * Source order per sink, the same way `stringLiterals` is ordered per pattern.
+ *
+ * @param {string} code comment-free source
+ */
+function argumentCopy(code) {
+  const found = [];
+  for (const { what, opener, from, to } of ARGUMENT_SINKS) {
+    for (const match of code.matchAll(opener)) {
+      const inner = insideParens(code, match.index + match[0].length - 1);
+      if (inner === null) continue;
+      const args = splitList(inner);
+      const line = code.slice(0, match.index).split('\n').length;
+      for (let index = from; index < Math.min(args.length, to); index += 1) {
+        for (const literal of literalCopy(args[index])) {
+          // An empty literal renders nothing and says nothing, so it is not copy.
+          if (stringLiterals(literal)[0]) found.push(`${line}: ${what} — ${literal}`);
+        }
+      }
+    }
+  }
+  return found;
+}
+
+test('§17.6 no word reaches the panel as a bare argument, which no sink regex sees', () => {
+  const offenders = [];
+  for (const file of jsFiles(path.join(SRC, 'panel'))) {
+    if (path.basename(file) === 'strings.js') continue;
+    for (const hit of argumentCopy(stripComments(read(file)))) offenders.push(`${rel(file)}:${hit}`);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'route it through strings.js and pass the key (§17.6). A string handed to `el()` as a ' +
+      'child, to `append`, or to `withTip` as a line is rendered exactly like copy and is ' +
+      'invisible to the four property sinks `panel.strings.test.js` watches.'
+  );
+});
+
+test('§17.6 the argument audit sees the door, and leaves the panel\'s real calls alone', () => {
+  // Without this, the test above is green because the door is shut today and would stay
+  // green if the detector stopped working. Each shape below is one QA raised.
+  const planted = [
+    "const a = el('div', {}, 'Some words');",
+    "root.append('Some words');",
+    "withTip(button, ['Some words']);",
+    'grid.replaceChildren(`Some words`);'
+  ].join('\n');
+  assert.deepEqual(argumentCopy(planted), [
+    "1: a child of el() — 'Some words'",
+    "2: a child appended to a node — 'Some words'",
+    '4: a child appended to a node — `Some words`',
+    "3: a line of withTip() — 'Some words'"
+  ]);
+
+  // And the shapes the real panel is written in, which must NOT be flagged: a tag name,
+  // a class name, an option key, a nested element, a conditional child, an empty
+  // literal, and a tooltip whose lines come from strings.js.
+  const innocent = [
+    "el('p', { class: 'help', text: S.pick.body });",
+    "root.append(el('h2', { text: S.pick.title }), el('span', { class: 'truncate' }));",
+    "el('div', { class: 'row' }, ready && el('b', {}, node), '');",
+    'withTip(control, [S.tab.pick, S.tab.sources], { up: true });'
+  ].join('\n');
+  assert.deepEqual(argumentCopy(innocent), []);
 });
