@@ -25,6 +25,7 @@ import { el, ICON, spinner, withTip } from './dom.js';
 import { formatValue, draftFor, valueKind, coerceValue, fieldLabel } from './sources.js';
 import { EMPTY_PROBE, closeResult, linkChip, proved } from './probe.js';
 import { canHighlight, shownLinkState, showOnPage } from './links.js';
+import { openForm } from './scenarios.js';
 
 /** §10.1D. The success card, the field it names, and the value editor under it. */
 export function renderResult(root, ctx) {
@@ -104,11 +105,33 @@ export function renderResult(root, ctx) {
 
   // §10.1D: the ghost button appears at the "applied" moment, because a Scenario is a
   // bundle of changes that are already on — there is nothing to save before that.
-  if (probe.applied) {
-    const save = el('button', { type: 'button', class: 'btn btn--ghost btn--wide', disabled: true, text: S.editor.saveScenario });
-    card.append(withTip(save, [S.notYet], { up: true }));
-  }
+  if (probe.applied) card.append(saveScenarioButton(ctx));
   root.append(card);
+}
+
+/**
+ * §10.1D's "Save as Scenario", which is §10.4's "New scenario from current changes"
+ * reached from the other side of the product — so it goes to that tab and opens that
+ * form (`scenarios.js`), over the same `SAVE_PRESET`. One name form, one save path.
+ *
+ * BOTH halves, in this order. Opening the form without switching tab would set state
+ * nobody can see: the Scenarios tab is `display:none` while the Pick tab is showing, so
+ * the person would press a button, watch the panel do nothing, and the next time they
+ * opened §10.4 there would be a half-filled form they never asked for.
+ *
+ * It is switched off — with the reason beside it, never as bare grey — when the worker
+ * cannot answer for Scenarios at all, because sending them to a tab that renders its own
+ * not-ready state is a worse answer than saying so here.
+ */
+function saveScenarioButton(ctx) {
+  const ready = Boolean((ctx.state.scenarios || {}).ready);
+  const save = el('button', { type: 'button', class: 'btn btn--ghost btn--wide', disabled: !ready, text: S.editor.saveScenario });
+  if (!ready) return withTip(save, [S.notYet], { up: true });
+  save.addEventListener('click', () => {
+    ctx.setTab('scenarios');
+    openForm(ctx, null);
+  });
+  return save;
 }
 
 /**

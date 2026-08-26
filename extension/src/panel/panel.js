@@ -17,6 +17,7 @@ import { EMPTY_PROBE, VIEW, readProbe } from './probe.js';
 import { EMPTY_SCENARIOS, loadScenarios, renderScenariosTab } from './scenarios.js';
 import { NO_ANSWER, forgetLostLinks } from './links.js';
 import { renderSettingsTab } from './settings.js';
+import { EMPTY_COMPANION, loadCompanion } from './companion.js';
 
 const TOAST_MS = 3200;
 
@@ -59,7 +60,14 @@ const state = {
    */
   lostLinks: new Set(),
   canHighlight: true,
-  settings: { advancedMode: false, paranoid: false },
+  settings: { advancedMode: false, paranoid: false, deepModeOrigins: [] },
+  /** §10.5's AI-access section — see settings.js. `ready` stays null until an answer. */
+  companion: { ...EMPTY_COMPANION },
+  /**
+   * §8's debugging bar, not yet agreed to. True only between ticking "Deep mode for this
+   * site" and answering the question that tick asks — nothing is attached in between.
+   */
+  deepAsk: false,
   query: '',
   open: null,
   body: undefined,
@@ -147,6 +155,12 @@ function setTab(name) {
   state.tab = name;
   markTabs(name);
   render();
+  // The companion can start, stop or crash while this panel is on another tab, and
+  // `COMPANION_CHANGED` is only heard by a panel that is open — not by one that was
+  // looking elsewhere when the socket died. Opening §10.5 re-reads the two facts rather
+  // than drawing whatever was true the last time somebody looked (§1.1), and it is the
+  // same backstop reasoning as PROBE_POLL_MS above.
+  if (name === 'settings') void readCompanion();
 }
 
 function wireTabs() {
@@ -327,6 +341,12 @@ async function refresh() {
   render();
 }
 
+/** §10.5's dot, re-read and redrawn. The one path both the boot and the broadcast take. */
+async function readCompanion() {
+  await loadCompanion(ctx);
+  render();
+}
+
 async function loadSettings() {
   const res = await send(MSG.GET_SETTINGS, {});
   if (res.ok && res.settings) state.settings = res.settings;
@@ -347,6 +367,10 @@ function wireEvents() {
     // — the page's own Escape key, or an agent over MCP (§1.6) — so the tab follows the
     // worker rather than only its own clicks. The same is true of a probe (§12.4 #5).
     else if (matches(MSG.PICK_CHANGED) || matches(PROBE_MSG.PROBE_CHANGED)) void refresh();
+    // §12.3's socket opened, closed, or a pairing stored a token — including one run in
+    // ANOTHER window's panel. Data-free like every other broadcast: the panel re-reads
+    // GET_COMPANION, so the dot cannot be left showing a confident wrong colour.
+    else if (matches(MSG.COMPANION_CHANGED)) void readCompanion();
     return false;
   });
   chrome.tabs.onActivated.addListener(() => void refresh());
@@ -396,6 +420,7 @@ async function boot() {
   wireTips();
   watchProbe();
   await loadSettings();
+  await loadCompanion(ctx);
   await refresh();
 }
 

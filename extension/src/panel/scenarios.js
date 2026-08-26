@@ -296,7 +296,16 @@ function menuFor(ctx, tab, preset) {
 
 /* ────────────────────────────────────────────────────────────────── behaviour */
 
-function openForm(ctx, preset) {
+/**
+ * Open §11's `namePrompt` form — for a new Scenario (`preset` null) or a Rename.
+ *
+ * EXPORTED for §10.1D's "Save as Scenario", which is the same action reached from the
+ * other side of the product: the Pick tab's editor switches to this tab and opens this
+ * form, rather than growing a second name form and a second SAVE_PRESET call site that
+ * could drift from this one. `result.js` -> here, one way, like every other import seam
+ * in this panel.
+ */
+export function openForm(ctx, preset) {
   const tab = ctx.state.scenarios || EMPTY_SCENARIOS;
   ctx.state.scenarios = {
     ...tab,

@@ -427,10 +427,8 @@ if (!chromium) {
          * line INSIDE the row (the §9.2 check-row shape) or the control's immediately
          * following sibling. Both are visible text, which is the only form of reason that
          * is available to a pointer, a keyboard and a screen reader at once. */
-        let explained = 0;
-        for (const tab of TABS) {
-          await openTab(panel, tab);
-          const silent = await panel.evaluate(() => {
+        const sweep = () =>
+          panel.evaluate(() => {
             const shown = (node) => node.getClientRects().length > 0 && !node.closest('.hidden');
             const out = { silent: [], explained: 0 };
             for (const control of document.querySelectorAll('.app :disabled')) {
@@ -450,6 +448,11 @@ if (!chromium) {
             }
             return out;
           });
+
+        let explained = 0;
+        for (const tab of TABS) {
+          await openTab(panel, tab);
+          const silent = await sweep();
           assert.deepEqual(
             silent.silent,
             [],
@@ -457,7 +460,35 @@ if (!chromium) {
           );
           explained += silent.explained;
         }
-        assert.ok(explained >= 3, `only ${explained} explained disabled controls found — the sweep is not seeing the panel`);
+
+        /* Not vacuous — and NOT asserted by counting, which is what this used to do.
+         *
+         * The floor was three, and it was three because three controls on this screen were
+         * switched off on the day it was written. M7's addendum wired two of them up (deep
+         * mode is per-origin and live, "Set up AI access" opens §12.3's form), so the same
+         * floor would now be met only by leaving controls broken — a test that pays for its
+         * own non-vacuity in product defects. What the check is really about is whether the
+         * SWEEP works, so that is what is shown: a control with no reason is planted, the
+         * sweep is required to name it, and it is taken away again. That evidence does not
+         * depend on how many inert controls the panel happens to have today, and it stays
+         * true on the day it has none. */
+        await openTab(panel, 'settings');
+        const planted = await panel.evaluate(() => {
+          const node = document.createElement('button');
+          node.disabled = true;
+          node.textContent = 'planted';
+          document.getElementById('settings-danger').append(node);
+          const found = [...document.querySelectorAll('.app :disabled')].length;
+          return found;
+        });
+        assert.ok(planted > 0, 'the planted control is not in the DOM the sweep reads');
+        const caught = await sweep();
+        assert.deepEqual(caught.silent, ['planted'], 'the sweep cannot see a switched-off control with no reason');
+        await panel.evaluate(() => {
+          const node = [...document.querySelectorAll('#settings-danger button')].find((b) => b.textContent === 'planted');
+          if (node) node.remove();
+        });
+        assert.deepEqual((await sweep()).silent, [], 'the plant was not cleaned up');
         t.diagnostic(`${explained} switched-off controls, every one of them with a written reason`);
       });
 

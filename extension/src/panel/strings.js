@@ -254,7 +254,32 @@ export const S = {
   deep: {
     label: 'Deep mode for this site',
     help: "Only needed when a site already shows data the moment it opens. Chrome will show a bar saying the browser is being debugged — that's MockLab, and it's normal.",
-    devtoolsConflict: 'Deep mode paused: Chrome DevTools is open on this tab. Close DevTools to resume.'
+    devtoolsConflict: 'Deep mode paused: Chrome DevTools is open on this tab. Close DevTools to resume.',
+    // + not in §11 — the row is per-site (§4's `deepModeOrigins` is a list of them), so
+    // there are sites it cannot be turned on for at all: a new tab, the extensions page,
+    // anything that is not a web address. Grey with no sentence is what §1.1 forbids.
+    noSite: 'Deep mode is set per site. Open a website in this tab to turn it on for it.',
+    /* + not in §11 — THE WARNING, ASKED BEFORE IT HAPPENS.
+     *
+     * §8 and §11 both describe Chrome's debugging bar, and until now both described it in
+     * a help line under a checkbox — which is a warning a person reads AFTER the bar is
+     * across their browser, if the tick came first. The bar is not a detail: it cannot be
+     * dismissed without also dismissing MockLab, every navigation is paused mid-flight
+     * while it is up, and §8 makes the whole feature opt-in per site because of it. So
+     * the tick asks, and only the answer to this question attaches anything. `help` above
+     * still says the same thing where the person is choosing; this is the last word
+     * before the browser changes.
+     *
+     * `turnOn` is not the row's own label repeated: a confirm button must say what it
+     * does, not "OK" (a person who has stopped reading presses either one). */
+    confirm:
+      'Turn deep mode on for this site? Chrome will show a bar across the top of the browser saying it is being debugged. That bar is MockLab, and it stays until you turn this off.',
+    turnOn: 'Turn on deep mode',
+    // + not in §11 — deep mode starts reading the page at its NEXT load, never the one
+    // already on screen (`background/debuggerEngine.js` says why: nothing fires early
+    // enough). Saying "on" and stopping there would promise the current page.
+    on: 'Deep mode is on for this site. Refresh the page for MockLab to see the data built into it.',
+    off: 'Deep mode is off for this site.'
   },
   companion: {
     connected: 'Connected — AI agents can control this site',
@@ -263,7 +288,91 @@ export const S = {
     pairTitle: 'Pair with your AI',
     pairBody: 'Run this once in your terminal, then enter the 6-digit code it prints:',
     pairPlaceholder: '6-digit code',
-    paired: 'Paired. Agents can now see and change data through MockLab.'
+    paired: 'Paired. Agents can now see and change data through MockLab.',
+
+    /* + not in §11 — THE COMMAND §10.5 promises ("shows one copy-paste command").
+     *
+     * Two of them, and the difference is not cosmetic. `companion/src/index.js` prints a
+     * code only when a pairing window opens, and an ordinary start opens one just on the
+     * FIRST run of a machine — after that it prints "already paired" and no code at all.
+     * So the command beside §11's `pairBody` ("enter the 6-digit code it prints") has to
+     * be the one that always prints one, or the sentence is false for everybody pairing a
+     * second browser, and the person is sent to a terminal to read a number that is not
+     * there.
+     *
+     * `start` is the other half: a browser that is ALREADY paired needs the companion
+     * running, not another pairing window. Showing `pair` there would open a window
+     * nobody asked for and print a code with nowhere to type it.
+     *
+     * NEITHER IS PREFIXED WITH `npx`, and `commandNote` is why. MockLab is not published
+     * to npm, so `npx mocklab-companion` resolves to nothing on every machine there is
+     * today — a command that runs for nobody is worse than no command, because it fails
+     * in a terminal where MockLab cannot say anything about it. What a person actually
+     * types from a downloaded copy is `node <their own path>/companion/src/index.js
+     * --pair`, and that path is different on every machine and unknowable from inside the
+     * panel: the extension knows its own id, never where the repository sits on disk. So
+     * these two are the command's NAME — true of an installed copy, and the thing to look
+     * for in the README of a downloaded one, which is what the note says.
+     *
+     * NOT TRANSLATABLE, and here anyway: a translator must leave both exactly as they
+     * are — they are typed into a terminal, not read. They live in this file because
+     * §17.6 is about every word that reaches a person, and because the day the package
+     * is renamed there is one place to change.
+     *
+     * The day MockLab IS published, `npx ` goes on the front of both, this note goes, and
+     * nothing else on the screen changes. */
+    command: 'mocklab-companion --pair',
+    start: 'mocklab-companion',
+    commandNote:
+      "That is the command's name. If you are running MockLab from a downloaded copy, the README file in the MockLab folder has the exact line to type.",
+    copy: 'Copy',
+    copied: 'Command copied. Paste it into your terminal.',
+    // Clipboard access can be refused (no focus, a locked-down profile). The command is
+    // on screen either way, so the honest answer names the way that still works.
+    copyFailed: "MockLab couldn't copy it. Select the command above and copy it yourself.",
+
+    /* + not in §11 — PAIRED, BUT NOTHING CONNECTED RIGHT NOW.
+     *
+     * `GET_COMPANION` answers two separate facts (`connected`, `paired`) and this is the
+     * pair §11 has no sentence for. It is the ORDINARY state of a machine whose companion
+     * is not running — not an error, and above all not "Not connected" in the sense the
+     * button under it offers to fix: that would send a person back through a pairing they
+     * have already completed. Nothing here says to pair again, because nothing about this
+     * state is fixed by pairing again. */
+    idle: 'Set up, but the companion is not running',
+    idleHelp: 'This browser is paired. Start the companion in your terminal and MockLab connects on its own.',
+
+    /* + not in §11 — the pairing form's own controls. `pairSubmit` is a verb because
+     * "Set up AI access" is the label of the button that OPENED this form; two buttons
+     * reading the same words in the same screen are one action drawn twice. */
+    pairSubmit: 'Pair',
+    codeFormat: 'Type the 6-digit code your terminal printed.',
+
+    /* + not in §11 — WHY A PAIRING DID NOT HAPPEN. Exactly two, because
+     * `PAIR_FAIL` in messages.js has exactly two values, and it has two because
+     * `companion/src/pairing.js` gives the socket ONE answer for all four of §12.3's
+     * refusals on purpose — that indistinguishability IS MockLab's security boundary.
+     * The detail is printed on the terminal where the person who started the companion
+     * can read it, and these two sentences are written to be useful under exactly that
+     * constraint rather than to guess around it.
+     *
+     * `pairRefused` therefore points at the terminal, which is the only place the answer
+     * exists — and then names the one step that works whichever of the four it was, since
+     * three of them (an expired window, too many tries, a code from an older run) are
+     * cured by a new window and the fourth (a mistyped code) is cured by the code that is
+     * on screen there.
+     *
+     * `pairNoCompanion` never says "try the code again", because no code can help: no
+     * socket opened at all, and both causes of that — nothing running, or something
+     * running with no pairing window — are fixed by the same command, which then prints a
+     * code that is NEW. Saying so is what stops a person retyping the old one. */
+    pairRefused:
+      'The companion did not accept that code. The terminal window where you started it says why — read it there, then use the newest code it shows.',
+    pairNoCompanion:
+      "MockLab couldn't reach the companion. Run the command above in your terminal: it starts the companion and prints a fresh code to type here.",
+    // + not in §11 — neither of the two above. Nothing answered at all, which is a fact
+    // about MockLab and not about the companion, so it claims nothing about either.
+    pairNoAnswer: "MockLab didn't get an answer about that code. Try it again, or run the command above for a fresh one."
   },
   errors: {
     pageBroke: 'Something went wrong talking to this page. Refresh it and try again.',

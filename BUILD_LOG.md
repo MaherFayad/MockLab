@@ -1023,3 +1023,118 @@ MCP. A comparison against `undefined` is not a typo the language will report.
 **Deviations:** 67–71 — see README "Deviations".
 
 **QA verdict:** PASS.
+
+---
+
+## M7 — Deep mode, the a11y pass, and three controls nobody could reach
+
+**Commits `74c6bf7`, `e112855`, `900bcf9`, `2065a7d`, and this one.** Owners:
+probe-engineer (§8's debugger engine), panel-designer (§10.5, the a11y pass), mcp-engineer
+(§12.3's pairing transport), with `messages.js`, `background.js` and the record mine.
+
+### The DoD, line by line
+
+§16's M7 asks for a debugger engine, a `__NEXT_DATA__` rewrite with a `demo/ssr.html`
+variant, an a11y pass, an RTL smoke test, an icon set and a zip script. All six are done.
+The engine is `background/debuggerEngine.js` with `deepFetch.js` and `documentData.js`
+beside it; `companion/src/demo/ssr.html` embeds its JSON in the document and
+`deep.browser.test.js` proves the central claim §8 makes and nothing else can check — that
+a document rewritten in flight by CDP Fetch still parses, hydrates and paints.
+
+### What the milestone found that was not on the list
+
+**Four browser suites were asserting an always-empty array is empty** (`e112855`).
+`worker.on('console')` captures nothing from an extension service worker in this Chromium
+— measured directly across six hooks, not inferred — so `e2e`, `probe`, `highlight` and
+`picker` each ended five milestones of work with "the service worker logged no errors
+during any of this" while reading a list that could never be non-empty. `page.on('console')`
+works, which is why the four `panel.*` suites' claims were live all along and why the
+vacuous set was exactly four rather than "four-plus" as I briefed it. The agent corrected
+my premise by measuring it. `recordWorkerErrors()` now lives in the shared fixture, counts
+restarts rather than forgiving them, and adds `unhandledrejection`/`error` listeners.
+**Nothing was hiding**: all six suites passed first try with the assertions live.
+
+**A mutation made a test file hang instead of fail, and it reported nothing** (`2065a7d`).
+A failed assertion in `wsClient.test.js` skips the test's own `client.stop()`, the
+reconnect timer re-arms itself and the process never drains. Ten pre-existing tests were
+one failed assertion away from total silence. This is the build's signature defect in its
+purest form — not a wrong answer, an absent one — and it is the ninth-plus instance.
+
+**A guard that did not exist, reported as such rather than counted.** `notifyStatus`'s
+`try/catch` swallowed the TypeError from an absent `onStatus`, so deleting the
+`typeof !== 'function'` check changed no behaviour. It was mutation-green because nothing
+could observe it. Now the test stubs `console.error` and asserts silence — and every
+status assertion moved outside the callback, since one thrown inside would be eaten by
+that same catch.
+
+**Three controls a person could not reach, and the a11y pass that found more.**
+`panel.a11y.browser.test.js` found that every source card in the panel was unopenable by
+keyboard (the `:has(input:checked)` checkbox §9.2 requires carried `tabindex="-1"`), that
+`render()` restored focus by `id` alone so a keyboard user landed on `<body>`, and that
+§10.2's three tree-row tooltips have hung 32px off the panel since M2 — found by the RTL
+sweep, which is the first thing to measure every tooltip in the panel at once. The §9.2
+hover sheen turned out to fail contrast in the LIGHT theme on "Apply & refresh page", the
+product's most important button, invisible for six milestones because only the RESTING
+button had ever been measured.
+
+**Deep mode, pairing and "Save as Scenario" were all still stubs after `74c6bf7` shipped
+the engines behind them.** Deep mode's checkbox rendered `disabled: true` while
+`debuggerEngine.js` and its seven passing browser tests sat underneath; §12.3's pairing had
+worked end to end since M6 but had no message type, so §10.5's button was inert. Closed in
+this commit. The deep-mode tick now ASKS before it attaches, because §8's Chrome banner is
+not dismissible without dismissing MockLab.
+
+### Two decisions where I refused what an agent asked for
+
+**`PAIR_FAIL` has two values, not four.** panel-designer asked to separate wrong code,
+expired window, too many attempts and no window open. `companion/src/pairing.js` hands the
+socket ONE indistinguishable `false` for all four on purpose and prints the detail on the
+terminal of the person who started it. That is MockLab's security boundary, and the panel
+is not where it gets reopened. `NO_COMPANION` is not a fifth cause leaking out — it is "no
+socket ever opened", which the extension observes locally and which any process able to
+attempt a pairing already sees at the transport.
+
+**The three companion types are handled outside `routeMessage`.** Everything else the panel
+can ask, an agent can ask through the same router; that identity is what makes §1.6's
+parity structural. Pairing must be the exception, because the thing on the far end of the
+socket is exactly what pairing decides to trust. Deviation 91.
+
+### Figures, and where they rot
+
+Six stale line counts were corrected this milestone and every one was caught by §17.10's
+guard rather than by reading. Three ordinal claims about the browser-suite count were
+wrong at the same time — `deep` and `panel.a11y` were BOTH documented as "the tenth
+suite", and `panel.settings` was called "the eleventh" twice while being the twelfth. Those
+were removed rather than corrected: the count is now checked by a test, so the number in
+the sentence was pure liability. The pattern across this whole build holds without
+exception — **every figure that rotted was in a place the audit could not read, and not one
+in the guarded form ever drifted.**
+
+`panel.settings.test.js` now reads `extension/test/*.browser.test.js`, parses CI's own
+`for suite in …` line out of the YAML and asserts both directions. Four times on this build
+a browser suite has existed that CI never invoked, and four times the remedy was a comment
+asking the next person to remember. It is mechanical now, with a floor so it cannot pass by
+failing to see the directory.
+
+### Evidence
+
+Unit: extension **509/509**, companion **57/57**, 0 skipped. Twelve browser suites against
+the real unpacked extension in real Chromium, each run individually the way CI's loop runs
+them — deep 7, e2e 16, highlight 10, mcp 14, panel 23, panel.a11y 12, panel.probe 17,
+panel.scenarios 13, panel.settings 12, picker 8, pickerdom 6, probe 7 = **145 checks, 0
+failures, 0 skipped**.
+
+Mutation coverage this milestone: 14 from the a11y pass, 12 from the pairing transport, 14
+from the Settings work, each applied alone and restored. Three of those found defects in
+the guards themselves rather than in the code.
+
+**What no check here can show.** Nothing in this sandbox has a screen reader, a real
+pointer, a real display or an outbound network. `role="tab"` on `<input type="radio">`,
+`aria-expanded` on `role="checkbox"`, the tooltip hush against a human hand's jitter, the
+14% sheen judged by eye, RTL with actual Arabic copy, Windows forced-colors, and keyboard
+operation of the in-page picker are all real-Chrome questions that were reasoned about here
+and must be looked at there.
+
+**Deviations:** 72–97 — see README "Deviations".
+
+**QA verdict:** _pending qa-verifier_

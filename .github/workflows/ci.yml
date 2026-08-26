@@ -79,7 +79,7 @@ jobs:
     # tooltip in the panel, which is what the three "disabled controls explain themselves
     # only to a mouse" carry-forwards turned out to be one symptom of.
     #
-    # highlight.browser.test.js is the ninth suite, added in M6's gap-closing IN THE SAME
+    # highlight.browser.test.js was added in M6's gap-closing IN THE SAME
     # CHANGE as the file. §10.3's overlays are drawn by a function that runs in the page,
     # and everything that can be wrong with it is invisible to a unit test: a shadow root
     # a site's `border:0!important` would otherwise erase, a rect measured through the
@@ -89,7 +89,20 @@ jobs:
     # proved" overlay — around whatever element now sits at a remembered tree position;
     # subtest 4 of this file is what fails.
     #
-    # deep.browser.test.js is the tenth suite, added at M7 IN THE SAME CHANGE as the file.
+    # panel.settings.browser.test.js was added in M7's addendum IN THE
+    # SAME CHANGE as the file — and this is the fourth time that sentence has had to be
+    # written by hand, so `extension/test/panel.settings.test.js` now CHECKS this loop
+    # against the contents of `extension/test/`: a browser suite missing from the line
+    # above fails an ordinary `node --test`, and so does a name here with no file behind
+    # it. It is the only place §10.5's three formerly-unreachable controls are performed —
+    # deep mode written as a PER-ORIGIN list into the real store (a boolean, or a write
+    # that drops the other sites, passes every unit test and draws a perfect checkbox),
+    # the §12.3 pairing screen and its two refusals, and §10.1D's "Save as Scenario".
+    # Deleting the confirm step in `panel/settings.js` — so ticking the box attaches
+    # Chrome's debugger before the person has been warned — fails subtest 1 of this file
+    # and nothing else in the repository.
+    #
+    # deep.browser.test.js was added at M7 IN THE SAME CHANGE as the file.
     # §8 is the one feature whose central claim cannot be checked anywhere else: that a
     # document rewritten in flight by CDP Fetch still parses, hydrates and paints, and
     # that the SITE — not MockLab — turned the pill red. It also holds DEVIATION 1 in
@@ -134,7 +147,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in deep e2e highlight mcp panel panel.a11y panel.probe panel.scenarios picker pickerdom probe; do
+          for suite in deep e2e highlight mcp panel panel.a11y panel.probe panel.scenarios panel.settings picker pickerdom probe; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"

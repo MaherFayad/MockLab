@@ -598,6 +598,21 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 .dot { inline-size: 0.5rem; block-size: 0.5rem; border-radius: 999px; background: var(--icon-tertiary); flex: none; }
 .dot--on { background: var(--success); }
 
+/* §8's confirmation, asked BEFORE the debugger attaches — see `S.deep.confirm`. Amber and
+ * not red: nothing has gone wrong, and the person is about to be told what will happen to
+ * their browser. Same ink pairing as `.editor__note` and `.card__note`, which is the one
+ * measured for AA on `--bg-warning` in both themes. */
+.deep-confirm { display: flex; flex-direction: column; gap: var(--gap-s); padding: var(--gap-s); border: 1.5px solid var(--warning); border-radius: var(--radius-s); background: var(--bg-warning); animation: slideDown 300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.deep-confirm .help { color: var(--chip-possible-text); }
+
+/* §10.5's "one copy-paste command". `user-select: all` makes one click take the whole
+ * line, because the failure this row exists to prevent is a person pasting half a command
+ * into a terminal; `overflow-x` keeps a long one from widening the 320px panel. */
+.cmd-block { display: flex; flex-direction: column; gap: var(--gap-xs); }
+.cmd-row { display: flex; align-items: center; gap: var(--gap-s); padding: var(--gap-s); border: 1.5px solid var(--border); border-radius: var(--radius-s); background: var(--bg-secondary); }
+.cmd { flex: 1; min-inline-size: 0; overflow-x: auto; white-space: nowrap; color: var(--text); user-select: all; }
+.cmd__copy { flex: none; }
+
 
 /* small reusable checkbox (the per-row on/off switch in §10.2) */
 .check { position: relative; display: inline-grid; place-items: center; flex: none; inline-size: 1.5rem; block-size: 1.5rem; cursor: pointer; }
