@@ -9,7 +9,7 @@
  * Rule §17.8: every message uses a constant from ../background/messages.js.
  */
 import { S } from './strings.js';
-import { MSG } from '../background/messages.js';
+import { MSG, PROBE_MSG } from '../background/messages.js';
 import { el, clear, ICON, withTip } from './dom.js';
 import { renderSources } from './sources.js';
 import { renderPickTab, pickingChrome, cancelPick, loadPick } from './pick.js';
@@ -432,7 +432,7 @@ function wireEvents() {
     // Pick mode can also be entered or cancelled from somewhere that is not this panel
     // — the page's own Escape key, or an agent over MCP (§1.6) — so the tab follows the
     // worker rather than only its own clicks. The same is true of a probe (§12.4 #5).
-    else if (matches(MSG.PICK_CHANGED) || matches(MSG.PROBE_CHANGED)) void refresh();
+    else if (matches(MSG.PICK_CHANGED) || matches(PROBE_MSG.PROBE_CHANGED)) void refresh();
     return false;
   });
   chrome.tabs.onActivated.addListener(() => void refresh());

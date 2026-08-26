@@ -242,8 +242,13 @@ if (!chromium) {
         }
         const trip = (await send(MSG.LIST_SOURCES, { tabId })).sources.find((s2) => /trip/i.test(s2.url));
         assert.ok(trip, 'the demo trip source');
-        const set = await send(MSG.SET_VALUE, { tabId, sigId: trip.sigId, path: '$.status', value: 'DELAYED' });
+        // `refresh:false`: the worker's own reload would race the one below and abort it
+        // (`net::ERR_ABORTED`, about one run in seven). One navigation, owned here.
+        const set = await send(MSG.SET_VALUE, {
+          tabId, sigId: trip.sigId, path: '$.status', value: 'DELAYED', refresh: false
+        });
         assert.equal(set.ok, true);
+        assert.equal(set.refreshed, false, 'so nothing else is navigating this tab');
         await page.reload({ waitUntil: 'load' });
         await sleep(500);
         assert.equal(await pillText(page), 'Delayed', 'the site rendered the new state');
@@ -275,8 +280,9 @@ if (!chromium) {
         await sleep(500);
         assert.equal(await pillText(page), 'Delayed', 'and the page is back where they left it');
 
+
         } finally {
-          await send(MSG.RESET_SITE, { tabId }).catch(() => {});
+          await send(MSG.RESET_SITE, { tabId, refresh: false }).catch(() => {});
           await page.close().catch(() => {});
         }
       });
