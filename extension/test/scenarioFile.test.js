@@ -36,7 +36,8 @@ import {
   parseScenarioFile,
   scenarioFileName,
   serializeScenario
-} from '../src/panel/scenarioFile.js';
+} from '../src/shared/scenarioFile.js';
+import { parsePath } from '../src/shared/jsonpath.js';
 
 /** Nothing a human would type, so a match can only have come from strings.js. */
 const SENTINEL = '⟪sentinel⟫';
@@ -195,6 +196,65 @@ for (const [what, mutate, reason] of SHAPE_MUTATIONS) {
     assert.equal(intact.ok, true, `the unmutated file must still import: ${intact.error}`);
   });
 }
+
+/**
+ * The one path shape MockLab can WRITE and could not READ BACK.
+ *
+ * The validator's path rule was a regex that mirrored §5.4's grammar and got it slightly
+ * wrong: it took only double-quoted bracket keys, while `parsePath` takes single quotes
+ * too. Nothing in the panel produces a single-quoted path — `formatPath` always emits
+ * double — so this read as harmless over-strictness. It was not: `set_value` over MCP
+ * (§12.4 #7) takes a path an AGENT typed, and `$['a b']` is a path §5.4 accepts. That
+ * Change is stored, snapshotted into a Scenario by `save_preset`, written into the export
+ * file verbatim by `serializeScenario` — and MockLab then refused its own file, in §11's
+ * words for a file that "is not a MockLab scenario".
+ *
+ * Both directions, because the point is that the two grammars are ONE: every shape §5.4
+ * accepts imports, and every shape it rejects is still refused. Widen the validator to
+ * "any string" and the second half goes red; narrow it back to double quotes only and the
+ * first does.
+ */
+test('§10.4 import accepts every field shape §5.4 does — including the one only an agent writes', () => {
+  const ADDRESSABLE = [
+    "$['a b']",              // single-quoted: the shape the old regex refused
+    "$['it\\'s']",             // an escaped quote inside one
+    '$["a b"]',              // double-quoted: what formatPath emits
+    '$.status',
+    '$.data.flights[0].status',
+    '$["dotted.key"]',
+    '$[0]',
+    '$'                      // the root itself is a field this build can address
+  ];
+  for (const path of ADDRESSABLE) {
+    assert.notEqual(parsePath(path), null, `${path} is not a §5.4 path — fix the fixture, not the parser`);
+    const preset = goodPreset();
+    preset.changes = [{ sigId: 'sig-trip', path, value: 'CANCELLED', enabled: true }];
+    const result = parseObject(preset);
+    assert.equal(result.ok, true, `MockLab refused a field it can address itself: ${path} — ${result.error}`);
+    assert.equal(result.preset.changes[0].path, path, 'and the path is stored exactly as it was written');
+  }
+
+  // The other direction, one row per way a path can be outside the grammar. Without
+  // these, the loop above passes against a validator that accepts anything at all.
+  const OUTSIDE = ['status', '$..status', '$.a[*]', '$[?(@.x)]', 'a.b.c', '$["unclosed]', '$.', ''];
+  for (const path of OUTSIDE) {
+    assert.equal(parsePath(path), null, `${path} IS a §5.4 path — fix the fixture, not the parser`);
+    const preset = goodPreset();
+    preset.changes = [{ sigId: 'sig-trip', path, value: 1, enabled: true }];
+    assert.equal(parseObject(preset).reason, 'not-scenario', `a path this build cannot address was accepted: ${path}`);
+  }
+});
+
+test('§10.4 a Scenario MockLab exported is a Scenario MockLab imports — for any agent-written field', () => {
+  // The defect end to end, in the shape it is actually reachable in: set_value stores the
+  // path, save_preset snapshots it, Export writes the file, and Import reads it back.
+  const stored = { sigId: 'sig-trip', path: "$['gate number']", value: 'B12', enabled: true };
+  const file = serializeScenario(goodPreset({ changes: [stored] }));
+  assert.ok(file.includes("$['gate number']"), 'the export writes the path the store holds, verbatim');
+  const back = parseScenarioFile(file, SITE);
+  assert.equal(back.ok, true, `MockLab refused a file MockLab wrote: ${back.error}`);
+  assert.deepEqual(back.preset.changes, [stored]);
+});
 
 test('§10.4 a value that is null, false or zero is a value, not a missing one', () => {
   // The rule is `hasOwnProperty('value')`, and the reason it is not `entry.value != null`

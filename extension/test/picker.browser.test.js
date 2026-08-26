@@ -37,7 +37,7 @@ import path from 'node:path';
 
 // The real constants: a rename in the contract breaks this suite loudly.
 import { MSG } from '../src/background/messages.js';
-import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
+import { EXTENSION_DIR, loadChromium, launchExtension, createFixture, recordWorkerErrors } from '../testlib/browserFixture.js';
 
 /* ------------------------------------------------------------------------ fixtures */
 
@@ -102,7 +102,7 @@ if (!chromium) {
     // would turn a broken demo server into a silently absent one, and the DoD would stop
     // being checked with the suite still reporting green.
     let demo = { value: null, why: null };
-    const swErrors = [];
+    let swErrors = null;
     try {
       fixtureOrigin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(fixtures)}`);
 
@@ -124,7 +124,7 @@ if (!chromium) {
 
       sw = await stage('service-worker registration', 20000, async () =>
         ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
-      sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+      swErrors = await stage('service-worker error recorder', 10000, () => recordWorkerErrors(ctx, sw));
 
       panel = await stage('panel page', 30000, async () => {
         const page = await ctx.newPage();
@@ -406,9 +406,8 @@ if (!chromium) {
         assert.deepEqual(answer, { ok: false, reason: 'no-content-script' });
       });
 
-      await check('the service worker logged no errors during any of this', () => {
-        assert.deepEqual(swErrors, []);
-      });
+      await check('the service worker logged no errors during any of this', () =>
+        swErrors.assertClean());
     } finally {
       if (ctx) await ctx.close().catch(() => {});
       fixtures.close();

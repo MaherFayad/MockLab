@@ -35,7 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MSG, PROBE_MSG, PROBE_PHASE, PROBE_FAIL } from '../src/background/messages.js';
-import { loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
+import { loadChromium, launchExtension, createFixture, recordWorkerErrors } from '../testlib/browserFixture.js';
 
 const listen = (server) =>
   new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
@@ -54,7 +54,7 @@ if (!chromium) {
     let sw = null;
     let panel = null;
     let demo = { value: null, why: null };
-    const swErrors = [];
+    let swErrors = null;
     try {
       demo = await optional('demo server', 10000, async () => {
         const { createServer } = await import('../../companion/src/index.js');
@@ -69,7 +69,7 @@ if (!chromium) {
       );
       sw = await stage('service-worker registration', 20000, async () =>
         ready(ctx.serviceWorkers()[0] || (await ctx.waitForEvent('serviceworker', { timeout: 20000 }))));
-      sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+      swErrors = await stage('service-worker error recorder', 10000, () => recordWorkerErrors(ctx, sw));
 
       panel = await stage('panel page', 30000, async () => {
         const page = await ctx.newPage();
@@ -375,7 +375,10 @@ if (!chromium) {
         await ctx.close();
         ctx = await launchExtension(chromium, profile);
         sw = await ready(ctx.serviceWorkers()[0] || (await ctx.waitForEvent('serviceworker', { timeout: 20000 })));
-        sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+        // The relaunch is this check's SUBJECT, so the record moves with it rather than
+        // starting over: `rebind` keeps what the closed worker logged, and refuses if
+        // that worker was already unreadable.
+        await swErrors.rebind(ctx, sw);
 
         const deadline = Date.now() + 10000;
         let left = null;
@@ -389,9 +392,8 @@ if (!chromium) {
         assert.deepEqual(survivors, ['real-1'], "and the user's own Change survived");
       });
 
-      await check('the service worker logged no errors during any of this', () => {
-        assert.deepEqual(swErrors, []);
-      });
+      await check('the service worker logged no errors during any of this', () =>
+        swErrors.assertClean());
     } finally {
       if (ctx) await ctx.close().catch(() => {});
       if (demoSite) demoSite.server.close();

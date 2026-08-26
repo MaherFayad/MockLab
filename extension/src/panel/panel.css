@@ -83,16 +83,47 @@
  * background, at >= 4.6:1. Nothing in the §9.1 block is touched.
  */
 :root {
-  --on-accent: #FFFFFF;              /* the §9.2 sheen and checkmark, both themes */
-  /* The LABEL on an accent or danger fill, which is a different question from the sheen
-   * drawn over it. §9.1's dark --accent (#4A90FF) is a light blue: white 14px/600 on it
-   * measures 3.12:1, under WCAG 2.2 AA 1.4.3 — and that is the label on "Apply & refresh
-   * page", the button this whole product is pointed at. Dark --danger (#F28B82) is worse
-   * at 2.25:1 under the danger toast. Both are fixed by inking the LABEL rather than by
-   * inventing a second blue: a light fill takes dark text, exactly as the light theme's
-   * dark fill takes white. Light: 4.85 on --accent, 5.28 on --danger. Dark: 5.42 and
-   * 7.53. Measured by `panel.browser.test.js`, in both themes, on every filled button. */
+  /* The INK on an accent or danger fill: a button's label, a checked checkbox's
+   * checkmark. One token, because they are one question — "what is legible on top of
+   * this fill?" — and two tokens is two answers free to drift apart. The sheen painted
+   * OVER that fill is a different question and has its own token below; the note there
+   * says why, and the answer is not the same colour.
+   *
+   * §9.1's dark --accent (#4A90FF) is a light blue: white 14px/600 on it measures
+   * 3.12:1, under WCAG 2.2 AA 1.4.3 — and that is the label on "Apply & refresh page",
+   * the button this whole product is pointed at. Dark --danger (#F28B82) is worse at
+   * 2.25:1 under the danger toast. No text colour reaches 4.5:1 on #4A90FF, so the fix
+   * cannot be a lighter or darker white: the dark theme has to go dark-on-accent, which
+   * is the rule the light theme already follows read the other way round — a light fill
+   * takes dark ink, a dark fill takes light ink. Light: 4.85 on --accent, 5.28 on
+   * --danger. Dark: 5.42 and 7.53.
+   *
+   * The checkmark on a checked checkbox is the same question and takes the same answer:
+   * a glyph on an accent fill. In the dark theme it was white on #4A90FF at 3.12:1 —
+   * over 1.4.11's 3:1 floor for a graphical object by four hundredths, which is not a
+   * margin, and needlessly, since the label beside it had already been answered. */
   --on-accent-text: #FFFFFF;
+  /* §9.2's primary-button sheen: "hover … + white 135° gradient sheen via ::before".
+   * WHITE IN BOTH THEMES, which is what §9.2 says and is also, measured, the only
+   * direction that is safe in both — a sheen inked to match the LABEL moves the surface
+   * toward the label and costs contrast in whichever theme it is used in (dark ink over
+   * the dark theme's #5EA0FF hover fill measures 4.32:1 under its own dark label; that
+   * was tried first and is why this is a separate token from --on-accent-text rather
+   * than the same one).
+   *
+   * Its STRENGTH is the M7 finding, and it is not a dark-mode one. At the 22% this
+   * shipped with, white over the LIGHT theme's --accent-hover (#0052CC) lifts the
+   * surface to a mid blue and the white label on it measures 4.34:1 — under WCAG 2.2 AA
+   * 1.4.3, in the light theme, in the hover state, on "Apply & refresh page". The
+   * resting figure (4.83) is fine and is the only one anything had ever measured, so a
+   * whole state of the product's most important button was failing where nobody looked.
+   * At 14% the same pixel measures 5.14 and the gloss is still plainly there.
+   *
+   * `panel.probe.browser.test.js` now measures the button hovered as well as at rest, in
+   * both themes, and takes the gradient's FIRST STOP — the strongest pixel of the sheen —
+   * rather than an average, so the figure it asserts is the worst case and not a typical
+   * one. */
+  --accent-sheen: #FFFFFF;
   --chip-verified-text: #1A7B36;     /* 4.71 on --bg-success */
   --chip-possible-text: #A05F00;     /* 4.66 on --bg-warning */
   --chip-stale-text: #636970;        /* 4.65 on --bg-tertiary */
@@ -221,6 +252,35 @@ h2 { font-size: 1rem; font-weight: 600; }
 .tip--end:hover .tip__bubble, .tip--end:focus-within .tip__bubble,
 .tip--end.tip--up:hover .tip__bubble, .tip--end.tip--up:focus-within .tip__bubble { transform: none; }
 
+/* ── WCAG 2.2 1.4.13 (Content on Hover or Focus), the §16 M7 pass ──────────────────
+ *
+ * Everything above satisfies "persistent" already — the bubble stays for as long as the
+ * control is hovered or holds focus, on no timer. The other two clauses were both unmet,
+ * for every `.tip` in the panel, and neither is cosmetic:
+ *
+ *   HOVERABLE. The bubble carried `pointer-events: none` at all times, so moving the
+ *   pointer onto it dropped `.tip:hover` and the text vanished out from under the
+ *   pointer. That is exactly the failure 1.4.13 names, and it is worst on the longest
+ *   bubbles — `deep.help` and `sources.guessHighlight` are the ones a person most needs
+ *   to hold still and read, and the ones a magnifier user has to travel across. A SHOWN
+ *   bubble is now hoverable; a hidden one keeps `pointer-events: none`, because an
+ *   invisible box floating over the control beneath it would eat that control's clicks.
+ *   The bubble is a CHILD of `.tip`, so hovering it keeps `.tip:hover` true — the
+ *   persistence falls out of the containment rather than being timed.
+ *
+ *   DISMISSIBLE. There was no way to get rid of one without moving the pointer or the
+ *   focus. A 14rem bubble opening downward covers whatever is under the control — on the
+ *   tab strip that is the site bar, which carries "Reset site" (see the note below it) —
+ *   so a person who wants to read what is underneath had to move away from the thing
+ *   they were pointing at. Escape now hushes every bubble until the pointer or the focus
+ *   next moves (`wireTips` in dom.js). Hushed rather than closed: nothing here holds
+ *   per-tooltip state, and the panel rebuilds its DOM on every store update, so a class
+ *   on <body> is the only form of "dismissed" that survives a re-render. */
+
+.tip:hover .tip__bubble, .tip:focus-within .tip__bubble { pointer-events: auto; }
+body.tips-hushed .tip:hover .tip__bubble,
+body.tips-hushed .tip:focus-within .tip__bubble { opacity: 0; pointer-events: none; }
+
 /* ──────────────────────────────────────────────────────────── site bar — §10 shell */
 
 /* The tab strip's tooltips open downward into this margin. It is 1.5rem and not
@@ -247,37 +307,37 @@ h2 { font-size: 1rem; font-weight: 600; }
 /* ──────────────────────────────────────────────────────────── buttons — §9.2 (DGA) */
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-s); border: none; background: none; font-size: var(--font-size-m); font-weight: 600; cursor: pointer; border-radius: var(--radius-m); transition: all var(--transition-rule); }
-.btn:disabled { cursor: not-allowed; }
+.btn:disabled, .btn[aria-disabled='true'] { cursor: not-allowed; }
 
 .btn--primary { position: relative; overflow: hidden; inline-size: 100%; padding: 0.6875rem 1rem; background: var(--accent); color: var(--on-accent-text); box-shadow: var(--shadow-button); }
-.btn--primary::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, color-mix(in srgb, var(--on-accent) 22%, transparent), transparent); opacity: 0; transition: opacity var(--transition-rule); }
-.btn--primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); box-shadow: var(--shadow-md), var(--shadow-button); }
-.btn--primary:hover:not(:disabled)::before { opacity: 1; }
-.btn--primary:active:not(:disabled) { transform: scale(0.98); }
-.btn--primary:disabled { box-shadow: none; opacity: 0.7; filter: saturate(0.7) brightness(0.85); }
+.btn--primary::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, color-mix(in srgb, var(--accent-sheen) 14%, transparent), transparent); opacity: 0; transition: opacity var(--transition-rule); }
+.btn--primary:hover:not(:disabled):not([aria-disabled='true']) { background: var(--accent-hover); transform: translateY(-2px); box-shadow: var(--shadow-md), var(--shadow-button); }
+.btn--primary:hover:not(:disabled):not([aria-disabled='true'])::before { opacity: 1; }
+.btn--primary:active:not(:disabled):not([aria-disabled='true']) { transform: scale(0.98); }
+.btn--primary:disabled, .btn--primary[aria-disabled='true'] { box-shadow: none; opacity: 0.7; filter: saturate(0.7) brightness(0.85); }
 
 .btn--secondary { padding: 0.5rem 0.875rem; background: var(--bg-secondary); color: var(--text); border: 1.5px solid var(--border); }
-.btn--secondary:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
-.btn--secondary:active:not(:disabled) { transform: scale(0.98); }
-.btn--secondary:disabled { opacity: 0.6; }
+.btn--secondary:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg-hover); border-color: var(--border-strong); }
+.btn--secondary:active:not(:disabled):not([aria-disabled='true']) { transform: scale(0.98); }
+.btn--secondary:disabled, .btn--secondary[aria-disabled='true'] { opacity: 0.6; }
 
 .btn--danger { padding: 0.375rem 0.625rem; color: var(--on-danger-surface); background: none; font-size: var(--font-size-s); }
-.btn--danger:hover:not(:disabled) { background: var(--bg-danger); }
-.btn--danger:active:not(:disabled) { transform: scale(0.98); }
+.btn--danger:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg-danger); }
+.btn--danger:active:not(:disabled):not([aria-disabled='true']) { transform: scale(0.98); }
 
 .btn--ghost { padding: 0.375rem 0.625rem; color: var(--text-secondary); font-size: var(--font-size-s); font-weight: 500; }
-.btn--ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.btn--ghost:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg-hover); color: var(--text); }
 
 .icon-btn { display: grid; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; border: none; background: none; border-radius: var(--radius-s); color: var(--icon); cursor: pointer; transition: all var(--transition-rule); }
-.icon-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--accent); }
-.icon-btn:active:not(:disabled) { transform: scale(0.92); }
-.icon-btn:disabled { color: var(--icon-tertiary); cursor: not-allowed; }
-.icon-btn--danger:hover:not(:disabled) { background: var(--bg-danger); color: var(--danger); }
+.icon-btn:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg-hover); color: var(--accent); }
+.icon-btn:active:not(:disabled):not([aria-disabled='true']) { transform: scale(0.92); }
+.icon-btn:disabled, .icon-btn[aria-disabled='true'] { color: var(--icon-tertiary); cursor: not-allowed; }
+.icon-btn--danger:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg-danger); color: var(--danger); }
 
 /* The ring paints with `currentColor`, so it is legible on whatever surface it is put
- * on: white inside a primary button (whose own colour is --on-accent), --accent on the
- * §10.1 progress card, --text in a §10.2 tree row. It used to be pinned to --on-accent
- * everywhere, which made it a white ring on a white card outside a button. */
+ * on: the label's own ink inside a primary button (--on-accent-text), --accent on the
+ * §10.1 progress card, --text in a §10.2 tree row. It used to be pinned to a white
+ * token everywhere, which made it a white ring on a white card outside a button. */
 .spinner { inline-size: 1rem; block-size: 1rem; animation: spin 1s linear infinite; }
 .spinner .s-from { stop-color: currentColor; stop-opacity: 0; }
 .spinner .s-to { stop-color: currentColor; stop-opacity: 1; }
@@ -290,7 +350,16 @@ h2 { font-size: 1rem; font-weight: 600; }
 .card__head { display: block; cursor: pointer; }
 .card:active { transform: scale(0.995) translateY(-1px); }
 .card:has(.card__head > input:checked) { box-shadow: 0 0 0 2px var(--accent), var(--shadow-button); border-color: transparent; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, var(--bg)), var(--bg)); }
+/* §9.2 builds the selection card's "selected" look on `:has(input:checked)`, so the
+ * checkbox is real and has to stay. It was also `tabindex="-1" aria-hidden="true"`, and
+ * those two attributes were the only way into the §10.2 tree: the label around it is not
+ * focusable, so a keyboard reached the card's own contents and never the thing that
+ * OPENS it. Every source in the panel was mouse-only (§16 M7: "every control
+ * keyboard-reachable"). It is a real checkbox again, named by the label that wraps it and
+ * carrying `aria-expanded` for what it actually does, and the focus ring is drawn on the
+ * CARD — a ring on a zero-area invisible input is a ring nobody can see. */
 .card__head > input { position: absolute; opacity: 0; pointer-events: none; }
+.card:has(.card__head > input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .card__title { display: flex; align-items: center; gap: var(--gap-s); font-weight: 600; }
 .card__title span:first-child { flex: none; }
 .card__meta > span + span::before { content: '\00B7'; margin-inline-end: var(--gap-xs); color: var(--text-tertiary); }
@@ -313,7 +382,7 @@ h2 { font-size: 1rem; font-weight: 600; }
  * time — which rendered an already-checked box as an empty blue square for 300ms. */
 input:checked + .check-box { background: var(--accent); border-color: var(--accent); }
 input:checked + .check-box.check-box--draw { animation: checkboxPop var(--transition-spring); }
-input:checked + .check-box::after { content: ''; position: absolute; inset-block-start: 2px; inset-inline-start: 6px; inline-size: 5px; block-size: 10px; border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+input:checked + .check-box::after { content: ''; position: absolute; inset-block-start: 2px; inset-inline-start: 6px; inline-size: 5px; block-size: 10px; border: solid var(--on-accent-text); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 input:checked + .check-box.check-box--draw::after { animation: checkmarkDraw 300ms cubic-bezier(0.4, 0, 0.2, 1); }
 input:focus-visible + .check-box { outline: 2px solid var(--accent); outline-offset: 2px; }
 .stack > .tip { display: block; }
@@ -474,7 +543,7 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 /* §9.2's cancel-button recipe at full width. The compact `.btn--danger` is a text button
  * for the site bar; the one thing that stops a probe needs a real target and a border. */
 .btn--danger.btn--wide { padding: 0.5rem 0.875rem; font-size: var(--font-size-m); border: 1.5px solid var(--border-danger); background: var(--bg); }
-.btn--danger.btn--wide:hover:not(:disabled) { background: var(--bg-danger); border-color: var(--danger); }
+.btn--danger.btn--wide:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg-danger); border-color: var(--danger); }
 
 /* §10.1D — the result card. */
 .result { animation: slideDown 300ms cubic-bezier(0.4, 0, 0.2, 1) both; display: flex; flex-direction: column; gap: var(--gap-m); padding: var(--gap-m); border: 1.5px solid var(--border); border-radius: var(--radius-m); background: var(--bg-secondary); box-shadow: var(--shadow-md); }
@@ -498,7 +567,7 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 /* --text-secondary on this tint measures 4.25:1. The row's own accent ink is what the
  * tint was tuned against (4.66), and it also makes "Show me" read as the action it is. */
 .result__affected .btn--ghost { color: var(--chip-changed-text); }
-.result__affected .btn--ghost:hover:not(:disabled) { background: var(--bg); }
+.result__affected .btn--ghost:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg); }
 
 /* §10.1D's failure variants. Warning, not danger: nothing broke and nobody did anything
  * wrong — MockLab looked and did not find, which is the honest half of §0.2. */
@@ -525,7 +594,7 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 .danger-zone { display: flex; flex-direction: column; gap: var(--gap-s); padding: var(--gap-m); border: 1.5px solid var(--border-danger); border-radius: var(--radius-m); background: var(--bg-danger); }
 .danger-zone .section-title { color: var(--on-danger-surface); }
 .danger-zone .btn--secondary { background: var(--bg); border-color: var(--border-danger); color: var(--on-danger-surface); }
-.danger-zone .btn--secondary:hover:not(:disabled) { background: var(--bg); border-color: var(--danger); }
+.danger-zone .btn--secondary:hover:not(:disabled):not([aria-disabled='true']) { background: var(--bg); border-color: var(--danger); }
 .dot { inline-size: 0.5rem; block-size: 0.5rem; border-radius: 999px; background: var(--icon-tertiary); flex: none; }
 .dot--on { background: var(--success); }
 
@@ -538,7 +607,15 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 .tree__row--off { opacity: 0.6; }
 .tree__row--off .tree__value--old { text-decoration: none; }
 .tree__branch { display: block; }
-.tip > .btn:disabled, .tip > .icon-btn:disabled, .tip > .check-row:has(input:disabled) { pointer-events: none; }
+/* This rule used to read `.tip > .btn:disabled … { pointer-events: none }`, and it was
+ * the mechanism by which three controls could only ever explain themselves to a MOUSE.
+ * A `disabled` button dispatches no pointer events, so the wrapper had to be given the
+ * hover by taking them off the child — and a `disabled` button is also not focusable, so
+ * `.tip:focus-within` could never fire either. Mouse-only by construction, on the three
+ * controls whose whole problem is that they do nothing. `withTip` no longer hands a
+ * `disabled` control to a tooltip at all (dom.js): it converts it to `aria-disabled`,
+ * which is focusable, hoverable, announced, and inert. Nothing is left for this rule to
+ * do, and leaving it would quietly re-break the next control someone wraps. */
 .sitebar__icon img { border-radius: 3px; }
 #toast-host:empty { display: none; }
 
@@ -591,9 +668,28 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 
 /* ──────────────────────────────────── §16 M7 / §9: motion is a preference, not a rule */
 
+/* The sweep first: every animation and every transition collapsed to a millisecond, so a
+ * motion added tomorrow inherits the preference instead of re-arguing it.
+ *
+ * Then the two §16 M7 names in particular — "prefers-reduced-motion disables the spring
+ * and pop animations" — turned OFF rather than shortened, so the DoD sentence is literally
+ * true of the two things it names and a test can assert `none` rather than a duration
+ * chosen to look like nothing. The spring thumb's rule used to sit here without
+ * `!important` and was therefore overridden by the sweep above it: still stilled, but by
+ * the general rule, so deleting the specific one changed nothing and nothing measured it.
+ * (`panel.a11y.browser.test.js` measures the ::before, which is where the thumb actually
+ * lives — the suite that thought it was checking this was reading the CONTAINER's
+ * transition, which has none in either mode.)
+ *
+ * The spinner is the one exception, and it is deliberate: §10.1C's card is on screen for
+ * eight page reloads under the instruction "NEVER let the user think it's stuck". A still
+ * spinner over a page that is genuinely reloading is a lie, and reduced motion does not
+ * buy lies — it buys calmer ones, so it slows down instead of stopping. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
-  .segmented::before { transition: none; }
-  .card:hover, .tree__row:hover, .scenario__item:hover, .btn--primary:hover:not(:disabled) { transform: none; }
+  .segmented::before { transition: none !important; }
+  input:checked + .check-box.check-box--draw,
+  input:checked + .check-box.check-box--draw::after { animation: none !important; }
+  .card:hover, .tree__row:hover, .scenario__item:hover, .btn--primary:hover:not(:disabled):not([aria-disabled='true']) { transform: none; }
   .spinner { animation: spin 1.2s linear infinite !important; }
 }

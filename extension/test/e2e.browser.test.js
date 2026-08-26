@@ -31,7 +31,7 @@ import path from 'node:path';
 // duplicate the contract, so nothing here does: these are the real constants the
 // service worker answers to, and a rename in messages.js breaks this suite loudly.
 import { MSG } from '../src/background/messages.js';
-import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
+import { EXTENSION_DIR, loadChromium, launchExtension, createFixture, recordWorkerErrors } from '../testlib/browserFixture.js';
 
 /**
  * In-page read deadlines for a capture-only body, mirrored from interceptor.js. The
@@ -256,7 +256,7 @@ if (!chromium) {
     // The demo site is optional here — five checks below need it and the rest do not —
     // so its failure skips those checks WITH THE REASON, and breaks nothing.
     let demo = { value: null, why: null };
-    const swErrors = [];
+    let swErrors = null;
 
     try {
       fixtureOrigin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(fixtures)}`);
@@ -279,7 +279,7 @@ if (!chromium) {
 
       sw = await stage('service-worker registration', 20000, async () =>
         ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
-      sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+      swErrors = await stage('service-worker error recorder', 10000, () => recordWorkerErrors(ctx, sw));
 
       // The panel talks to the worker with chrome.runtime.sendMessage, and a message the
       // worker sends is never delivered back to itself — so drive it from a real
@@ -878,7 +878,11 @@ if (!chromium) {
         await page.close();
       });
 
-      assert.deepEqual(swErrors, [], 'the service worker console stays clean');
+      // A `check`, not a bare assert: this used to sit outside every subtest, so its
+      // failure would have ended the outer test instead of reporting as one of its
+      // checks — the shape Deviation 45 exists to prevent.
+      await check('the service worker logged no errors during any of this', () =>
+        swErrors.assertClean());
     } finally {
       if (ctx) await ctx.close().catch(() => {});
       fixtures.close();

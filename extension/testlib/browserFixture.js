@@ -1,6 +1,7 @@
 /**
- * The harness the four browser suites share: find a Chromium, launch the REAL unpacked
- * extension, and run a fixture whose every check reports whatever happens to it.
+ * The harness the eleven browser suites share: find a Chromium, launch the REAL unpacked
+ * extension, run a fixture whose every check reports whatever happens to it, and record
+ * what the service worker logs in the one way this Chromium actually permits.
  *
  * OWNER: probe-engineer — this file only. `audit.js` beside it belongs to
  * interceptor-engineer and is a different thing entirely (it reads source; this drives a
@@ -8,7 +9,7 @@
  *
  * WHY THIS DIRECTORY: `node --test` treats EVERY .js file under a directory called
  * `test` as a test file, so a helper module living there would be executed as a suite
- * containing no tests — which is why all four suites carried their own copy of
+ * containing no tests — which is why every suite carried its own copy of
  * `loadChromium` for three milestones (README Deviations 15, 22, 27 each state that
  * reason). `testlib` is outside that glob and no file in it may be named `test-*.js`.
  * `audit.js`'s header carries the fuller note, including why a helper directory is not a
@@ -125,6 +126,211 @@ export function launchExtension(chromium, profileDir) {
     channel: 'chromium',
     args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
   });
+}
+
+/* ------------------------------------------ what the service worker logs, for real */
+
+/**
+ * ── THE MEASUREMENT THIS SECTION EXISTS FOR ────────────────────────────────────────
+ *
+ * `worker.on('console')` RAISES NOTHING for an extension service worker in this
+ * Chromium. Measured, not assumed, and re-measured before this code was written: a
+ * `console.error` called straight out of `sw.evaluate` produced an empty event list,
+ * and so did `console.log`, `console.warn`, `worker.on('pageerror')` and a
+ * context-level `'console'` listener. A `page.on('console')` on an ordinary page —
+ * including the panel, which is an ordinary page at a `chrome-extension://` URL —
+ * captures the same synthetic error correctly. The gap is service workers only.
+ *
+ * Four suites therefore spent five milestones ending on
+ *
+ *     assert.deepEqual(swErrors, []);            // swErrors could never be non-empty
+ *
+ * — an assertion that cannot fail, on a claim ("the service worker logged no errors")
+ * nobody was in a position to make. `e2e`, `probe`, `highlight` and `picker` each
+ * carried one. `deep` was written last and wrapped `console.error` inside the worker
+ * instead; that is what this is, lifted here so the next browser suite inherits a
+ * working recorder rather than re-deriving a broken one.
+ *
+ * ── WHY THE READ IS ALLOWED TO FAIL FOR REASONS THAT ARE NOT ERRORS ────────────────
+ *
+ * A wrapper installed into a worker can go missing — an MV3 worker may be terminated
+ * when idle and start again with a clean global. If `read()` answered a missing
+ * recorder with "no errors", this check would be vacuous a SECOND way, and the second
+ * way is harder to see than the first. So the recorder reports three facts and the
+ * claim needs all three:
+ *
+ *   `installed`  the wrapper is present in the worker being read RIGHT NOW. False
+ *                means the claim was not observed, and that is a failure, never a pass.
+ *   `restarts`   how many times a new extension worker appeared. Each one takes its
+ *                predecessor's list with it, unrecoverably — the errors are in a global
+ *                of a dead JS context — so a restart means the span "during any of
+ *                this" has a hole in it, and the claim cannot be made over a hole.
+ *   `errors`     what was actually recorded.
+ *
+ * A restart is re-armed anyway (best effort, on the context's `serviceworker` event),
+ * so that `installed:false` keeps its one unambiguous meaning: nothing is watching.
+ *
+ * ── WHAT IT STILL CANNOT SEE (both real, both narrow) ──────────────────────────────
+ *
+ * 1. Anything logged between the worker starting and this arming — the worker is
+ *    already running when `launchPersistentContext` resolves, and there is no earlier
+ *    hook Playwright offers for a worker target. Arm it in the stage directly after
+ *    service-worker registration and the window is milliseconds wide.
+ * 2. Messages the BROWSER writes about the extension rather than the extension writing
+ *    them itself ("Unchecked runtime.lastError"), which never pass through this
+ *    `console.error`. `worker.on('console')` would be the hook for those, and it is
+ *    the hook that does not work. Uncaught exceptions and unhandled rejections ARE
+ *    covered, by two listeners of their own — verified with a synthetic
+ *    `Promise.reject` in the worker, which this records and a bare `console.error`
+ *    wrapper would have missed.
+ *
+ * The recorder's global is deliberately NOT named `__mocklab…`: §17.8's audit reads
+ * every global of that shape as one of `messages.js`'s `CONTENT_GLOBALS` contracts, and
+ * this is a variable a test harness parks on a worker for the length of a run. A name
+ * that looks like a contract is a name somebody will later go looking for one behind.
+ */
+const RECORDER_GLOBAL = 'browserFixtureWorkerErrors';
+
+/** Put the wrapper in one worker. Idempotent: a second call keeps the first's list. */
+function installRecorder(worker, name) {
+  return worker.evaluate((globalName) => {
+    if (Array.isArray(globalThis[globalName])) return true;
+    const seen = [];
+    globalThis[globalName] = seen;
+    const say = (thing) => (thing && thing.message) || String(thing);
+    const real = console.error.bind(console);
+    console.error = (...args) => {
+      seen.push(`console.error: ${args.map(say).join(' ')}`);
+      real(...args);          // still visible to anyone watching the worker by hand
+    };
+    globalThis.addEventListener('unhandledrejection', (event) => {
+      seen.push(`unhandledrejection: ${say(event && event.reason)}`);
+    });
+    globalThis.addEventListener('error', (event) => {
+      seen.push(`uncaught: ${say(event && (event.error || event.message))}`);
+    });
+    return true;
+  }, name);
+}
+
+/**
+ * Start recording what the extension's service worker logs, and hand back the handle
+ * whose `assertClean()` IS the "logged no errors" check.
+ *
+ * Use it as a fixture stage, immediately after service-worker registration, so that a
+ * failure to arm breaks the fixture by name instead of quietly watching nothing:
+ *
+ *     swErrors = await stage('service-worker error recorder', 10000,
+ *       () => recordWorkerErrors(ctx, sw));
+ *     …
+ *     await check('the service worker logged no errors during any of this',
+ *       () => swErrors.assertClean());
+ *
+ * @param {import('playwright').BrowserContext} context
+ * @param {import('playwright').Worker} worker  the extension's service worker
+ */
+export async function recordWorkerErrors(context, worker) {
+  const origin = worker.url().split('/src/')[0];
+  /** Errors read off a worker this suite ENDED on purpose — see `rebind`. */
+  const carried = [];
+  let latest = worker;
+  let restarts = 0;
+  let onWorker = null;
+  let watched = null;
+
+  await installRecorder(worker, RECORDER_GLOBAL);
+
+  // A worker that restarts gets the wrapper back. Not a rescue — its predecessor's
+  // list died with it and `restarts` says so — but it keeps `installed:false` meaning
+  // exactly one thing.
+  function watch(ctx) {
+    if (watched && onWorker) watched.off('serviceworker', onWorker);
+    watched = ctx;
+    onWorker = (next) => {
+      if (next === latest || !next.url().startsWith(origin)) return;
+      latest = next;
+      restarts += 1;
+      installRecorder(next, RECORDER_GLOBAL).catch(() => {});
+    };
+    ctx.on('serviceworker', onWorker);
+  }
+  watch(context);
+
+  /** What the worker holds now: `{installed, restarts, errors}`. Never throws. */
+  async function read() {
+    try {
+      const worker_ = latest;
+      const state = await worker_.evaluate(
+        (globalName) => ({
+          installed: Array.isArray(globalThis[globalName]),
+          errors: (globalThis[globalName] || []).slice()
+        }),
+        RECORDER_GLOBAL
+      );
+      return { installed: state.installed, restarts, errors: carried.concat(state.errors) };
+    } catch (err) {
+      return {
+        installed: false,
+        restarts,
+        errors: carried.concat(
+          `the worker could not be read: ${String((err && err.message) || err).split('\n')[0]}`
+        )
+      };
+    }
+  }
+
+  /**
+   * Move the recording to a worker in a NEW context, keeping everything the outgoing
+   * one had. One suite closes its whole browser mid-run to test what a cold service
+   * worker does with a warm store (§7.1's "delete probe Changes on SW startup"), and
+   * that relaunch is deliberate — unlike an idle restart, its predecessor is still
+   * readable at the moment of the decision, so nothing has to be lost. Call it BEFORE
+   * closing the old context.
+   *
+   * It refuses if the outgoing recorder is gone: a rebind that forgave a missing
+   * wrapper would launder exactly the hole this module exists to keep visible.
+   */
+  async function rebind(nextContext, nextWorker) {
+    const before = await read();
+    if (!before.installed) {
+      throw new Error(
+        'the outgoing service worker cannot be read, so a rebind would silently drop ' +
+          'whatever it logged. Nothing after this point could claim "no errors during any of this".'
+      );
+    }
+    carried.length = 0;
+    carried.push(...before.errors);
+    latest = nextWorker;
+    watch(nextContext);
+    await installRecorder(nextWorker, RECORDER_GLOBAL);
+  }
+
+  /**
+   * The whole check, in one place so that no suite can write a weaker version of it.
+   * Throws unless the recorder was watching for the entire run and caught nothing.
+   */
+  async function assertClean() {
+    const seen = await read();
+    assert.ok(
+      seen.installed,
+      'the service-worker error recorder is not in the worker being read, so this check ' +
+        'proves nothing about what was logged. See recordWorkerErrors() in ' +
+        'testlib/browserFixture.js — an empty list from an absent recorder is exactly the ' +
+        'vacuous pass it exists to prevent.'
+    );
+    assert.equal(
+      seen.restarts,
+      0,
+      `the extension's service worker restarted ${seen.restarts} time(s) during this suite. ` +
+        'Whatever the previous worker logged went with it, so "no errors during any of this" ' +
+        `cannot be claimed over that gap. Recorded since the last restart: ${
+          seen.errors.length ? JSON.stringify(seen.errors) : 'nothing'
+        }.`
+    );
+    assert.deepEqual(seen.errors, [], 'the service worker logged this');
+  }
+
+  return { read, rebind, assertClean, get restarts() { return restarts; }, get worker() { return latest; } };
 }
 
 /* --------------------------------------------------------------------- the fixture */

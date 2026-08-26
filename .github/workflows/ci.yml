@@ -69,6 +69,16 @@ jobs:
     # was untrue in the file whose comment six lines down explains why a false statement
     # here is worse than no statement.
     #
+    # panel.a11y.browser.test.js was added at M7 IN THE SAME CHANGE as the file. It is the
+    # only place §16 M7's three DoD lines are actually performed — every control
+    # keyboard-reachable, prefers-reduced-motion off the spring and the pop, and an RTL
+    # smoke test — and each is a property of the WHOLE panel, so it sweeps all four tabs
+    # rather than driving one flow. Restoring `tabindex="-1"` on the §10.2 source card
+    # makes every source in the product mouse-only; subtests 1 and 2 of this file are the
+    # only things in the repository that fail. It also holds WCAG 2.2 1.4.13 for every
+    # tooltip in the panel, which is what the three "disabled controls explain themselves
+    # only to a mouse" carry-forwards turned out to be one symptom of.
+    #
     # highlight.browser.test.js is the ninth suite, added in M6's gap-closing IN THE SAME
     # CHANGE as the file. §10.3's overlays are drawn by a function that runs in the page,
     # and everything that can be wrong with it is invisible to a unit test: a shadow root
@@ -78,6 +88,19 @@ jobs:
     # `background/highlight.js` makes MockLab draw a SOLID accent outline — the "this is
     # proved" overlay — around whatever element now sits at a remembered tree position;
     # subtest 4 of this file is what fails.
+    #
+    # deep.browser.test.js is the tenth suite, added at M7 IN THE SAME CHANGE as the file.
+    # §8 is the one feature whose central claim cannot be checked anywhere else: that a
+    # document rewritten in flight by CDP Fetch still parses, hydrates and paints, and
+    # that the SITE — not MockLab — turned the pill red. It also holds DEVIATION 1 in
+    # `background/debuggerEngine.js` upright: the Fetch patterns are Document-only so
+    # §5.1's in-page patch keeps XHR and fetch, and subtest 3 is what fails the day
+    # somebody "fixes" that by muting the interceptor whenever deep mode is on.
+    #
+    # It found a real defect that every unit test was blind to: the document source is
+    # captured while the response is still paused, which is BEFORE `agent.js` exists, and
+    # the HELLO for that same document then cleared it — Sources stayed empty on the one
+    # page deep mode is for. Nothing without a browser could have seen it.
     #
     # This comment deliberately carries no test totals. It used to say "all 142 unit
     # tests"; the suite grew to 146 and the number rotted in place, asserting something
@@ -111,7 +134,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in e2e highlight mcp panel panel.probe panel.scenarios picker pickerdom probe; do
+          for suite in deep e2e highlight mcp panel panel.a11y panel.probe panel.scenarios picker pickerdom probe; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"

@@ -4,7 +4,7 @@
  *
  * OWNER: interceptor-engineer.
  *
- * The panel checks a chosen file with `panel/scenarioFile.js` and the worker checks the
+ * The panel checks a chosen file with `shared/scenarioFile.js` and the worker checks the
  * PAYLOAD with the same function, so the socket cannot be looser than the file picker.
  * These are the shapes that must not get in — and the two that must: a scenario saved on
  * another site is refused BY NAME, and a value of `null` or `false` is data, not damage.

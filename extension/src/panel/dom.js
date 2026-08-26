@@ -148,6 +148,9 @@ export function spinner(id) {
   return svg;
 }
 
+/** Tooltip ids are document-scoped, like the spinner's gradient ids above. */
+let tipSeq = 0;
+
 /**
  * Wrap a control in the §9.2 tooltip. `lines[0]` is the label, `lines[1]` the dimmed
  * secondary line. Both come from strings.js — never from here.
@@ -156,11 +159,117 @@ export function spinner(id) {
  * control. A centred 14rem bubble on a control near the edge of a 320px panel hangs off
  * it; the panel is too narrow for the bubble to be centred everywhere.
  *
+ * ── Two things this does that a `<span class="tip">` around a control cannot ────────
+ *
+ * 1. `aria-describedby`. The bubble was already `role="tooltip"` and nothing pointed at
+ *    it, which makes it a labelled box no assistive technology has any reason to read:
+ *    the role says what the node IS, the association is what makes it get announced. It
+ *    is the description and not the name on purpose — the control keeps its own label
+ *    (`S.sources.showOnPage`, the tab's `.sr-only` word), and the tooltip qualifies it.
+ *
+ * 2. A control handed here `disabled` is converted to `aria-disabled`. This is the fix
+ *    for a defect that outlived three milestones: `disabled` removes an element from the
+ *    focus order AND stops it dispatching pointer events, so `.tip:hover` needed the
+ *    child's `pointer-events` turned off and `.tip:focus-within` could never fire at all.
+ *    The result was three controls — Deep mode, "Set up AI access", "Show on page" — whose
+ *    only statement of why they do nothing was reachable with a mouse and by nothing else.
+ *    Two of those now carry visible help instead (§10.5); the third cannot, because it is
+ *    a per-row icon button in a dense tree with nowhere to put a paragraph. So the
+ *    TOOLTIP is made to work for it: `aria-disabled` keeps the control focusable and
+ *    hoverable, announces "dimmed"/"unavailable", and the wrapper swallows activation in
+ *    the capture phase — before any handler the caller attached to the control itself, so
+ *    an inert control is inert whatever its own listeners think.
+ *
+ * The conversion is deliberately not offered as an option. A disabled control inside a
+ * tooltip is a control with a reason to give, and there is no case where the right
+ * answer is to keep the reason and throw away every way of reaching it.
+ *
  * @param {Node} control @param {string[]} lines @param {{up?:boolean, end?:boolean}} [opts]
  */
 export function withTip(control, lines, opts = {}) {
-  const bubble = el('span', { class: 'tip__bubble', role: 'tooltip', text: lines[0] });
+  tipSeq += 1;
+  const id = `ml-tip-${tipSeq}`;
+  const bubble = el('span', { class: 'tip__bubble', role: 'tooltip', id, text: lines[0] });
   if (lines[1]) bubble.append(el('span', { text: lines[1] }));
   const where = 'tip' + (opts.up ? ' tip--up' : '') + (opts.end ? ' tip--end' : '');
-  return el('span', { class: where }, control, bubble);
+  const wrap = el('span', { class: where }, control, bubble);
+  if (typeof control.setAttribute === 'function') control.setAttribute('aria-describedby', id);
+  if (control.disabled === true) makeInert(control, wrap);
+  return wrap;
+}
+
+/** Focusable, hoverable, announced as unavailable — and unable to do anything. */
+function makeInert(control, wrap) {
+  control.disabled = false;
+  control.setAttribute('aria-disabled', 'true');
+  const swallow = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  // On the WRAPPER and in the capture phase, which is the only position that runs before
+  // listeners already registered on the control: at the target itself, capture and bubble
+  // listeners fire in registration order, so a listener added here would run second.
+  wrap.addEventListener('click', swallow, true);
+  wrap.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key === 'Enter' || event.key === ' ') swallow(event);
+    },
+    true
+  );
+}
+
+/**
+ * WCAG 2.2 1.4.13's "dismissible" clause, for every tooltip in the panel at once.
+ *
+ * A shown bubble is up to 14rem wide and covers whatever sits under its control — on the
+ * tab strip, that is the site bar and its "Reset site". 1.4.13 requires a way to get rid
+ * of it WITHOUT moving the pointer or the focus, and there was none.
+ *
+ * Escape hushes; the hush lifts once the thing that opened the bubble is no longer
+ * pointing at it or focused in it. Deliberately not per-tooltip state: the panel rebuilds
+ * its DOM on every store update, so a flag on a node would be dropped by the next render
+ * while the pointer had not moved — a dismissal that undismisses itself.
+ *
+ * The Escape listener does not consume the key. `panel.js` has its own Escape handler for
+ * §11's "(Esc to cancel)" promise, and one keystroke is entitled to mean both.
+ */
+export function wireTips(root = document) {
+  /** Where the pointer is, so "has it moved since?" is answerable at any moment. */
+  let pointer = { x: -1, y: -1 };
+  /** Where it was when Escape was pressed, or null when nothing is dismissed. */
+  let hushedAt = null;
+  const body = () => root.body || document.body;
+  const unhush = () => {
+    hushedAt = null;
+    body().classList.remove('tips-hushed');
+  };
+
+  /* The hush lifts on a real POINTER MOVE and not on `pointerover`, and the difference
+   * is not pedantry — it is a loop. Dismissing a bubble the pointer is resting ON hides
+   * it, which puts a different element under the pointer, which fires `pointerover`; a
+   * handler that lifted the hush there would show the bubble again, under the pointer,
+   * having moved nothing. Measured in a browser, not reasoned about: the tooltip came
+   * straight back. A distance is the honest test of "the person moved on", and 4px is
+   * enough to survive the sub-pixel jitter a trackpad produces while resting. */
+  const MOVED = 4;
+  root.addEventListener(
+    'pointermove',
+    (event) => {
+      pointer = { x: event.clientX, y: event.clientY };
+      // Measured from where Escape was pressed, which never moves — so jitter around
+      // that spot cannot accumulate its way past the threshold one pixel at a time.
+      if (!hushedAt) return;
+      if (Math.abs(pointer.x - hushedAt.x) + Math.abs(pointer.y - hushedAt.y) > MOVED) unhush();
+    },
+    true
+  );
+  // Focus moving is the other way a person leaves a tooltip behind, and it is the one a
+  // keyboard user takes. Hiding a bubble moves no focus, so this cannot loop.
+  root.addEventListener('focusin', () => hushedAt && unhush(), true);
+  root.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    hushedAt = { x: pointer.x, y: pointer.y };
+    body().classList.add('tips-hushed');
+  });
 }

@@ -738,6 +738,57 @@ if (!chromium) {
             assert.ok(value >= 4.5, `${scheme}: ${what} is ${value}:1, below WCAG 2.2 AA 1.4.3 (4.5:1)`);
           }
           t.diagnostic(`${scheme}: ${JSON.stringify(measured)}`);
+
+          /* AND THE SAME BUTTON WITH A POINTER ON IT, which is a different measurement
+           * and the one the M7 token change is actually about.
+           *
+           * §9.2's primary button paints a "white 135° gradient sheen" over its fill on
+           * hover. With the dark theme's label inked dark (M7), a WHITE sheen lifts the
+           * surface toward the label and takes the ratio back down — the resting figure
+           * above would stay green while the state a person is in at the moment they
+           * press the button failed. So the sheen follows the label's own ink, and the
+           * worst pixel under the label — the gradient's first stop, flattened over the
+           * hover fill — is measured rather than reasoned about. */
+          await panel.hover('#panel-pick .btn--primary');
+          // The sheen fades in over --transition-rule (250ms). Waited for rather than
+          // slept through: a fixed sleep here would go stale the day that token changes,
+          // and reading mid-fade measures a surface nobody is ever looking at.
+          await panel.waitForFunction(
+            () => Number(getComputedStyle(document.querySelector('#panel-pick .btn--primary'), '::before').opacity) === 1,
+            null,
+            { timeout: 4000 }
+          );
+          const hovered = await panel.evaluate(() => {
+            const parse = (value) => {
+              const n = value.match(/[\d.]+/g).map(Number);
+              const scale = value.startsWith('color(') ? 255 : 1;
+              return [n[0] * scale, n[1] * scale, n[2] * scale, n.length > 3 ? n[3] : 1];
+            };
+            const channel = (c) => (c / 255 <= 0.04045 ? c / 255 / 12.92 : Math.pow((c / 255 + 0.055) / 1.055, 2.4));
+            const lum = ([r, g, b]) => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+            const flatten = (fg, bg) => [0, 1, 2].map((i) => fg[i] * fg[3] + bg[i] * (1 - fg[3]));
+            const page = parse(getComputedStyle(document.body).backgroundColor);
+            const button = document.querySelector('#panel-pick .btn--primary');
+            const style = getComputedStyle(button);
+            const sheen = getComputedStyle(button, '::before');
+            // The sheen only counts if it is actually painted; a `0` opacity here would
+            // mean this measurement is of the resting button under another name.
+            const shown = Number(sheen.opacity);
+            const stop = (sheen.backgroundImage.match(/(?:rgba?|color)\([^)]*\)/g) || [])[0];
+            const fill = flatten(parse(style.backgroundColor), page);
+            const over = stop ? flatten(parse(stop), [...fill, 1]) : fill;
+            const fg = flatten(parse(style.color), [...over, 1]);
+            const a = lum(fg);
+            const b = lum(over);
+            return { shown, worstPixel: Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100 };
+          });
+          assert.equal(hovered.shown, 1, `${scheme}: the sheen is not painted on hover, so this measures nothing`);
+          assert.ok(
+            hovered.worstPixel >= 4.5,
+            `${scheme}: the label over the hover sheen is ${hovered.worstPixel}:1, below WCAG 2.2 AA 1.4.3 (4.5:1)`
+          );
+          t.diagnostic(`${scheme}: primary hovered ${hovered.worstPixel}:1 under the sheen`);
+          await panel.mouse.move(0, 0);
         }
         await panel.emulateMedia({ colorScheme: 'light' });
       });
@@ -753,7 +804,12 @@ if (!chromium) {
           return {
             chip: durations('.chip--verified'),
             card: durations('.result'),
-            thumbTransition: getComputedStyle(document.querySelector('.segmented--values')).transitionDuration,
+            /* The spring thumb, measured WHERE IT LIVES. This read the CONTAINER, which
+             * declares no transition in either mode — so the figure was '0s' at rest and
+             * '0.001s' under the sweep, and either way it said nothing about the thumb.
+             * It was also never asserted, in the subtest named for stilling the spring.
+             * The thumb is `.segmented::before`. */
+            thumbTransition: getComputedStyle(document.querySelector('.segmented--values'), '::before').transitionDuration,
             // The spinner is the exception on purpose: a still spinner over a page that
             // is genuinely reloading is the "is it stuck?" lie reduced motion cannot buy.
             spinner: (() => {
@@ -764,6 +820,10 @@ if (!chromium) {
         });
         assert.equal(still.chip, '0.001s', 'the chip pop is stilled');
         assert.equal(still.card, '0.001s', 'so is the card entrance');
+        // §16 M7 names the spring, so it is turned OFF rather than shortened, and the
+        // sentence is literally true of the thing it names.
+        assert.equal(still.thumbTransition, '0s', 'the segmented thumb still springs under prefers-reduced-motion');
+        assert.notEqual(still.spinner, '0s', 'a still spinner over a reloading page is the "is it stuck?" lie');
         await panel.emulateMedia({ reducedMotion: 'no-preference' });
       });
 

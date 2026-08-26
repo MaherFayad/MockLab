@@ -10,12 +10,13 @@
  */
 import { S } from './strings.js';
 import { MSG, PROBE_MSG } from '../background/messages.js';
-import { el, clear, ICON, withTip } from './dom.js';
+import { el, clear, ICON, wireTips } from './dom.js';
 import { renderSources } from './sources.js';
 import { renderPickTab, pickingChrome, cancelPick, loadPick } from './pick.js';
 import { EMPTY_PROBE, VIEW, readProbe } from './probe.js';
 import { EMPTY_SCENARIOS, loadScenarios, renderScenariosTab } from './scenarios.js';
-import { forgetLostLinks } from './links.js';
+import { NO_ANSWER, forgetLostLinks } from './links.js';
+import { renderSettingsTab } from './settings.js';
 
 const TOAST_MS = 3200;
 
@@ -103,7 +104,10 @@ function fillStatic(root = document) {
 async function send(type, payload = {}) {
   try {
     const res = await chrome.runtime.sendMessage({ type, payload });
-    return res || { ok: false, reason: 'no-answer' };
+    // A worker that answered nothing at all — no handler for this type in this build.
+    // `links.js` is the one caller that draws a conclusion from that rather than from a
+    // named refusal, so the two read the same constant (see NO_ANSWER there).
+    return res || { ok: false, reason: NO_ANSWER };
   } catch (err) {
     return { ok: false, reason: String(err && err.message) };
   }
@@ -118,13 +122,30 @@ function toast(text, danger = false) {
 
 /* ──────────────────────────────────────────────────────────────────── the shell */
 
-function setTab(name) {
-  state.tab = name;
-  const order = ['pick', 'sources', 'scenarios', 'settings'];
-  dom.tabs.style.setProperty('--seg-x', String(Math.max(0, order.indexOf(name))));
-  for (const tab of order) {
+const TAB_ORDER = ['pick', 'sources', 'scenarios', 'settings'];
+
+/**
+ * Which tab is showing, said in the three places that have to agree: the sliding thumb
+ * (§9.2), the hidden/shown panels, and `aria-selected`.
+ *
+ * The third one is not decoration. §10's tab strip is four `<input type="radio">` given
+ * `role="tab"`, and an explicit role REPLACES the native semantics — so `checked` stops
+ * being announced as anything and `aria-selected`, which the tab role is the one that
+ * carries, was on none of them. A screen reader met four tabs with no way to tell which
+ * one it was in, on the control that navigates the whole product.
+ */
+function markTabs(name) {
+  dom.tabs.style.setProperty('--seg-x', String(Math.max(0, TAB_ORDER.indexOf(name))));
+  for (const tab of TAB_ORDER) {
+    const input = document.getElementById(`tab-${tab}`);
+    if (input) input.setAttribute('aria-selected', String(tab === name));
     document.getElementById(`panel-${tab}`).classList.toggle('hidden', tab !== name);
   }
+}
+
+function setTab(name) {
+  state.tab = name;
+  markTabs(name);
   render();
 }
 
@@ -209,133 +230,26 @@ function renderScenarios() {
   renderScenariosTab(dom.scenarioBody, ctx);
 }
 
-/* ───────────────────────────────────────────────────────────── settings — §10.5 */
-
-function checkRow({ label, help, checked, disabled, onChange }) {
-  const input = el('input', { type: 'checkbox', disabled: Boolean(disabled) });
-  input.checked = Boolean(checked);
-  const box = el('span', { class: 'check-box' });
-  input.addEventListener('change', () => {
-    // Only a real toggle animates — see the --draw note in panel.css.
-    box.classList.add('check-box--draw');
-    if (onChange) onChange(input.checked);
-  });
-  return el(
-    'label',
-    { class: 'check-row' },
-    input,
-    box,
-    el(
-      'span',
-      { class: 'check-row__text' },
-      el('span', { class: 'check-row__label', text: label }),
-      help && el('span', { class: 'check-row__help', text: help })
-    )
-  );
-}
-
-function renderSettings() {
-  clear(dom.settingsRows);
-  dom.settingsRows.append(
-    checkRow({
-      label: S.settings.advanced,
-      help: S.settings.advancedHelp,
-      checked: state.settings.advancedMode,
-      onChange: (value) => saveSetting({ advancedMode: value })
-    }),
-    checkRow({
-      label: S.settings.paranoid,
-      help: S.settings.paranoidHelp,
-      checked: state.settings.paranoid,
-      onChange: (value) => saveSetting({ paranoid: value })
-    }),
-    // Deep mode attaches the debugger (§8) and lands at §16 M7.
-    withTip(checkRow({ label: S.deep.label, help: S.deep.help, checked: false, disabled: true }), [S.notYet], { up: true })
-  );
-
-  clear(dom.settingsCompanion);
-  dom.settingsCompanion.append(
-    el(
-      'div',
-      { class: 'info-row' },
-      el('span', { class: 'dot' }),
-      el('span', { class: 'check-row__text' }, el('span', { class: 'check-row__label', text: S.companion.disconnected }))
-    ),
-    withTip(el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.companion.setup }), [S.notYet], { up: true })
-  );
-
-  clear(dom.settingsDanger);
-  dom.settingsDanger.append(el('p', { class: 'section-title', text: S.settings.dangerTitle }));
-  const site = el('button', { type: 'button', class: 'btn btn--secondary', text: S.settings.resetSite, disabled: state.changeCount === 0 });
-  site.addEventListener('click', () => {
-    state.confirm = 'site';
-    setTab('sources');
-  });
-  dom.settingsDanger.append(site);
-
-  if (state.confirm === 'all') {
-    dom.settingsDanger.append(
-      el('p', { class: 'help', text: S.settings.resetAllConfirm }),
-      el(
-        'div',
-        { class: 'editor__actions' },
-        el('button', { type: 'button', class: 'btn btn--secondary', text: S.settings.resetAll, onClick: resetEverything }),
-        ghost(S.editor.cancel, () => {
-          state.confirm = null;
-          render();
-        })
-      )
-    );
-  } else {
-    const all = el('button', { type: 'button', class: 'btn btn--secondary', text: S.settings.resetAll });
-    all.addEventListener('click', () => {
-      state.confirm = 'all';
-      render();
-    });
-    dom.settingsDanger.append(all);
-  }
-}
-
-/**
- * Deliberately does NOT re-render: the checkbox already shows its own new state
- * natively, and rebuilding it here would cut its own pop animation off mid-flight.
- * The only other surface a setting changes is the Sources tab, which re-renders when
- * the user switches to it.
- */
-async function saveSetting(patch) {
-  const res = await send(MSG.UPDATE_SETTINGS, { patch });
-  if (res.ok && res.settings) state.settings = res.settings;
-  else toast(S.errors.pageBroke, true);
-}
-
-/**
- * "Reset everything" (§10.5 danger zone) spans every origin, so it is its own message
- * rather than a loop over RESET_SITE — and it goes through the contract, not around it
- * into chrome.storage, so an MCP agent can do exactly what the human just did (§1.6).
- *
- * The worker deliberately spares `settings` (it holds the companion pairing token, and
- * §10.5's copy never warns that a data reset would unpair the user's AI) and the
- * derived signature cache. The toast reports the counts it actually cleared, and says
- * plainly that only THIS page reloads — the other open tabs are left alone and simply
- * stop receiving edited data.
- */
-async function resetEverything() {
-  state.confirm = null;
-  const res = await send(MSG.RESET_ALL, { tabId: state.tabId, refresh: true });
-  if (!res.ok) {
-    toast(S.errors.pageBroke, true);
-    return;
-  }
-  state.open = null;
-  state.editing = null;
-  const cleared = res.cleared || {};
-  const changes = Number(cleared.changes) || 0;
-  const presets = Number(cleared.presets) || 0;
-  toast(changes + presets === 0 ? S.settings.resetAllNothing : S.settings.resetAllDone(changes, presets));
-  await refresh();
-}
-
 /* ─────────────────────────────────────────────────────────────────── rendering */
+
+/**
+ * Where the focus is, in a form that survives the DOM being thrown away.
+ *
+ * An `id` was the only key this understood, and only the panel's text inputs and the value
+ * picker's radios have one — so every OTHER control dropped the focus on the floor the
+ * moment it did anything. Operating the §10.2 tree from a keyboard meant: Tab to a source,
+ * press Space, and land back on <body> with the tree open and no way into it but tabbing
+ * from the top again. §16 M7 asks that every control be keyboard-REACHABLE, and one you
+ * can reach once per press is not. `data-focus` is the same key for a control that should
+ * not carry an id — an id is a document-wide anchor, and a tree row's key has to carry a
+ * source and a field, which contain characters that make a poor one.
+ */
+function focusKey(node) {
+  if (!node) return null;
+  if (node.id) return `#${CSS.escape(node.id)}`;
+  const key = node.dataset && node.dataset.focus;
+  return key ? `[data-focus="${CSS.escape(key)}"]` : null;
+}
 
 /**
  * A full re-render of the active tab. Cheap at this size, and it removes a whole class
@@ -344,7 +258,7 @@ async function resetEverything() {
  */
 function render() {
   const active = document.activeElement;
-  const focusId = active && active.id ? active.id : null;
+  const focusId = focusKey(active);
   // Reading selectionStart throws InvalidStateError on input types that have no
   // selection (checkbox, radio), and those are focused all over this panel.
   let caret = null;
@@ -363,10 +277,10 @@ function render() {
   if (state.tab === 'pick') renderPickTab(dom.pickPanel, ctx);
   if (state.tab === 'sources') renderSources(dom.sourceList, ctx);
   if (state.tab === 'scenarios') renderScenarios();
-  if (state.tab === 'settings') renderSettings();
+  if (state.tab === 'settings') renderSettingsTab({ rows: dom.settingsRows, companion: dom.settingsCompanion, danger: dom.settingsDanger }, ctx);
 
   if (focusId) {
-    const next = document.getElementById(focusId);
+    const next = document.querySelector(focusId);
     if (next && next !== document.activeElement) {
       next.focus();
       if (caret !== null && typeof next.setSelectionRange === 'function') {
@@ -381,7 +295,7 @@ function render() {
   state.restoreFocus = false;
 }
 
-const ctx = { state, send, refresh, toast, rerender: render };
+const ctx = { state, send, refresh, toast, rerender: render, setTab };
 
 /* ─────────────────────────────────────────────────────────────────── data flow */
 
@@ -467,11 +381,19 @@ function watchProbe() {
 }
 
 async function boot() {
+  // Which language this panel is in and which way it runs, both from the one file a
+  // translator is promised (§9.2). `panel.html` states neither: `dir="ltr"` written into
+  // the markup is what made "RTL-ready" untrue while every rule in panel.css was built
+  // on logical properties and a `--dir` flip nothing could flip.
+  document.documentElement.lang = S.meta.lang;
+  document.documentElement.dir = S.meta.dir;
   fillStatic();
-  dom.tabs.style.setProperty('--seg-x', '0');
+  markTabs(state.tab);
   document.getElementById('search-icon').append(ICON.search());
   wireTabs();
   wireEvents();
+  // WCAG 2.2 1.4.13's dismissible clause, for every tooltip at once — see dom.js.
+  wireTips();
   watchProbe();
   await loadSettings();
   await refresh();

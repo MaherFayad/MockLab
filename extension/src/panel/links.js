@@ -53,6 +53,14 @@ import { MSG } from '../background/messages.js';
 export const linkKey = (sigId, path) => `${sigId} ${path}`;
 
 /**
+ * The `reason` `panel.send()` reports when the worker returned NOTHING — no handler for
+ * this message type in this build. It is the one failure that is a fact about MockLab
+ * rather than about the page, and the only one this file may draw a conclusion from, so
+ * it is a named constant here and imported by `panel.js` rather than spelled twice.
+ */
+export const NO_ANSWER = 'no-answer';
+
+/**
  * Does this tab know what the page loaded?
  *
  * Both of these have to hold, and they are not the same question: `captured` is the
@@ -124,7 +132,7 @@ export function scenarioMisses(preset, ctx) {
  * §10.1D's "Show me" and §10.2's ◎ "Show on page": ask the page to draw §10.3's overlays
  * over every element this field drives.
  *
- * THREE ENDINGS, and two of them are the point of the function:
+ * FOUR ENDINGS, and three of them are the point of the function:
  *
  *   • the worker drew some — nothing to say. The answer is on the page, which is where
  *     the person is looking, and a toast over it would only cover it up.
@@ -132,10 +140,23 @@ export function scenarioMisses(preset, ctx) {
  *     fingerprint — the second half of §1.1's stale, arriving live. It is remembered for
  *     this page load, so the chip beside the control the person just pressed changes to
  *     Stale, and §11's voice explains it instead of a button that appeared to do nothing.
+ *   • the worker REFUSED, by name: a tab that is not a tab any more, a `chrome://` page
+ *     or one opened before MockLab was installed (`no-tab`, `no-content-script`). This
+ *     is something going wrong between the panel and this page, which is exactly what
+ *     §11's `errors.pageBroke` is for, and the control STAYS AVAILABLE — the next page,
+ *     or the same page after a refresh, is a different question.
  *   • the worker does not answer at all, because this half of §10.3 is not built in the
  *     browser the panel is running in. That is not a fact about the page and must not be
  *     reported as one (it is precisely the class of lie §17.12 is about), so the control
  *     is marked unavailable and says the one thing that is true: not ready yet.
+ *
+ * The last two used to be one. That was right for exactly as long as nothing answered
+ * `HIGHLIGHT`: everything arrived as `{ok:false}`, and "still being built" was true of
+ * all of it. `background/highlight.js` answers now, and answers with a REASON — so from
+ * that milestone on, opening the panel on a `chrome://` tab and pressing "Show on page"
+ * told the person a built feature was unbuilt AND latched the control off for the rest
+ * of the session, on every site, until the panel was reopened. One honest sentence
+ * turned into a wrong one and a dead button by a change three files away.
  *
  * @param {Object} ctx @param {{sigId:string, path:string}} link
  * @returns {Promise<{ok:boolean, elements:number}>}
@@ -145,8 +166,12 @@ export async function showOnPage(ctx, link) {
   const path = (link && link.path) || '';
   const res = await ctx.send(MSG.HIGHLIGHT, { tabId: ctx.state.tabId, sigId, path });
   if (!res || !res.ok) {
-    ctx.state.canHighlight = false;
-    ctx.toast(S.notYet);
+    // Only silence licenses the claim that the feature is missing, and only that claim
+    // licenses turning the control off for the session. A refusal is an event, not a
+    // capability — see the fourth ending above.
+    const unbuilt = !res || res.reason === NO_ANSWER;
+    if (unbuilt) ctx.state.canHighlight = false;
+    ctx.toast(unbuilt ? S.notYet : S.errors.pageBroke, !unbuilt);
     ctx.rerender();
     return { ok: false, elements: 0 };
   }

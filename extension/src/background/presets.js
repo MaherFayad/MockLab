@@ -28,7 +28,7 @@
  * ── Validation, and the ONE validator ───────────────────────────────────────────────
  * `IMPORT_PRESET` is the only door in MockLab that a document MockLab did not write can
  * come through, and since M6 it is reachable from two sides: a file the person chose
- * (already checked by `panel/scenarioFile.js`) and whatever an MCP client puts on the
+ * (already checked by `shared/scenarioFile.js`) and whatever an MCP client puts on the
  * socket (checked by nobody). So the worker checks it too, WITH THE SAME FUNCTION —
  * `parseScenarioFile`, run over the payload serialized back to text. Not a second
  * validator written to the same rules: the same code, so the two cannot drift, and
@@ -38,21 +38,23 @@
  * site a scenario was saved on (README Deviation 63), which is the same sentence for an
  * agent because it is the same fact.
  *
- * That module lives under `panel/` and is imported here across that boundary, exactly as
- * `changesApi.js` and `wsOps.js` import `panel/strings.js`: it is pure, it touches no
- * DOM, and duplicating it is the one thing that would guarantee the two doors disagree.
- * It should MOVE to `src/shared/` now that a worker reads it — recorded for the
- * orchestrator rather than moved here, because it is another owner's file.
+ * That module now lives in `src/shared/`, beside `jsonpath.js` and `diff.js`, which is
+ * where a module both a worker and a panel import belongs — it moved there at M7, in the
+ * milestone that noticed a worker was reading it. It is pure, it touches no DOM, and
+ * duplicating it is the one thing that would guarantee the two doors disagree.
  *
- * SAVE and UPDATE do NOT run through it. What they snapshot is already in the store,
- * validated when each Change was created, and the file validator's path rule is
- * deliberately narrower than §5.4's grammar (it takes only double-quoted bracket keys,
- * while `parsePath` also takes single-quoted ones) — so re-checking stored data with it
- * would refuse a Change MockLab itself accepted. Their own bounds are below.
+ * SAVE and UPDATE do NOT run through it. What they snapshot is already in the store and
+ * was validated when each Change was created; re-validating it would buy nothing and
+ * would cost a second opinion about data MockLab already accepted. This paragraph used to
+ * give a second reason — that the file validator's path rule was narrower than §5.4's
+ * grammar, taking only double-quoted bracket keys — and that was true and was a DEFECT,
+ * not a design: `set_value` accepts `$['a b']`, so MockLab could write a Scenario file it
+ * would then refuse to import. The validator asks `parsePath` now (§5.4's own parser), so
+ * the two grammars are one. Their own bounds are below.
  */
 
 import { MSG } from './messages.js';
-import { parseScenarioFile, MAX_CHANGES } from '../panel/scenarioFile.js';
+import { parseScenarioFile, MAX_CHANGES } from '../shared/scenarioFile.js';
 // §17.6: MockLab's words live in one file. These sentences reach a person through the
 // panel and an agent through MCP; both read the same one.
 import { S } from '../panel/strings.js';

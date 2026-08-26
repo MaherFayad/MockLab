@@ -7,6 +7,13 @@
  * hostile shapes a file chooser can really produce; every one of them has to come back as
  * one honest sentence from `strings.js` and nothing else.
  *
+ * IT LIVES IN `shared/` AND NOT IN `panel/` because it stopped being panel-only: since
+ * M6, `background/presets.js` runs `IMPORT_PRESET` payloads through this same function,
+ * so the socket an MCP client speaks and the file chooser a person uses are checked by
+ * ONE validator rather than two written to the same rules. `panel/` was where it was
+ * born; `shared/` is where a module both a worker and a panel import belongs, beside
+ * `jsonpath.js` and `diff.js`, which are read the same way by the same two sides.
+ *
  * §17.6: every word this module can put on screen comes from strings.js — and it returns
  * copy rather than rendering it, so `scenarios.js` shows the sentence and this file
  * decides which one.
@@ -34,7 +41,8 @@
  *     would not be true. Naming the site it came from is the one answer that lets the
  *     person actually do something.
  */
-import { S } from './strings.js';
+import { S } from '../panel/strings.js';
+import { parsePath } from './jsonpath.js';
 
 /**
  * The file extension §10.4 specifies. NOT copy and deliberately not in `strings.js`: it
@@ -58,8 +66,27 @@ export const MAX_CHANGES = 1000;
 /** Long enough for a sentence, short enough that a card is still a card. */
 const MAX_NAME_CHARS = 120;
 
-/** A path this build can address at all: `$` root, then §5.4's dot/bracket steps. */
-const PATH_SHAPE = /^\$(?:\.[A-Za-z_$][\w$]*|\[\d+\]|\["(?:[^"\\]|\\.)*"\])*$/;
+/**
+ * A path this build can address at all — asked of §5.4's OWN parser, not of a regex that
+ * mirrors it.
+ *
+ * It was a regex, and it was subtly narrower than the grammar: it took only
+ * double-quoted bracket keys, while `parsePath` takes single quotes too. Nothing MockLab
+ * WRITES uses them — `formatPath` always emits double — so this looked like harmless
+ * over-strictness for a year of milestones. It is not, because a path does not have to
+ * come from `formatPath` to get into the store: `set_value` over MCP (§12.4 #7) takes a
+ * path an agent typed, and `$['a b']` is a path §5.4 accepts. That Change is stored, is
+ * snapshotted into a Scenario, is written into an exported file verbatim by
+ * `serializeScenario` below — and the file MockLab itself just wrote was then refused on
+ * import, as "not a MockLab scenario". A validator that is stricter than the thing it
+ * validates does not fail safe; it fails on the product's own output.
+ *
+ * So the question is asked of the one function that defines the answer. The two can no
+ * longer disagree, and a grammar change in `jsonpath.js` reaches this door for free.
+ *
+ * @param {string} path @returns {boolean}
+ */
+const addressable = (path) => parsePath(path) !== null;
 
 /** One emoji-ish label. Not validated as an emoji — any short glyph a person picked. */
 const MAX_EMOJI_CHARS = 8;
@@ -183,7 +210,7 @@ export function parseScenarioFile(text, site = {}) {
     // `!entry` genuinely prevents is a null in the list, which would throw one line down.
     if (!entry) return refuse('not-scenario', S.scenarios.importNotScenario);
     if (typeof entry.sigId !== 'string' || !entry.sigId) return refuse('not-scenario', S.scenarios.importNotScenario);
-    if (typeof entry.path !== 'string' || !PATH_SHAPE.test(entry.path)) {
+    if (typeof entry.path !== 'string' || !addressable(entry.path)) {
       return refuse('not-scenario', S.scenarios.importNotScenario);
     }
     // `value` may legitimately be anything JSON holds, including null and false — so the

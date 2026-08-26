@@ -17,6 +17,23 @@
  * renders when Advanced mode is on).
  */
 export const S = {
+  /* + not in §11 — WHICH LANGUAGE THIS FILE IS, and which way it runs.
+   *
+   * §9.2 ends with a promise: "RTL-ready: use logical properties everywhere; all strings
+   * routed through strings.js so Arabic can be added by translating one file." Every
+   * layout rule in panel.css is written in logical properties and reads its handedness
+   * from `--dir`, which flips on `[dir='rtl']` — but the direction itself was written
+   * into `panel.html` as `dir="ltr"`, so translating this one file produced an Arabic
+   * panel laid out left-to-right and the promise was false by one attribute.
+   *
+   * It lives here rather than in the markup because it is a property OF THE COPY: these
+   * two values and the sentences below them have to change together, and the one file a
+   * translator is promised is this one. `panel.js` applies both to <html> at boot.
+   *
+   * NOT read from `chrome.i18n`: MockLab ships one locale, and a browser set to Arabic
+   * would then flip an English panel — direction has to follow the words that are
+   * actually on screen, which is exactly what this pair states. */
+  meta: { lang: 'en', dir: 'ltr' },
   tab: { pick: 'Pick', sources: 'Sources', scenarios: 'Scenarios', settings: 'Settings' },
   site: {
     changes: (n) => `${n} change${n === 1 ? '' : 's'} on`,
@@ -276,6 +293,15 @@ export const S = {
       return `Removed ${parts.join(' and ')}. This page is back to normal; other open tabs go back to real data the next time they load something.`;
     },
     resetAllNothing: 'There was nothing to remove.',
+    // + not in §11 — §10.5's "Reset this site" is switched off when the site has no
+    // changes on it, and until M7 it said so to nobody: no tooltip, no sentence, just
+    // grey. §1.1 is about a control that is visibly present and silently does nothing.
+    //
+    // It states the world rather than a next step, which is the one case §11's "always
+    // say what to do next" has no answer for: there is nothing to do, and inventing an
+    // errand ("make a change first, then reset it") would be worse than saying so. Its
+    // neighbour `resetAllNothing` already reads this way for the same reason.
+    nothingToReset: 'No changes are on for this site, so there is nothing to reset.',
     limitations: 'MockLab works on the main page only, and cannot edit data that arrives as a live stream.'
   },
   // + not in §11 — labels that are only ever rendered while Advanced mode is ON, which

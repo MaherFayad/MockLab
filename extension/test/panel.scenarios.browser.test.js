@@ -150,7 +150,19 @@ function readTab(page) {
         text: b.textContent.trim(),
         label: b.getAttribute('aria-label'),
         cls: b.className,
-        disabled: b.disabled
+        // `disabled` and `aria-disabled` are the two ways a control here can be inert,
+        // and which one a control wears is a decision about WHO can read its reason, not
+        // about whether it works. A control inside a tooltip carries `aria-disabled`,
+        // because `disabled` takes it out of the focus order and out of the pointer-event
+        // stream, which made the reason mouse-only (§16 M7 — see dom.js `withTip`).
+        // Reading only `b.disabled` would score that fix as a regression and, worse,
+        // would score a genuinely live button as inert if it were ever spelled the other
+        // way. Both are reported; `inert` is the question every assertion below asks.
+        disabled: b.disabled,
+        ariaDisabled: b.getAttribute('aria-disabled'),
+        inert: b.disabled || b.getAttribute('aria-disabled') === 'true',
+        describedBy: b.getAttribute('aria-describedby'),
+        focusable: !b.disabled
       })),
       tips: [...root.querySelectorAll('.tip__bubble')].map((b) => ({ text: b.textContent.trim(), overflows: overflows(b) })),
       picker: (() => {
@@ -246,13 +258,13 @@ if (!chromium) {
         t.diagnostic(`the real worker ${reachable ? 'answers' : 'does not answer'} LIST_PRESETS`);
         if (reachable) {
           // The worker half is here: the tab must be a working tab, not a disabled one.
-          assert.equal(seen.buttons.some((button) => button.text === S.scenarios.import && !button.disabled), true, 'Import is live once the store answers');
+          assert.equal(seen.buttons.some((button) => button.text === S.scenarios.import && !button.inert), true, 'Import is live once the store answers');
           assert.ok(seen.empty === S.scenarios.empty || seen.names.length > 0, 'a reachable store shows scenarios, or says there are none');
         } else {
           // It is not: every control says so rather than doing nothing quietly (§1.1).
           assert.equal(seen.empty, null, '"no scenarios saved" is a different claim from "MockLab has not been told any"');
           for (const button of seen.buttons) {
-            assert.equal(button.disabled, true, `“${button.text}” is live while the store cannot be reached`);
+            assert.equal(button.inert, true, `“${button.text}” is live while the store cannot be reached`);
           }
           assert.ok(
             seen.tips.some((tip) => tip.text.includes(S.notYet)),
@@ -267,17 +279,32 @@ if (!chromium) {
         assert.equal(seen.empty, S.scenarios.empty);
         const make = seen.buttons.find((b) => b.text === S.scenarios.new);
         assert.ok(make, '§10.4 names this button');
-        assert.equal(make.disabled, true, '§10.4: disabled when 0 active changes');
+        assert.equal(make.inert, true, '§10.4: disabled when 0 active changes');
         assert.ok(
           seen.tips.some((tip) => tip.text === S.scenarios.nothingToSave),
           '§10.4 asks for a tooltip, and the tooltip has to be the REASON, not the label again'
         );
+        // …and the reason has to be reachable by something other than a mouse. A
+        // `disabled` button is not focusable and dispatches no pointer events, so a
+        // tooltip on one can only ever be read by hovering it — which is how three
+        // controls in this panel spent six milestones explaining themselves to nobody
+        // using a keyboard or a screen reader (§16 M7). Two assertions, because either
+        // alone is satisfiable by the broken version: it must be FOCUSABLE, and the
+        // bubble must be ASSOCIATED with it rather than merely sitting next to it.
+        assert.equal(make.focusable, true, 'an inert control that owes a reason must still take focus');
+        assert.equal(make.ariaDisabled, 'true', 'and must say it is unavailable rather than pretending to work');
+        assert.ok(make.describedBy, 'and must point at the bubble, or the reason is announced by nothing');
+        const named = await panel.evaluate((id) => {
+          const bubble = document.getElementById(id);
+          return bubble ? bubble.textContent.trim() : null;
+        }, make.describedBy);
+        assert.equal(named, S.scenarios.nothingToSave, 'aria-describedby must resolve to the reason itself');
         const bring = seen.buttons.find((b) => b.text === S.scenarios.import);
-        assert.equal(bring.disabled, false, 'Import does not need a change to exist');
+        assert.equal(bring.inert, false, 'Import does not need a change to exist');
 
         await mount(panel, { presets: [], changeCount: 3 });
         const live = await readTab(panel);
-        assert.equal(live.buttons.find((b) => b.text === S.scenarios.new).disabled, false);
+        assert.equal(live.buttons.find((b) => b.text === S.scenarios.new).inert, false);
         assert.equal(live.tips.some((tip) => tip.text === S.scenarios.nothingToSave), false);
       });
 

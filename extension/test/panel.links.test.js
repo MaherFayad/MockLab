@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 
 import { S } from '../src/panel/strings.js';
 import {
+  NO_ANSWER,
   canHighlight,
   elementsLost,
   forgetLostLinks,
@@ -231,7 +232,10 @@ test('§10.3 a worker that cannot highlight is reported as that, never as a fact
   // The §17.12 distinction: "MockLab cannot do this yet" and "those elements are not on
   // your page" are different sentences, and reporting the first as the second is the same
   // class of lie as a wrong "Verified ✓".
-  const ctx = ctxWith({ answer: { ok: false, reason: 'no-answer' } });
+  //
+  // SILENCE is what licenses this ending, and `NO_ANSWER` is what silence looks like by
+  // the time `panel.send()` has wrapped it — no handler for this type in this build.
+  const ctx = ctxWith({ answer: { ok: false, reason: NO_ANSWER } });
   assert.equal(canHighlight(ctx), true, 'the control starts available');
   const result = await showOnPage(ctx, { sigId: 'sig-trip', path: '$.status' });
   assert.deepEqual(result, { ok: false, elements: 0 });
@@ -243,21 +247,64 @@ test('§10.3 a worker that cannot highlight is reported as that, never as a fact
   assert.equal(canHighlight(ctx), false);
 });
 
+/**
+ * The ending this file did not have, and the defect it hid.
+ *
+ * Every `{ok:false}` used to mean "still being built", which was TRUE while no worker
+ * answered `HIGHLIGHT` at all. `background/highlight.js` answers now, and refuses by name
+ * — `no-tab` for a tab that closed mid-call, `no-content-script` for a `chrome://` page or
+ * one opened before MockLab was installed. Those are events on a page, not a missing
+ * feature, and the old mapping made each of them tell the person that a built feature was
+ * unbuilt AND latch the control off for the whole session, on every site.
+ *
+ * Every refusal the worker can produce is stated here rather than one representative one,
+ * because the rule is about the CLASS: anything that is not silence is an event.
+ */
+for (const reason of ['no-tab', 'no-content-script', 'bad-request', 'error', '']) {
+  test(`§10.3 a highlight the worker refused (${reason || 'no reason given'}) is an event, not a missing feature`, async () => {
+    const ctx = ctxWith({ answer: { ok: false, reason } });
+    const result = await showOnPage(ctx, { sigId: 'sig-trip', path: '$.status' });
+    assert.deepEqual(result, { ok: false, elements: 0 });
+    // §11's one sentence for "something went wrong talking to this page" — not the
+    // sentence for a part of MockLab that does not exist.
+    assert.deepEqual(ctx.toasts, [S.errors.pageBroke]);
+    // The control STAYS AVAILABLE. This is the half that made the old mapping expensive:
+    // one chrome:// tab disabled "Show on page" everywhere until the panel was reopened.
+    assert.equal(canHighlight(ctx), true, 'a refusal is an event; the next page is a different question');
+    // And nothing was learned about the elements, so nothing is claimed about them.
+    assert.equal(shownLinkState(link(), ctx), 'verified');
+  });
+}
+
+test('§10.3 the three not-drawn endings are three different sentences', () => {
+  // Collapsing any two of them is the defect above in a different direction: "MockLab
+  // cannot do this", "this page would not answer" and "those elements are not here" are
+  // three different things for a person to do next.
+  const said = [S.notYet, S.errors.pageBroke, S.highlight.none];
+  assert.equal(new Set(said).size, 3, `these three endings share a sentence: ${said}`);
+});
+
 test('§17.6 the highlight sentences come from strings.js, not from links.js', async () => {
   const SENTINEL = '⟪sentinel⟫';
-  const saved = [S.highlight.none, S.notYet];
+  const saved = [S.highlight.none, S.notYet, S.errors.pageBroke];
   try {
     S.highlight.none = SENTINEL;
     S.notYet = SENTINEL + '2';
     const empty = ctxWith({ answer: { ok: true, elements: 0 } });
     await showOnPage(empty, { sigId: 'sig-trip', path: '$.status' });
     assert.deepEqual(empty.toasts, [SENTINEL]);
-    const absent = ctxWith({ answer: { ok: false } });
+    const absent = ctxWith({ answer: { ok: false, reason: NO_ANSWER } });
     await showOnPage(absent, { sigId: 'sig-trip', path: '$.status' });
     assert.deepEqual(absent.toasts, [SENTINEL + '2']);
+    // …and the third sentence, on the refusal path, from the same file.
+    S.errors.pageBroke = SENTINEL + '3';
+    const refused = ctxWith({ answer: { ok: false, reason: 'no-content-script' } });
+    await showOnPage(refused, { sigId: 'sig-trip', path: '$.status' });
+    assert.deepEqual(refused.toasts, [SENTINEL + '3']);
   } finally {
     S.highlight.none = saved[0];
     S.notYet = saved[1];
+    S.errors.pageBroke = saved[2];
   }
 });
 

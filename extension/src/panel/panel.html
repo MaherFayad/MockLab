@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" dir="ltr">
+<html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,6 +12,16 @@
   Not one user-visible word is written here: every `data-s` attribute names a key in
   strings.js and panel.js fills the text at boot, so §17.6 holds for the markup too and
   translating MockLab still means translating one file. Icons are injected by dom.js.
+
+  <html> carries NEITHER `lang` NOR `dir`, and that is the same rule one step further.
+  Both are properties of the copy — which language it is in, and which way that language
+  runs — so both come from `S.meta` and are applied by panel.js at boot (§9.2's
+  "Arabic can be added by translating one file"). `dir="ltr"` was written here through
+  six milestones while every layout rule in panel.css was carefully built on logical
+  properties and a `--dir` flip that nothing could ever flip.
+
+  Nothing is lost by their absence before the script runs: every word on this page is
+  written by panel.js, so a panel without it is blank rather than mis-labelled.
 -->
 <body>
   <div class="app">

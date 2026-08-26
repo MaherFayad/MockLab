@@ -32,7 +32,7 @@ import { el, clear, ICON, spinner, withTip } from './dom.js';
 import { MSG } from '../background/messages.js';
 import { linkChip } from './probe.js';
 import { scenarioMisses } from './links.js';
-import { parseScenarioFile, serializeScenario, scenarioFileName, MAX_FILE_CHARS } from './scenarioFile.js';
+import { parseScenarioFile, serializeScenario, scenarioFileName, MAX_FILE_CHARS } from '../shared/scenarioFile.js';
 
 /** The tab's own state. Everything §10.4 can be showing is a function of this. */
 export const EMPTY_SCENARIOS = {

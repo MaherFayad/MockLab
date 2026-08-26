@@ -25,6 +25,10 @@
  * request that goes out the moment a reloaded document says hello, and the answer back.
  *
  * M6 adds the companion bridge (wsClient.js): one router, reached by two callers.
+ *
+ * M7 adds deep mode (debuggerEngine.js): the debugger attaches only where the person
+ * asked for it, and the documents it reads become sources in the same per-tab map every
+ * captured request lands in.
  */
 
 import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
@@ -36,6 +40,8 @@ import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
 import { createProbeApi, PROBE_MESSAGE_TYPES, PROBE_MSG, PROBE_PORT_MSG, sweepProbeChanges } from './probe.js';
 import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
 import { createWsClient } from './wsClient.js';
+import { createDeepEngine } from './debuggerEngine.js';
+import { isDocumentSigId } from './documentData.js';
 
 /**
  * Toolbar icon opens the side panel (PLAN.md §3).
@@ -259,6 +265,75 @@ function countFields(body) {
   }
 }
 
+/**
+ * A new document says hello, so last load's captures are gone (§16 M1: no duplicates
+ * across an SPA navigation).
+ *
+ * With ONE exception, added at M7 and found in Chromium rather than reasoned about: a
+ * deep-mode document source is captured while the response is still paused — before the
+ * document exists, before `agent.js` runs, before this HELLO. An unconditional clear
+ * therefore deleted the page's built-in data microseconds after reading it, and Sources
+ * stayed empty on exactly the page §8 exists for.
+ *
+ * The exception is as narrow as it can be made. A document source survives only while
+ * this tab is ATTACHED (so nothing lingers from before deep mode was turned off, quietly
+ * offering a Change that could no longer apply) and only when it is the data of THIS
+ * URL (so nothing lingers from the page before it).
+ *
+ * @param {number} tabId @param {{sources:Map<string,any>}} state @param {string} url
+ */
+function forgetSources(tabId, state, url) {
+  const keepDocuments = deepMode.status(tabId).attached;
+  for (const [sigId, record] of state.sources) {
+    if (keepDocuments && record.via === 'document' && record.url === url) continue;
+    state.sources.delete(sigId);
+  }
+}
+
+/**
+ * A source that arrived INSIDE the document (PLAN.md §8, §10.2's "Page's built-in data").
+ *
+ * It joins the same per-tab map `onCaptured` writes to, so §10.2's tree, §12.4's
+ * `list_sources` and the Change editor all reach it with no idea it came from anywhere
+ * unusual — `via: 'document'` is the only difference, and the panel already reads it.
+ *
+ * Two things it deliberately does NOT do, both from `onCaptured` above:
+ *   • no `normalizeRaw`. The sigId is minted in `documentData.js` from the signature
+ *     `signatures.js` computed for the page URL — §17.3's rule holds, and the
+ *     `__document__:` namespace keeps it from ever colliding with a request's.
+ *   • no `rememberSignature`. That cache exists to compile the MAIN-world match list, and
+ *     a document is not something the MAIN world can match: the navigation happens before
+ *     any page script runs. Leaving it out is what keeps a document Change out of a match
+ *     list that could only ever apply it to the wrong thing.
+ *
+ * @param {number} tabId
+ * @param {CapturedRequest} record
+ */
+function addDocumentSource(tabId, record) {
+  // The door check, not a formality: a NORMAL capture arriving here would skip
+  // `rememberSignature`, so a Change made on it would compile into no match list and
+  // silently never apply. Not reachable from any test — there is one caller.
+  if (!record || !isDocumentSigId(record.sigId)) return;
+  // `stateFor`, not `tabState.get`. This record arrives BEFORE the document exists, so
+  // it cannot assume a page agent has ever connected on this tab id.
+  //
+  // A STATE NO FIXTURE REACHES, named because it is real and because nothing here can
+  // produce it: a service worker evicted while a deep-mode tab stays open. `tabState` is
+  // in memory and goes with the worker; the tab does not, and the cold worker re-attaches
+  // to it from the settings — so the next reload is intercepted with no record of the tab
+  // at all. `tabState.get` would drop the page's data on the floor there. Every browser
+  // test reaches this line with the record already present (interception starts at a
+  // tab's SECOND load, so the first load's HELLO has always run), and mutating this to
+  // `tabState.get` leaves the whole suite green. Written the safe way on purpose.
+  const state = stateFor(tabId, record.url);
+  state.sources.delete(record.sigId);
+  state.sources.set(record.sigId, { ...record, fields: countFields(record.body) });
+  while (state.sources.size > MAX_SOURCES_PER_TAB) {
+    state.sources.delete(state.sources.keys().next().value);
+  }
+  notifyPanel(tabId, 'captured');
+}
+
 /** @param {CapturedRequest & {fields?:number}} record */
 function toSummary(record) {
   return {
@@ -289,7 +364,7 @@ function handlePortMessage(tabId, message) {
       const state = stateFor(tabId, payload.url);
       const isNewDocument = payload.loadId && payload.loadId !== state.loadId;
       if (isNewDocument) {
-        state.sources.clear();
+        forgetSources(tabId, state, payload.url);
         state.softNavs = 0;
         state.loadId = payload.loadId;
       }
@@ -547,3 +622,18 @@ const wsClient = createWsClient({
   onPicked: (tabId, picked) => pickApi.onPicked(tabId, picked)
 });
 void wsClient.start();
+
+/* ════════════════════════════ M7 — deep mode (PLAN.md §8, §16 M7) ═══════════════ */
+
+/**
+ * OFF for every site until the person turns it on (§4's `settings.deepModeOrigins`), and
+ * driven from storage rather than from a message: the engine watches the same settings
+ * key §10.5's checkbox writes, so a person, a second window and an MCP agent all reach
+ * it through one path and cannot disagree about whether it is on (§1.6).
+ *
+ * `start()` registers its listeners synchronously and then detaches from everything
+ * before re-attaching from the settings — see the file's header for why a cold worker
+ * must assume it is already attached to something it has forgotten.
+ */
+const deepMode = createDeepEngine({ captureDocument: addDocumentSource });
+void deepMode.start();

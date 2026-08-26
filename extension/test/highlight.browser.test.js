@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MSG, CONTENT_GLOBALS } from '../src/background/messages.js';
-import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
+import { EXTENSION_DIR, loadChromium, launchExtension, createFixture, recordWorkerErrors } from '../testlib/browserFixture.js';
 
 /* ------------------------------------------------------------------------ fixtures */
 
@@ -99,7 +99,7 @@ if (!chromium) {
     let ctx = null;
     let sw = null;
     let panel = null;
-    const swErrors = [];
+    let swErrors = null;
 
     try {
       fixtureOrigin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(fixtures)}`);
@@ -108,7 +108,7 @@ if (!chromium) {
       });
       sw = await stage('service-worker registration', 20000, async () =>
         ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
-      sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+      swErrors = await stage('service-worker error recorder', 10000, () => recordWorkerErrors(ctx, sw));
       panel = await stage('panel page', 30000, async () => {
         const page = await ctx.newPage();
         await page.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
@@ -403,9 +403,8 @@ if (!chromium) {
         assert.equal(answer.elements, undefined);
       });
 
-      await check('the service worker logged no errors during any of this', () => {
-        assert.deepEqual(swErrors, []);
-      });
+      await check('the service worker logged no errors during any of this', () =>
+        swErrors.assertClean());
     } finally {
       if (ctx) await ctx.close().catch(() => {});
       fixtures.close();

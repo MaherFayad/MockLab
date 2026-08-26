@@ -20,18 +20,16 @@ const INITIAL_OPEN_DEPTH = 1;
 
 /**
  * How a value reads in the tree and in "Real value: …". Deliberately unquoted: a
- * quotation mark is punctuation a non-technical reader has to decode, and §1.2 asks
- * for the plainer option. Type still shows, through colour and through the editor.
+ * quotation mark is punctuation a non-technical reader has to decode, and §1.2 asks for
+ * the plainer option. Type still shows, through colour and through the editor.
  *
- * Two of these branches return a DESCRIPTION rather than the value's own text — a field
- * holding no value, and a container drawn collapsed. Both words come from strings.js
- * (§17.6): `null` was a literal here for one milestone, and it read out to the human in
- * the tree and in "Real value: null" — the one programmer's word this panel showed.
- * `panel.strings.test.js` fails if any word moves back into this function.
+ * Two branches return a DESCRIPTION rather than the value's own text — a field holding no
+ * value, and a container drawn collapsed. Both words come from strings.js (§17.6): `null`
+ * was a literal here for one milestone and read out to the human in the tree and in "Real
+ * value: null". `panel.strings.test.js` fails if any word moves back in here.
  *
- * A value that is absent (null) and one that was never there (undefined) read
- * differently on purpose: the first is a field the site sent with nothing in it and is
- * worth saying out loud, the second is a row that has no value slot at all.
+ * Absent (null) and never-there (undefined) read differently on purpose: the first is a
+ * field the site sent with nothing in it, the second is a row with no value slot at all.
  */
 export function formatValue(value) {
   if (value === null) return S.glyph.nullValue;
@@ -42,17 +40,15 @@ export function formatValue(value) {
 
 /**
  * What the editor's text box STARTS with, which is not what the tree shows.
- * `formatValue` describes a value that has no text of its own ("nothing", "{…}"), and a
+ * `formatValue` describes a value with no text of its own ("nothing", "{…}"), and a
  * description seeded into an editable box is applied as if the person had typed it — a
  * null field would reach the site as the literal text "nothing". An absent value starts
- * as an empty box instead, so whatever the site ends up seeing is something a human
- * actually wrote.
+ * as an empty box instead, so whatever the site sees is something a human actually wrote.
  *
- * Exported for `panel.strings.test.js` alone, and it has to be: this defect is
- * invisible from outside the module. The only fixture that reaches it is a response
- * field holding no value, and the demo site (§14) has none — which is exactly how it
- * survived a full browser run of the M2 flow. `return formatValue(value)` restores the
- * bug and breaks no other test; the seeding test is the one that stops it.
+ * Exported for `panel.strings.test.js` alone, and it has to be: the only fixture that
+ * reaches this is a response field holding no value, and the demo (§14) has none — which
+ * is how it survived a full browser run of the M2 flow. `return formatValue(value)`
+ * restores the bug and breaks no other test.
  */
 export function draftFor(value) {
   if (value === null || value === undefined || typeof value === 'object') return '';
@@ -60,11 +56,10 @@ export function draftFor(value) {
 }
 
 /**
- * Which editor a value gets (§10.1D: "number/text/toggle per value type"). The word it
- * returns is a CSS class name and a branch label, never anything a human reads — which
- * is why `panel.strings.test.js` audits `formatValue` beside it and deliberately not
- * this. Exported for the §10.1 State D editor in `probe.js`, which asks the same
- * question about the same values.
+ * Which editor a value gets (§10.1D: "number/text/toggle per value type"). What it returns
+ * is a CSS class name and a branch label, never anything a human reads — which is why
+ * `panel.strings.test.js` audits `formatValue` beside it and deliberately not this.
+ * Exported for §10.1 State D, which asks the same question about the same values.
  */
 export function valueKind(value) {
   if (value === null || value === undefined) return 'null';
@@ -73,15 +68,14 @@ export function valueKind(value) {
 }
 
 /**
- * A field, read out the way the §10.2 tree draws it: the keys the site itself used,
- * from the outside in, with the `$.` and the brackets that only a programmer needs
- * dropped. `$.booking.status` -> "booking · status". An unparseable path falls back to
- * itself rather than to nothing — showing something odd beats showing an unlabelled row.
+ * A field, read out the way the §10.2 tree draws it: the keys the site itself used, from
+ * the outside in, with the `$.` and the brackets only a programmer needs dropped.
+ * `$.booking.status` -> "booking · status". An unparseable path falls back to itself —
+ * showing something odd beats showing an unlabelled row.
  *
- * Lives here, with the other value formatting, because BOTH Pick-tab screens need it and
- * neither may import the other: §10.1C labels its candidate rows with it (two rows of
- * the demo's own data are otherwise drawn identically) and §10.1D names the proved field
- * with it.
+ * Lives here because BOTH Pick-tab screens need it and neither may import the other:
+ * §10.1C labels its candidate rows with it (two rows of the demo's own data are otherwise
+ * drawn identically) and §10.1D names the proved field with it.
  */
 export function fieldLabel(path) {
   const tokens = parsePath(String(path || ''));
@@ -130,7 +124,15 @@ function sourceCard(source, ctx) {
   const open = ctx.state.open === source.sigId;
   const changes = ctx.state.changes.filter((c) => c.sigId === source.sigId && !c.probe);
 
-  const box = el('input', { type: 'checkbox', tabindex: '-1', 'aria-hidden': 'true' });
+  /* §9.2 draws "selected" from `:has(input:checked)`, so this checkbox is what opens the
+   * source. It carried `tabindex="-1" aria-hidden="true"` and its `<label>` is not
+   * focusable either, so every source card was unopenable by keyboard — on the control
+   * that leads to the whole §10.2 tab (§16 M7). A real checkbox again: named by the label
+   * that wraps it, carrying `aria-expanded` for what it does (ARIA 1.2 allows it on
+   * checkbox; a tree is being opened, not a selection made), ringed on the CARD in
+   * panel.css because the input has no area to ring, and keyed for `focusKey` — without
+   * the key, Space opens the tree and drops the focus on the floor. */
+  const box = el('input', { type: 'checkbox', 'aria-expanded': String(open), dataset: { focus: `source:${source.sigId}` } });
   box.checked = open;
 
   const title = el('span', { class: 'card__title' }, el('span', { class: 'truncate', text: source.name }));
@@ -265,7 +267,7 @@ function branchNode(key, value, path, depth, source, ctx) {
   const count = entriesOf(value).length;
   const toggle = el(
     'button',
-    { type: 'button', class: 'tree__toggle', 'aria-expanded': String(expanded) },
+    { type: 'button', class: 'tree__toggle', 'aria-expanded': String(expanded), dataset: { focus: `branch:${source.sigId}:${path}` } },
     el('span', { class: 'tree__caret' }, ICON.caret()),
     el('span', { class: 'tree__key', text: labelOf(key) }),
     el('span', { class: 'tree__count mono', text: Array.isArray(value) ? S.glyph.list(count) : S.glyph.object(count) })
@@ -302,7 +304,11 @@ function rowActions({ key, value, path, change, source, ctx }) {
   const actions = el('div', { class: 'tree__actions' + (change ? ' tree__actions--pinned' : '') });
 
   if (change) {
-    const box = el('input', { type: 'checkbox', 'aria-label': change.enabled ? S.sources.changeOn : S.sources.changeOff });
+    const box = el('input', {
+      type: 'checkbox',
+      'aria-label': change.enabled ? S.sources.changeOn : S.sources.changeOff,
+      dataset: { focus: `toggle:${change.id}` }
+    });
     box.checked = Boolean(change.enabled);
     const mark = el('span', { class: 'check-box' });
     box.addEventListener('change', async () => {
@@ -314,7 +320,7 @@ function rowActions({ key, value, path, change, source, ctx }) {
     actions.append(el('label', { class: 'check' }, box, mark));
   }
 
-  const edit = el('button', { type: 'button', class: 'icon-btn', 'aria-label': S.sources.changeValue }, ICON.pencil());
+  const edit = el('button', { type: 'button', class: 'icon-btn', 'aria-label': S.sources.changeValue, dataset: { focus: `edit:${source.sigId}:${path}` } }, ICON.pencil());
   edit.addEventListener('click', () => {
     ctx.state.editing = {
       sigId: source.sigId,
@@ -331,32 +337,32 @@ function rowActions({ key, value, path, change, source, ctx }) {
     };
     ctx.rerender();
   });
-  actions.append(withTip(edit, [S.sources.changeValue], { up: true }));
+  /* `end` on all three of this row's controls: its actions sit hard against the inline
+   * end of a 320–420px panel, and a 14rem bubble centred on a 28px icon there hangs 32px
+   * OFF it — measured, at the design width, in BOTH directions. panel.css has carried
+   * `.tip--end` for exactly this since §10.1D's "Show me"; these rows never got it, and
+   * the tooltip-overflow checks that existed were all on other screens. Found by the §16
+   * M7 RTL sweep, which is where every tooltip finally got measured at once. */
+  actions.append(withTip(edit, [S.sources.changeValue], { up: true, end: true }));
 
-  /* ◎ "Show on page" (§10.2 / §10.3). Two different promises behind one control, and
-   * the tooltip is where they are told apart:
-   *
-   *   • a Link this field has been PROVED to drive, which MockLab can still stand behind
-   *     today, gets the plain label — the overlays will be solid and about elements an
-   *     experiment established;
-   *   • anything else gets §11's `guessHighlight` beside it, because what the page will
-   *     draw is a value search over the rendered document: dashed, and honestly a guess.
-   *     That covers a field with no Link at all AND one whose proof has gone stale, which
-   *     is the case a person would otherwise be most confidently misled by.
-   *
-   * `shownLinkState` decides, and it only ever downgrades (`links.js`), so this row can
-   * never promise a proof the store did not record. */
+  /* ◎ "Show on page" (§10.2 / §10.3). Two promises behind one control, told apart in the
+   * tooltip: a Link PROVED to drive this field, and which MockLab can still stand behind
+   * today, gets the plain label; anything else gets §11's `guessHighlight` beside it,
+   * because what the page will draw is a value search over the rendered document — dashed,
+   * and honestly a guess. That covers a field with no Link AND one whose proof has gone
+   * stale, the case a person would otherwise be most confidently misled by.
+   * `shownLinkState` decides and only ever downgrades (`links.js`). */
   const link = (ctx.state.bindings || []).find((b) => b && b.sigId === source.sigId && b.path === path);
   const provenHere = link ? shownLinkState(link, ctx) === 'verified' : false;
   const ready = canHighlight(ctx);
-  const show = el('button', { type: 'button', class: 'icon-btn', disabled: !ready, 'aria-label': S.sources.showOnPage }, ICON.target());
+  const show = el('button', { type: 'button', class: 'icon-btn', disabled: !ready, 'aria-label': S.sources.showOnPage, dataset: { focus: `show:${source.sigId}:${path}` } }, ICON.target());
   if (ready) show.addEventListener('click', () => void showOnPage(ctx, { sigId: source.sigId, path }));
   const lines = !ready
     ? [S.sources.showOnPage, S.notYet]
     : provenHere
       ? [S.sources.showOnPage]
       : [S.sources.showOnPage, S.sources.guessHighlight];
-  actions.append(withTip(show, lines, { up: true }));
+  actions.append(withTip(show, lines, { up: true, end: true }));
 
   if (change) {
     const remove = el('button', { type: 'button', class: 'icon-btn icon-btn--danger', 'aria-label': S.sources.removeChange }, ICON.trash());
@@ -365,7 +371,7 @@ function rowActions({ key, value, path, change, source, ctx }) {
       if (!res || !res.ok) ctx.toast(S.errors.pageBroke, true);
       await ctx.refresh();
     });
-    actions.append(withTip(remove, [S.sources.removeChange], { up: true }));
+    actions.append(withTip(remove, [S.sources.removeChange], { up: true, end: true }));
   }
   return actions;
 }
