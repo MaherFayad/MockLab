@@ -1,16 +1,19 @@
 /**
- * Two selections the probe makes, as pure functions: which candidates are worth a
- * reload (§7.2's replay check, §7.4's null rule), and which nodes are worth a
- * fingerprint once a field is proved (§7.6).
+ * The selections the probe makes: which candidates are worth a reload (§7.2's replay
+ * check, §7.4's null rule) and which nodes are worth a fingerprint once a field is
+ * proved (§7.6).
  *
- * OWNER: probe-engineer. Split out of `probe.js` under §17.10, and the seam is chosen
- * so that these two decisions can be tested exhaustively with no store, no page and no
- * reload — a candidate silently dropped from the queue is a field the probe will report
- * as "not the one", which is the quietest way this product could be wrong.
+ * OWNER: probe-engineer. Split out of `probe.js` under §17.10, and the seam is chosen so
+ * that these decisions can be tested exhaustively with no page and no reload — a
+ * candidate silently dropped from the queue is a field the probe will report as "not the
+ * one", which is the quietest way this product could be wrong. Everything here is pure
+ * except `queueFor` at the bottom, which is the adapter that reads the store.
  */
 
 import { getByPath, enumeratePaths } from '../shared/jsonpath.js';
 import { changedNodes } from '../shared/diff.js';
+import { getBindings } from './ruleStore.js';
+import { friendlyName } from './signatures.js';
 
 /**
  * The candidates that can actually be tested by refreshing, and the ones that cannot.
@@ -74,13 +77,40 @@ export function buildQueue(input) {
  * moved between the control run and the run with the field mutated, with the picked
  * element first because it is the one the user asked about.
  *
+ * ANCESTORS OF THE PICKED ELEMENT ARE DROPPED, and that is the whole subtlety here. An
+ * element's `innerText` contains its children's, so every wrapper around the pill —
+ * the row, the card, `<body>` — "changes" whenever the pill does. §11 promises the
+ * person "This change affects {k} places on the page"; counting six nested boxes as six
+ * places would be true of the DOM and useless to a human.
+ *
+ * §7.6 gets that for free by sampling only elements with a direct text node. This takes
+ * the ancestor rule directly instead, because the sample it reads includes §7.2's
+ * region — which is what carries an element with NO text of its own, an icon or a
+ * colour dot beside a status. Those are ordinary on real sites and invisible to the
+ * literal rule. Recorded in README.
+ *
  * @param {any} controlNodes @param {any} mutatedNodes
  * @param {Set<string>} mask @param {string|null} elementKey
  * @returns {string[]}
  */
 export function affectedKeys(controlNodes, mutatedNodes, mask, elementKey) {
   const { keys } = changedNodes(controlNodes, mutatedNodes, mask);
-  return [elementKey, ...keys.filter((key) => key !== elementKey)].filter(Boolean);
+  const kept = keys.filter((key) => key !== elementKey && !isAncestorOf(key, elementKey));
+  return [elementKey, ...kept].filter(Boolean);
+}
+
+/** The index path out of a node key (`div@1.0.2`), or null when it carries none. */
+function pathOf(key) {
+  const at = String(key === null || key === undefined ? '' : key).indexOf('@');
+  return at === -1 ? null : String(key).slice(at + 1);
+}
+
+/** Does `key` name an element that CONTAINS the one at `elementKey`? */
+export function isAncestorOf(key, elementKey) {
+  const outer = pathOf(key);
+  const inner = pathOf(elementKey);
+  if (outer === null || inner === null) return false;
+  return outer === '' ? inner !== '' : inner.startsWith(outer + '.');
 }
 
 /**
@@ -109,4 +139,26 @@ export function allFields(input) {
     }
   }
   return out;
+}
+
+/**
+ * `buildQueue` with the store reads done for it: this origin's Bindings for §7.4's
+ * observed values, and either §6.3's ranked guesses or — when the person asked for
+ * "Check all fields (slower)" — every leaf the tab has captured.
+ *
+ * The one function here that is not pure, and the only one that knows a probe exists.
+ *
+ * @param {{origin:string, candidates:any[], sources:Map<string,any>, exhaustive:boolean,
+ *   onNotRefetched:(list:any[])=>void}} input
+ */
+export async function queueFor(input) {
+  const sources = input.sources || new Map();
+  const { queue, notRefetched } = buildQueue({
+    candidates: input.exhaustive ? allFields({ sources }) : input.candidates,
+    sources,
+    bindings: await getBindings(input.origin),
+    nameFor: (captured) => friendlyName(captured.signature)
+  });
+  input.onNotRefetched(notRefetched);
+  return queue;
 }

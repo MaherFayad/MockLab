@@ -80,14 +80,17 @@ const node = (text, colour) => ({
 function demoPage(bodies, load) {
   const trip = bodies.trip || {};
   const status = String(trip.status);
-  const nodes = [{ key: 'pill', snapshot: node(LABEL[status] || status, COLOUR[status]) }];
-  if (BANNER[status]) nodes.push({ key: 'banner', snapshot: node(BANNER[status]) });
+  const nodes = [{ key: 'div@1.0.1', snapshot: node(LABEL[status] || status, COLOUR[status]) }];
+  if (BANNER[status]) nodes.push({ key: 'div@1.2', snapshot: node(BANNER[status]) });
   // Deliberate noise: a different tip on every load, exactly like the demo's tip box.
-  nodes.push({ key: 'tip', snapshot: node(`Gate ${trip.flight.gate} · tip ${load}`) });
-  nodes.push({ key: 'total', snapshot: node(`SAR ${Number(trip.price.total).toFixed(2)}`) });
-  nodes.push({ key: 'name', snapshot: node(String(bodies.user.user.displayName)) });
+  nodes.push({ key: 'div@1.3', snapshot: node(`Gate ${trip.flight.gate} · tip ${load}`) });
+  nodes.push({ key: 'div@1.4', snapshot: node(`SAR ${Number(trip.price.total).toFixed(2)}`) });
+  nodes.push({ key: 'div@1.5', snapshot: node(String(bodies.user.user.displayName)) });
   return nodes;
 }
+
+/** Keys the tests name, so an assertion reads as something other than an index path. */
+const KEY = { pill: 'div@1.0.1', banner: 'div@1.2', tip: 'div@1.3', dot: 'span@1.0.0', card: 'div@1.0' };
 
 const DEMO_BODIES = {
   trip: {
@@ -110,11 +113,10 @@ const PILL_CANDIDATES = [
 /**
  * One tab, one page, one probe. `render` receives the bodies the page would have been
  * served — the real ones with every enabled Change applied, which is what the in-page
- * patch does — so the fake page is driven by the mechanism the site is.
+ * patch does — so the fake page is driven by the same mechanism a site is.
  */
 function makeWorld(options = {}) {
   chrome.__data.clear();
-
   const bodies = structuredClone(options.bodies || DEMO_BODIES);
   const missing = new Set(options.missingSources || []);
   const sources = new Map(
@@ -124,11 +126,9 @@ function makeWorld(options = {}) {
   );
 
   const world = {
-    loads: 0,
-    states: [],
-    batches: [],
+    loads: 0, states: [], batches: [],
     render: options.render || demoPage,
-    pickedKey: options.pickedKey || 'pill',
+    pickedKey: options.pickedKey || KEY.pill,
     confidence: options.confidence === undefined ? 1 : options.confidence
   };
 
@@ -150,21 +150,23 @@ function makeWorld(options = {}) {
             ok: true,
             fingerprints: (payload.keys || []).map((key) => ({
               key,
-              fingerprint: { css: `#${key}`, textAnchor: key, attrAnchors: [], treePath: [] }
+              fingerprint: { key, css: `#${key}`, textAnchor: key, attrAnchors: [], treePath: [] }
             }))
           });
           return;
         }
         const nodes = world.render(await served(), world.loads);
         const picked = nodes.find((entry) => entry.key === world.pickedKey);
-        // §7.2's region is ancestors and siblings, so it carries a node whose text is
-        // its children's concatenated — the demo's `.card__body` around the pill. It
-        // deliberately excludes the noisy tip, or it would be masked as noise itself and
-        // the ancestor rule below would have nothing to check.
-        const region = nodes.concat({
-          key: 'card',
-          snapshot: node(nodes.filter((e) => e.key !== 'tip').map((e) => e.snapshot.text).join(' '))
-        });
+        // §7.2's region: the picked element's ancestors and siblings. Two of them matter
+        // and neither is in §7.6's page sample. `card` is the wrapper whose text is its
+        // children's concatenated (the demo's `.card__body`) — it must never be counted
+        // as a place the field affects. `dot` is a status dot with no text at all, whose
+        // colour follows the same field — it must be, and only the region carries it.
+        const status = String((await served()).trip.status);
+        const region = nodes.concat(
+          { key: KEY.card, snapshot: node(nodes.filter((e) => e.key !== KEY.tip).map((e) => e.snapshot.text).join(' ')) },
+          { key: KEY.dot, snapshot: node('', COLOUR[status]) }
+        );
         api.onProbeResult(TAB, {
           requestId: payload.requestId,
           ok: true,
@@ -182,7 +184,7 @@ function makeWorld(options = {}) {
   const api = createProbeApi({
     resolveTabId: async () => TAB,
     portsFor: () => new Set([port]),
-    tabRecord: () => ({ origin: ORIGIN, sources }),
+    tabRecord: () => { if (world.breakQueue) throw new Error('a bug of ours'); return { origin: ORIGIN, sources }; },
     pickedElement: () => ({
       fingerprint: { css: `#${world.pickedKey}`, textAnchor: world.pickedKey, attrAnchors: [], treePath: [] },
       snapshot: node('picked'),
@@ -219,6 +221,29 @@ async function finish(world, budgetMs = 5000) {
 
 const probeChanges = async () => (await getChanges(ORIGIN)).filter((change) => change.probe === true);
 
+/** Wait until the run has really mocked the site; a cancel before that proves nothing. */
+async function untilApplied(world, budgetMs = 3000) {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const applied = await probeChanges();
+    if (applied.length) return applied;
+    assert.ok(Date.now() < deadline, `the probe never applied anything (state ${(await world.view()).state})`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+/** A probe api with one dependency replaced — for the answers that never start a run. */
+const bespoke = (over) =>
+  createProbeApi({
+    resolveTabId: async () => TAB,
+    portsFor: () => new Set([{ postMessage() {} }]),
+    tabRecord: () => ({ origin: ORIGIN, sources: new Map() }),
+    pickedElement: () => ({ fingerprint: { css: '#pill' }, snapshot: node('x'), candidates: PILL_CANDIDATES }),
+    reload: async () => true,
+    notify: () => {},
+    ...over
+  });
+
 /* ══════════════════════════════ §16 M4 DoD 1 — the demo pill ═══════ */
 test('1 the demo pill is proved to be driven by $.status, and both its elements found', async () => {
   const world = makeWorld();
@@ -229,24 +254,23 @@ test('1 the demo pill is proved to be driven by $.status, and both its elements 
   assert.equal(view.failure, '');
   assert.equal(view.binding.path, '$.status');
   assert.equal(view.binding.sourceName, 'Trip');
-  assert.equal(view.binding.state, 'verified', 'the §17.4 word, and only from CONFIRMED');
-  assert.equal(view.binding.probeMode, 'refresh');
+  assert.equal(view.binding.state, 'verified', 'the §17.4 word, only ever from CONFIRMED');
   assert.equal(view.value, 'ON_TIME', 'State D shows the REAL value, not the probe value');
 
-  // §16 M4: "elements[] contains BOTH the pill and the derived banner".
-  assert.deepEqual(view.binding.elements.map((fp) => fp.textAnchor), ['pill', 'banner']);
-  assert.equal(view.affected, 2);
-  // Not the wrapper whose text merely CONTAINS the pill's (§7.6 samples elements with a
-  // direct text node), and not the tip box, which the noise mask took out.
-  assert.equal(view.binding.elements.some((fp) => fp.textAnchor === 'card'), false);
-  assert.equal(view.binding.elements.some((fp) => fp.textAnchor === 'tip'), false);
+  // §16 M4: "elements[] contains BOTH the pill and the derived banner" — and neither
+  // the wrapper whose text merely CONTAINS the pill's (§7.6 samples elements with a
+  // direct text node) nor the tip box, which the noise mask took out.
+  // …plus the text-less status dot beside it, which only §7.2's region can carry, and
+  // NOT the wrapper whose text merely contains the pill's, nor the masked tip box.
+  assert.deepEqual(view.binding.elements.map((fp) => fp.key), [KEY.pill, KEY.dot, KEY.banner]);
+  assert.equal(view.affected, 3);
 
   // §16 M4: "in ≤ 8 reloads" — six, and named so a regression says which one grew.
   assert.equal(view.reload.index, 6, 'two control runs, two bisection batches, verify on and off');
 
   const stored = await getBindings(ORIGIN);
   assert.equal(stored.length, 1);
-  assert.equal(stored[0].state, 'verified');
+  assert.equal(stored[0].probeMode, 'refresh');
   assert.deepEqual(stored[0].observedValues, ['ON_TIME']);
   assert.deepEqual(await probeChanges(), [], '§7.1 / §17.5: nothing of the probe\'s is left behind');
 });
@@ -279,7 +303,7 @@ test('3 an element that changes on its own is refused, not confirmed', async () 
   // The tip box: different text on every load, and it carries the gate number, so a
   // value match really does offer `$.flight.gate` as a candidate for it.
   const world = makeWorld({
-    pickedKey: 'tip',
+    pickedKey: KEY.tip,
     candidates: [{ sigId: 'trip', path: '$.flight.gate', value: 'A17', sourceName: 'Trip' }]
   });
   await world.start();
@@ -298,11 +322,11 @@ test('4 the gate really does drive that box — the refusal is about noise, not 
   // element and candidate ARE confirmed — `tooNoisy` is a fact about the page, not a
   // probe that can never find anything.
   const steady = (bodies) => [
-    { key: 'tip', snapshot: node(`Gate ${bodies.trip.flight.gate}`) },
-    { key: 'pill', snapshot: node(LABEL[bodies.trip.status]) }
+    { key: KEY.tip, snapshot: node(`Gate ${bodies.trip.flight.gate}`) },
+    { key: KEY.pill, snapshot: node(LABEL[bodies.trip.status]) }
   ];
   const world = makeWorld({
-    pickedKey: 'tip',
+    pickedKey: KEY.tip,
     render: steady,
     candidates: [{ sigId: 'trip', path: '$.flight.gate', value: 'A17', sourceName: 'Trip' }]
   });
@@ -318,15 +342,8 @@ test('5 cancelling mid-probe leaves zero probe changes in storage', async () => 
   await world.start();
 
   // Stop it while a batch is on the page — the only moment a cancel can leave a mock.
-  const deadline = Date.now() + 3000;
-  for (;;) {
-    const applied = await probeChanges();
-    if (applied.length) break;
-    assert.ok(Date.now() < deadline, 'the probe never applied anything to cancel');
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
+  await untilApplied(world);
   assert.deepEqual(await world.stop(), { ok: true, tabId: TAB, cancelled: true });
-
   const view = await finish(world);
   assert.equal(view.phase, PROBE_PHASE.FAILED);
   assert.equal(view.failure, PROBE_FAIL.CANCELLED);
@@ -337,14 +354,7 @@ test('5 cancelling mid-probe leaves zero probe changes in storage', async () => 
 test('6 §17.5 — a probe Change is exactly the shape the startup sweep deletes', async () => {
   const world = makeWorld();
   await world.start();
-  const deadline = Date.now() + 3000;
-  let applied = [];
-  for (;;) {
-    applied = await probeChanges();
-    if (applied.length) break;
-    assert.ok(Date.now() < deadline, 'the probe never applied anything');
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
+  const applied = await untilApplied(world);
   assert.equal(applied[0].probe, true, 'the flag the sweep and the badge both read');
   assert.equal(applied[0].enabled, true);
   await world.stop();
@@ -410,8 +420,8 @@ test('10 a change that does not change BACK is not a proof', async () => {
       if (bodies.trip.status !== 'ON_TIME') touched = true;
       const label = LABEL[bodies.trip.status] || bodies.trip.status;
       return [
-        { key: 'pill', snapshot: node(touched ? `${label}!` : label) },
-        { key: 'tip', snapshot: node(`tip ${load}`) }
+        { key: KEY.pill, snapshot: node(touched ? `${label}!` : label) },
+        { key: KEY.tip, snapshot: node(`tip ${load}`) }
       ];
     }
   });
@@ -436,7 +446,7 @@ test('11 §7.5 — two fields that only drive an element together are found as a
     ],
     render: (bodies) => {
       const both = bodies.trip.status !== 'ON_TIME' && bodies.trip.booking.status !== 'ON_TIME';
-      return [{ key: 'pill', snapshot: node(both ? 'Both moved' : 'On time') }];
+      return [{ key: KEY.pill, snapshot: node(both ? 'Both moved' : 'On time') }];
     }
   });
   await world.start();
@@ -488,32 +498,29 @@ test('14 the view says what is happening, and refuses a second run while one is 
   await finish(idle);
 
   // A probe with nothing picked never starts at all.
-  const unpicked = createProbeApi({
-    resolveTabId: async () => TAB,
-    portsFor: () => new Set([{ postMessage() {} }]),
-    tabRecord: () => ({ origin: ORIGIN, sources: new Map() }),
-    pickedElement: () => null,
-    reload: async () => true,
-    notify: () => {}
-  });
+  const unpicked = bespoke({ pickedElement: () => null });
   assert.deepEqual(await unpicked.handle({ type: PROBE_MSG.START_PROBE, payload: {} }), {
-    ok: false,
-    reason: PROBE_FAIL.NO_PICK
+    ok: false, reason: PROBE_FAIL.NO_PICK
   });
 });
 
-test('15 a tab with no page agent is told so, and nothing is applied to it', async () => {
-  const deaf = createProbeApi({
-    resolveTabId: async () => TAB,
-    portsFor: () => null,
-    tabRecord: () => ({ origin: ORIGIN, sources: new Map() }),
-    pickedElement: () => ({ fingerprint: { css: '#pill' }, snapshot: node('x'), candidates: PILL_CANDIDATES }),
-    reload: async () => true,
-    notify: () => {}
-  });
+test('15 a defect of ours is reported as one, not as a fact about the page', async () => {
+  // An exception with no §11 reason behind it is MockLab breaking. Reporting it as
+  // `timeout` or `noneConfirmed` would be a statement about the SITE that nothing
+  // established — §17.12's lie told about a failure instead of a success.
+  const world = makeWorld();
+  await world.start();
+  world.breakQueue = true;   // the next thing the run asks the worker for throws
+  const view = await finish(world);
+  assert.equal(view.phase, PROBE_PHASE.FAILED);
+  assert.equal(view.failure, PROBE_FAIL.INTERNAL);
+  assert.deepEqual(await probeChanges(), [], 'and CLEANUP still ran');
+});
+
+test('16 a tab with no page agent is told so, and nothing is applied to it', async () => {
+  const deaf = bespoke({ portsFor: () => null });
   assert.deepEqual(await deaf.handle({ type: PROBE_MSG.START_PROBE, payload: {} }), {
-    ok: false,
-    reason: PROBE_FAIL.NO_CONTENT_SCRIPT
+    ok: false, reason: PROBE_FAIL.NO_CONTENT_SCRIPT
   });
   assert.deepEqual(await probeChanges(), []);
 });

@@ -752,3 +752,121 @@ this paragraph listed them as open and was never updated:**
 That this paragraph went stale one milestone after the section above it was written about
 stale evidence is the point, not an aside. A record that is only corrected when someone
 re-reads it is not a record.
+
+---
+
+## M4 — Probe (panel half: §10.1 State D, the progress card, the failure cards)
+
+**Built by:** panel-designer, in parallel with probe-engineer's `probe.js` / `diff.js`.
+Owned files did not overlap; the two halves met at `background/probeMessages.js`.
+
+**Delivered**
+
+- `panel/probe.js` — the probe's message contract as the panel sees it, §10.1C's
+  full-panel progress card, and §10.1D's failure cards.
+- `panel/result.js` — State D: the result card, the field it names, and the value editor
+  (segmented picker when `observedValues` >= 2, typed input otherwise).
+- `pick.js` — the probe CTA is live, `probe.intro` appears with it, and §10.1A's recent
+  Link cards get their chevron and their click back (Deviation 29 closed).
+- `testlib/verifiedChip.js` — §17.12's invariant, shared by the two suites that render
+  the panel.
+- `test/panel.probe.browser.test.js` — 15 checks, the split Deviation 27 called due here.
+
+**The guard that changed shape rather than being deleted.** From M2 to M3
+`panel.browser.test.js` asserted that §11's "Verified ✓" appeared **nowhere** in the
+panel body. True by construction while no probe existed, and the single assertion between
+this product and §17.12's worst bug. At M4 the word becomes legitimate and that assertion
+could only have been deleted. It is now: *the chip may appear only on a Link whose own
+state is `verified`* — three independently written facts must agree for every node that
+reads the word (`S.chips[state]` for the word, `chip--<state>` for the colour,
+`data-link-state` on the chip and on the card around it), plus a count the fixture
+supplies. Twelve mutations were run; each names the subtests it broke:
+
+| # | mutation | fails |
+|---|---|---|
+| 1 | §10.1A's filter widened `=== 'verified'` -> `!== 'stale'` | 4 subtests, both suites |
+| 2 | `proved()` loosened the same way | 3 |
+| 3 | `linkChip()` hardcodes `S.chips.verified` | 4 |
+| 4 | the chip keeps its word, always painted verified-green | 2 |
+| 5 | State D always prints `probe.found` | 2 |
+| 6 | the spinner gradient goes back to centred (symmetric) | 2 |
+| 7 | the spinner pinned back to white instead of `currentColor` | 2 |
+| 8 | two step lines made identical | 4 |
+| 9 | the "Show me" tooltip re-centred on its control | 2 |
+| 10 | the dark-theme button label back to white | 2 |
+| 11 | the Recent-link card loses its chevron | 4 |
+| 12 | the probe button left disabled when the contract is complete | 4 |
+
+**A test that was not a test, caught by its own mutation.** The first version of the
+spinner check screenshotted the ring at two animation times and required the pixels to
+differ. Mutation 6 left it **green**: the card's own 300 ms entrance was still running
+(so two frames differed by its opacity), and once that was pushed to its end, Skia still
+rasterises a rotated gradient differently at 90° than at 0°. A pixel diff cannot tell
+"it turns" from "it was resampled". It now measures the gradient offset at twelve points
+around the circumference and requires the spread to exceed 0.3 — which is the property
+that makes a rotation visible at all — and mutation 6 fails.
+
+**Four defects found by looking, not by testing**
+
+1. **The spinner could not spin.** §9.2's radial gradient was centred on the shape it
+   filled — radially symmetric, so `spin 1s linear infinite` painted the identical frame
+   at every angle — with a `currentColor` disc laid over the middle as a fake hole, which
+   drew a solid dark dot in a §10.2 tree row and a white blob inside a primary button.
+   It is the hero element of the one screen §10.1 says must "NEVER let the user think
+   it's stuck" (Deviation 52).
+2. **"Apply & refresh page" measured 3.12:1 in the dark theme** — white on §9.1's light
+   blue `--accent`, under WCAG 2.2 AA on the button this product exists to have someone
+   press. The dark danger toast was worse at 2.25:1. Fixed by inking the label rather
+   than inventing a second blue; every filled button is now measured in both themes,
+   which nothing did before (Deviation 51).
+3. **A tooltip rendered 42px outside the panel.** §9.2's bubble is up to 14rem and
+   centred on its control; §10.1D's "Show me" sits at the end of its row (Deviation 53).
+4. **`S.soon` gave advice about a different task.** "Not ready yet — for now, change
+   values from the Sources tab" was reused under "Save as Scenario", "Show me" and "Deep
+   mode", where the Sources tab is not the answer to anything the person just tried.
+   §11's "always say what to do next" is a means to §1.1, not the other way round, so
+   there are now two strings and the second admits there is nothing to do.
+
+**Contract, and what it cost nothing to be wrong about.** `panel/probe.js` was written
+before the worker's half existed, against a contract it documented and requested rather
+than invented: `missingProbeContract()` names every constant it needs, the probe button
+renders disabled with a reason while any is missing, and — because a missing named export
+is a link-time error that would kill the whole panel — the read is a namespace import.
+Every assertion about that button in both suites is stated against the contract rather
+than against the day it was written. `background/probeMessages.js` then landed
+mid-milestone with `PROBE_MSG`, `PROBE_PHASE`, `PROBE_STEP` and `PROBE_FAIL`, and the
+`GET_PROBE` payload matching field for field; the panel's suites went from "disabled and
+explained" to "live" with **no edit to a single assertion**. Two reconciliations were
+needed and are behaviour, not naming: a run the user CANCELLED must not draw a failure
+card (§7.1 ends it in the same state as a real failure), and `PROBE_FAIL` carries five
+reasons §11 wrote no sentence for — a run nobody started, a tab with no page agent, a
+defect of MockLab's own — which map to `errors.pageBroke` rather than being reported as
+findings about the site.
+
+**§17.6 checked on the rendered result, not only on the source.** Every text node of all
+seven M4 screens was collected in the browser and matched against `strings.js`: 48 text
+nodes, every one either a string the copy table can produce or a value that came from the
+site's own data. The panel's own source audit was also widened after
+interceptor-engineer's report — its named-option sink required a QUOTED key, so
+`el('input', { placeholder: 'Type a name' })` matched nothing; proved by planting one.
+
+**Evidence, and whose tree it belongs to.** `npm test -ws` — extension **322/322**,
+companion **5/5**, 0 skipped. Six browser suites against the real unpacked extension in
+real Chromium, each run individually: `e2e` 15, `panel` 23, `panel.probe` 15, `picker` 8,
+`pickerdom` 6, `probe` 6 — all 0 skipped. `panel.probe` is added to CI's browser job in
+the same change; a suite CI never invokes is not a guard.
+
+That extension total is a fact about a TREE, not about this half of the milestone: it
+moved 303 -> 311 -> 321 -> 322 while these runs were taken, because probe-engineer's
+files were landing in the same working copy. One run in the middle of it reported
+`# fail 1` with no failing subtest named, and the two runs on either side of it were
+clean at 322 — a file being rewritten under a reader, not a defect. The figures that are
+this half's own and are stable are the suite counts above.
+
+**What this half CANNOT show.** No check here drives a real probe end to end; the state
+is simulated and only the rendering, the cascade and the geometry are real. That is
+probe-engineer's `probe.browser.test.js`, and the two halves were verified separately.
+
+**Deviations:** 48–53 — see README "Deviations".
+
+**QA verdict:** _pending qa-verifier_

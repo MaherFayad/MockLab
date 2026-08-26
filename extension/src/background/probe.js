@@ -32,10 +32,9 @@ import { PROBE_MSG, PROBE_PORT_MSG, PROBE_PHASE, PROBE_STATE, PROBE_STEP, PROBE_
 import { createProbeLink, probeFailure, PROBE_LIMITS } from './probeLink.js';
 import { expectedReloads } from './probeValues.js';
 import { clearProbeChanges, applyProbeChanges } from './probeChanges.js';
-import { buildQueue, affectedKeys, allFields } from './probeQueue.js';
+import { queueFor, affectedKeys } from './probeQueue.js';
 import { buildNoiseMask, snapshotsEqual, diffSnapshots } from '../shared/diff.js';
 import { getBindings, setBindings, getSettings } from './ruleStore.js';
-import { friendlyName } from './signatures.js';
 
 /** Re-exported so `background.js` reaches the whole probe through ONE import. */
 export { PROBE_MSG, PROBE_PORT_MSG } from './probeMessages.js';
@@ -65,7 +64,9 @@ export function createProbeApi(deps) {
   function setState(run, state, step) {
     run.state = state;
     if (step !== undefined) run.step = step;
-    deps.notify(run.tabId, state);
+    // A broadcast that throws must never take CLEANUP with it: that would leave probe
+    // scaffolding on a real site, which is the one thing §17.5 does not allow.
+    try { deps.notify(run.tabId, state); } catch { /* no panel, or a panel that threw */ }
   }
 
   /** §17.5's scaffolding, applied and taken back by `probeChanges.js`. */
@@ -97,14 +98,12 @@ export function createProbeApi(deps) {
   }
 
   /**
-   * The MASK reads region AND page (§7.2 asks for the picked element's neighbourhood as
-   * well; masking more can only make the probe more cautious). Inverse discovery reads
-   * the PAGE sample alone — §7.6's "every element with a direct text node" — because the
-   * region is ancestors, and an ancestor's `innerText` contains its children's. Every
-   * wrapper around the pill would otherwise be reported as a place the field "affects".
+   * §7.2's region and §7.6's page sample, as one keyed set. Both the mask and inverse
+   * discovery read it: masking more can only make the probe more cautious, and the
+   * region is what carries an affected element with no text of its own. What keeps the
+   * region's ancestors out of "affects {k} places" is `affectedKeys`, not this.
    */
   const nodesOf = (answer) => [...(answer.region || []), ...(answer.page || [])];
-  const pageOf = (answer) => answer.page || [];
 
   /**
    * Did the PICKED element change, against the control run? This — not the whole page —
@@ -164,9 +163,9 @@ export function createProbeApi(deps) {
    * (§17.12). Two extra reloads, once, on the rare run that gets this far.
    *
    * Honest note: while `search` is correct this cannot fire — a field that drives the
-   * element alone is found alone. It is here so the ANSWER does not depend on that. Only
-   * the two mutated together (a bisection narrowing into the wrong half AND this check
-   * removed) produce a spurious verified pair; either alone does not.
+   * element alone is found alone. It is here so the ANSWER does not depend on that; only
+   * the two defects together (a bisection narrowing into the wrong half AND this check
+   * removed) produce a spurious verified pair.
    */
   async function searchPairs(run, batch) {
     let spent = 0;
@@ -246,7 +245,13 @@ export function createProbeApi(deps) {
     const drift = diffSnapshots(controlA.element, controlB.element);
     if (drift.length) throw probeFailure(PROBE_FAIL.TOO_NOISY, drift.join(', '));
 
-    const queue = await queueFor(run);
+    const queue = await queueFor({
+      origin: run.origin,
+      candidates: run.candidates,
+      exhaustive: run.exhaustive,
+      sources: (deps.tabRecord(run.tabId) || {}).sources,
+      onNotRefetched: (list) => { run.notRefetched = list; }
+    });
     if (!queue.length) {
       throw probeFailure(
         run.notRefetched.length ? PROBE_FAIL.NOT_REFETCHED : PROBE_FAIL.NONE_CONFIRMED,
@@ -276,31 +281,13 @@ export function createProbeApi(deps) {
   }
 
   /**
-   * `probeQueue.buildQueue` with this run's store reads done for it — over the ranked
-   * guesses (§6.3) or, when the person asked for "Check all fields (slower)", over
-   * every leaf the tab has captured.
-   */
-  async function queueFor(run) {
-    const record = deps.tabRecord(run.tabId);
-    const sources = (record && record.sources) || new Map();
-    const { queue, notRefetched } = buildQueue({
-      candidates: run.exhaustive ? allFields({ sources }) : run.candidates,
-      sources,
-      bindings: await getBindings(run.origin),
-      nameFor: (captured) => friendlyName(captured.signature)
-    });
-    run.notRefetched = notRefetched;
-    return queue;
-  }
-
-  /**
    * §7.6, for free: every non-masked node that moved while the field was mutated — what
    * makes ONE probe answer "which elements does this field drive" rather than "does it
    * drive the one you clicked". It finds the demo's cancellation banner, which has no
    * text in either control run, so it is not masked and it APPEARS.
    */
   async function discoverElements(run, on) {
-    const ordered = affectedKeys(pageOf(run.control), pageOf(on), run.mask, on.elementKey);
+    const ordered = affectedKeys(nodesOf(run.control), nodesOf(on), run.mask, on.elementKey);
     const answer = await link.fingerprints(run.tabId, ordered);
     const byKey = new Map((answer.fingerprints || []).map((entry) => [entry.key, entry.fingerprint]));
     const elements = ordered.map((key) => byKey.get(key)).filter(Boolean);
@@ -391,10 +378,9 @@ export function createProbeApi(deps) {
     if (live && live.state !== PROBE_STATE.DONE) return { ok: false, reason: PROBE_FAIL.BUSY };
 
     const picked = deps.pickedElement(tabId);
+    const ports = deps.portsFor(tabId);
     if (!picked || !picked.fingerprint) return { ok: false, reason: PROBE_FAIL.NO_PICK };
-    if (!deps.portsFor(tabId) || !deps.portsFor(tabId).size) {
-      return { ok: false, reason: PROBE_FAIL.NO_CONTENT_SCRIPT };
-    }
+    if (!ports || !ports.size) return { ok: false, reason: PROBE_FAIL.NO_CONTENT_SCRIPT };
     const exhaustive = options.exhaustive === true;
     const candidates = (picked.candidates || []).filter((c) => c && c.value !== null);
     // §6.3 offers "Check all fields" precisely when there are no guesses to offer, so
@@ -437,8 +423,8 @@ export function createProbeApi(deps) {
     const run = runs.get(tabId);
     if (!run || run.state === PROBE_STATE.DONE) return { ok: true, tabId, cancelled: false };
     run.cancelled = true;
-    // Reject what the run is waiting for as well as flagging it: a probe that has just
-    // reloaded is inside a 15 s wait, and "Stop checking" must stop it now.
+    // Flagging it is not enough: a probe that has just reloaded is inside a 15 s wait,
+    // and "Stop checking" has to stop it now.
     link.abort(tabId, PROBE_FAIL.CANCELLED);
     return { ok: true, tabId, cancelled: true };
   }
@@ -459,7 +445,7 @@ export function createProbeApi(deps) {
     }
     const done = run.state === PROBE_STATE.DONE;
     const result = run.result || null;
-    const proved = done && result && result.ok === true ? result.bindings || [] : [];
+    const proved = done && result && result.ok === true ? result.bindings : [];
     return {
       ok: true,
       tabId,
@@ -468,11 +454,11 @@ export function createProbeApi(deps) {
       state: run.state,
       step: done ? '' : run.step,
       testing: run.testing,
-      // §10.1D still has to name what the user clicked, and the pick record was cleared
-      // by the probe's own first reload — so the run carries the snapshot it started on.
+      // §10.1D names what the user clicked, and the pick record was cleared by the
+      // probe's own first reload — so the run carries the snapshot it started on.
       element: run.element,
-      // §11's `probe.reloads(i, n)`. The estimate is corrected upward by what actually
-      // happened, because "refresh 9 of ~8" is a smaller lie than a bar that overruns.
+      // §11's `probe.reloads(i, n)`, its estimate corrected upward by what happened —
+      // "refresh 9 of ~8" is a smaller lie than a progress bar that overruns.
       reload: { index: run.reloads, estimate: Math.max(run.expected, run.reloads) },
       binding: proved[0] || null,
       bindings: proved,
