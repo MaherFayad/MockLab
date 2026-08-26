@@ -93,14 +93,13 @@ if (!chromium) {
 
     const site = demo.value;
 
-    /**
-     * What the worker logs is recorded by `recordWorkerErrors` in `testlib/browserFixture.js`,
-     * which is where this suite's own wrapper moved to. Playwright raises no console event
-     * for an extension service worker in this Chromium — measured, not assumed — so every
-     * suite that ended on `assert.deepEqual(swErrors, [])` was asserting that an
-     * always-empty array is empty. That module's header carries the full measurement and
-     * the two things the wrapper still cannot see.
-     */
+    /* What the worker logs is recorded by `recordWorkerErrors` in
+       `testlib/browserFixture.js`, which is where this suite's own wrapper moved to.
+       Playwright raises no console event for an extension service worker in this
+       Chromium — measured, not assumed — so every suite that ended on
+       `assert.deepEqual(swErrors, [])` was asserting that an always-empty array is
+       empty. That module's header carries the full measurement, and the two things the
+       wrapper still cannot see. */
 
     const send = (type, payload) =>
       panel.evaluate(([t2, p]) => chrome.runtime.sendMessage({ type: t2, payload: p }), [type, payload]);

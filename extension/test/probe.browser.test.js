@@ -372,12 +372,12 @@ if (!chromium) {
         });
         assert.equal((await probeChanges()).length, 1, 'planted');
 
+        // The record comes out of the outgoing worker while it can still be read; the
+        // relaunch is this check's SUBJECT, so it moves across rather than starting over.
+        await swErrors.handoff();
         await ctx.close();
         ctx = await launchExtension(chromium, profile);
         sw = await ready(ctx.serviceWorkers()[0] || (await ctx.waitForEvent('serviceworker', { timeout: 20000 })));
-        // The relaunch is this check's SUBJECT, so the record moves with it rather than
-        // starting over: `rebind` keeps what the closed worker logged, and refuses if
-        // that worker was already unreadable.
         await swErrors.rebind(ctx, sw);
 
         const deadline = Date.now() + 10000;

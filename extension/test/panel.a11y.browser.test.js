@@ -94,45 +94,68 @@ const COLLECT_CONTROLS = () => {
 };
 
 /**
+ * How a control is identified across a re-render.
+ *
+ * The first version of this sweep marked each control with `data-a11y="3"` and read the
+ * index back off `document.activeElement`. That is correct exactly as long as the DOM
+ * stands still, and the panel's does not: it rebuilds the active tab on any store update
+ * (a capture arriving, a broadcast from the worker), so a mark could be thrown away
+ * mid-sweep and the control it named would be reported as unreachable when nothing was
+ * wrong with it. Measured as roughly one run in five, on the Sources tab, which is the
+ * one the fixture leaves live behind a real page.
+ *
+ * An identity computed from what the control IS survives that: a re-render produces an
+ * equivalent node, and the sweep goes on meaning the same thing. Two controls a person
+ * cannot tell apart collapse to one entry — that is the honest cost, and it is small,
+ * because in this panel it can only happen where two controls really are identical in
+ * tag, type, name and text.
+ */
+const IDENTITY = `((node) => {
+  if (!node || node === document.body || node === document.documentElement) return null;
+  const label = node.getAttribute('aria-label') || node.getAttribute('data-focus') || node.id ||
+    (node.closest('label') ? node.closest('label').textContent.trim() : '') ||
+    (node.textContent || '').trim();
+  return node.tagName.toLowerCase() + ':' + (node.type || '-') + ':' + label.slice(0, 60);
+})`;
+
+/**
  * Tab through the panel and report which controls the keyboard actually reached.
  *
- * The controls are marked first and read back off `document.activeElement`, so this is
- * the real focus order rather than a list of things that CAN be focused: `focus()` on
- * each in turn would pass on a control with `tabindex="-1"`, which is the exact defect
- * the §10.2 source cards had.
+ * The focus is read off `document.activeElement` rather than each control being given
+ * `focus()` in turn: `focus()` succeeds on a control with `tabindex="-1"`, which is
+ * exactly the defect the §10.2 source cards had, so it would have proved nothing.
+ *
+ * The press budget is generous on purpose. A re-render mid-sweep can drop the focus back
+ * to the top of the document, so the order may have to be walked more than once; a
+ * control reached on the second lap is still reached.
  */
 async function tabOrder(page) {
   const expected = await page.evaluate(
-    // eslint-disable-next-line no-new-func
-    `(${COLLECT_CONTROLS.toString()})().map((node, index) => {
-       node.setAttribute('data-a11y', String(index));
-       return {
-         id: String(index),
-         what: node.tagName.toLowerCase() + (node.type ? ':' + node.type : ''),
-         name: (node.getAttribute('aria-label') || node.textContent || '').trim().slice(0, 40) ||
-               (node.closest('label') ? node.closest('label').textContent.trim().slice(0, 40) : '') ||
-               node.className
-       };
-     })`
+    `(${COLLECT_CONTROLS.toString()})().map((node) => ({
+       id: ${IDENTITY}(node),
+       what: node.tagName.toLowerCase() + (node.type ? ':' + node.type : ''),
+       name: (node.getAttribute('aria-label') || node.textContent || '').trim().slice(0, 40) ||
+             (node.closest('label') ? node.closest('label').textContent.trim().slice(0, 40) : '') ||
+             node.className
+     }))`
   );
   await page.evaluate(() => document.body.focus());
   const reached = new Set();
-  // A few extra presses so the order is allowed to wrap once; a control reached on the
-  // second lap is still reached.
-  for (let press = 0; press < expected.length + 4; press += 1) {
+  for (let press = 0; press < expected.length * 2 + 6; press += 1) {
     await page.keyboard.press('Tab');
-    const id = await page.evaluate(() =>
-      document.activeElement ? document.activeElement.getAttribute('data-a11y') : null
-    );
+    const id = await page.evaluate(`${IDENTITY}(document.activeElement)`);
     if (id !== null) reached.add(id);
+    if (expected.every((control) => reached.has(control.id))) break;
   }
   return { expected, reached };
 }
 
 /**
  * Press Tab until `selector` holds the focus, or give up. Used where the check is about
- * what a keyboard user can DO rather than about the order itself: it also guarantees the
- * browser's focus modality is "keyboard", which is what `:focus-visible` turns on.
+ * what a keyboard user can DO rather than about the order itself: it also puts the
+ * browser's focus modality into "keyboard", which is what turns `:focus-visible` on — a
+ * scripted `focus()` after a mouse click leaves the ring off for a reason that has
+ * nothing to do with the stylesheet.
  */
 async function tabTo(page, selector, presses = 40) {
   await page.evaluate(() => document.body.focus());

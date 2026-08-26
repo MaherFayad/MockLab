@@ -149,7 +149,11 @@ export function launchExtension(chromium, profileDir) {
  * nobody was in a position to make. `e2e`, `probe`, `highlight` and `picker` each
  * carried one. `deep` was written last and wrapped `console.error` inside the worker
  * instead; that is what this is, lifted here so the next browser suite inherits a
- * working recorder rather than re-deriving a broken one.
+ * working recorder rather than re-deriving a broken one. `mcp` drove fifteen tools
+ * through the worker and never made the claim at all; it makes it here for the first
+ * time. The four `panel.*` suites assert on their PANEL's console, not the worker's,
+ * through a `page.on('console')` that works — each of them fails under an injected
+ * `console.error`, so none of them needed changing.
  *
  * ── WHY THE READ IS ALLOWED TO FAIL FOR REASONS THAT ARE NOT ERRORS ────────────────
  *
@@ -235,6 +239,7 @@ export async function recordWorkerErrors(context, worker) {
   const carried = [];
   let latest = worker;
   let restarts = 0;
+  let handedOff = false;
   let onWorker = null;
   let watched = null;
 
@@ -280,26 +285,36 @@ export async function recordWorkerErrors(context, worker) {
   }
 
   /**
-   * Move the recording to a worker in a NEW context, keeping everything the outgoing
-   * one had. One suite closes its whole browser mid-run to test what a cold service
-   * worker does with a warm store (§7.1's "delete probe Changes on SW startup"), and
-   * that relaunch is deliberate — unlike an idle restart, its predecessor is still
-   * readable at the moment of the decision, so nothing has to be lost. Call it BEFORE
-   * closing the old context.
+   * Take the outgoing worker's record into Node, immediately BEFORE this suite ends
+   * that worker on purpose. One suite closes its whole browser mid-run to test what a
+   * cold service worker does with a warm store (§7.1's "delete probe Changes on SW
+   * startup"); unlike an idle restart, that ending is a decision, and at the moment it
+   * is taken the worker is still readable — so nothing has to be lost.
    *
-   * It refuses if the outgoing recorder is gone: a rebind that forgave a missing
-   * wrapper would launder exactly the hole this module exists to keep visible.
+   * It refuses if the recorder is already gone. A handoff that forgave a missing
+   * wrapper would launder exactly the hole this module exists to keep visible, and the
+   * order is the whole point: called after `context.close()`, there is nothing left to
+   * read and this says so instead of carrying an empty list forward as if it were a
+   * clean one.
    */
-  async function rebind(nextContext, nextWorker) {
+  async function handoff() {
     const before = await read();
     if (!before.installed) {
       throw new Error(
-        'the outgoing service worker cannot be read, so a rebind would silently drop ' +
-          'whatever it logged. Nothing after this point could claim "no errors during any of this".'
+        'the outgoing service worker cannot be read, so this handoff would silently drop ' +
+          'whatever it logged. Call it BEFORE closing the context, not after. Nothing past ' +
+          'this point could claim "no errors during any of this".'
       );
     }
     carried.length = 0;
     carried.push(...before.errors);
+    handedOff = true;
+  }
+
+  /** Continue recording in a worker of a NEW context, keeping what `handoff` carried. */
+  async function rebind(nextContext, nextWorker) {
+    if (!handedOff) await handoff();
+    handedOff = false;
     latest = nextWorker;
     watch(nextContext);
     await installRecorder(nextWorker, RECORDER_GLOBAL);
@@ -330,7 +345,7 @@ export async function recordWorkerErrors(context, worker) {
     assert.deepEqual(seen.errors, [], 'the service worker logged this');
   }
 
-  return { read, rebind, assertClean, get restarts() { return restarts; }, get worker() { return latest; } };
+  return { read, handoff, rebind, assertClean, get restarts() { return restarts; }, get worker() { return latest; } };
 }
 
 /* --------------------------------------------------------------------- the fixture */

@@ -47,7 +47,7 @@ import http from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
+import { loadChromium, launchExtension, createFixture, recordWorkerErrors } from '../testlib/browserFixture.js';
 import { CONTENT_GLOBALS, PROBE_MSG, PROBE_PHASE, PROBE_FAIL } from '../src/background/messages.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,6 +68,7 @@ if (!chromium) {
 
     let ctx = null;
     let sw = null;
+    let swErrors = null;
     let panel = null;
     let hubRig = null;
     let demo = { value: null, why: null };
@@ -118,6 +119,7 @@ if (!chromium) {
       sw = await stage('service-worker registration', 20000, async () =>
         ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 })
       );
+      swErrors = await stage('service-worker error recorder', 10000, () => recordWorkerErrors(ctx, sw));
       panel = await stage('panel page', 30000, async () => {
         const page = await ctx.newPage();
         await page.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
@@ -586,6 +588,14 @@ if (!chromium) {
       });
 
       /* ──────────────────── DoD 2: kill Chrome in the middle of a call ─────────── */
+
+      // BEFORE the check that closes the browser: fifteen tools have just been driven
+      // through the worker, and nothing in this suite was in a position to notice if any
+      // of them logged. This suite never made the claim at all — the other five browser
+      // suites made it with `worker.on('console')`, which records nothing (see
+      // `recordWorkerErrors`). Made here for the first time, and made for real.
+      await check('the service worker logged no errors while the tools ran', () =>
+        swErrors.assertClean());
 
       await check('§16 M6 DoD 2: killing Chrome mid-call gives a clean error, not a hang', async (subtest) => {
         if (noWorkerHub) {
