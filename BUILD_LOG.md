@@ -279,8 +279,10 @@ rule; the banned word list is in §11's closing note).
 D6 — the delimited-token rule now applies to single-word names too, so a bare
 `tracelogid` and an `x_tracelogid` are treated alike. D7 — README deviation 11 was rewritten at the
 time to state the file length §17.10 actually talks about, not just the code count (at
-`8d236fb` that read "866 lines (644 code)"; `interceptor.js` has since grown and README's
-row — the guarded copy — reads 920/665 today, so no figure is repeated here) — and gives
+`8d236fb` that row read "866 lines (644 code)"; the file has grown since, and README's row
+is the guarded copy — **deliberately not echoed here**, because the first correction of
+this sentence claimed "no figure is repeated" while repeating the pair in the same clause,
+into the one file with no line-count coverage at all) — and gives
 the real reason the file cannot be split: the manifest
 *would* accept several MAIN-world `js` entries, but they share the page's global scope,
 so splitting would publish the match list and patch internals on `window` where a hostile
