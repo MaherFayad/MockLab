@@ -362,7 +362,9 @@ test('§17.10 the unreadable-count audit leaves the table\'s honest prose alone'
   assert.match(tableRow(22), /caps files at ~500 lines/, '§17.10\'s cap, quoted as the rule it is');
   assert.match(tableRow(26), /caps files at ~500 lines/, 'and the second row that restates it');
   assert.match(tableRow(27), /passed 1000 lines/, 'a threshold a file crossed, not its size');
-  assert.match(tableRow(27), /~90-line Playwright resolver/, 'the cost of a split that was not made');
+  // Was row 27's `~90-line Playwright resolver` until the shared harness made that cost void
+  // and the phrase went; moved here rather than deleted — the shape needs a live example.
+  assert.match(tableRow(43), /602-line helper/, 'a hyphenated line figure that is not a file\'s size');
   assert.match(tableRow(33), /"295 lines each"/, 'the false figure quoted while correcting it');
   assert.match(tableRow(35), /Deviation 21 \(`badge\.js`\)/, 'a cross-reference, in clause (e)\'s shape reversed');
 

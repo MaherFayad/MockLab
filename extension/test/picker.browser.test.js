@@ -17,13 +17,16 @@
  * `picker.js`, called directly in a page, which is the only way to reach code that
  * otherwise lives in an extension's isolated world.
  *
- * Every fixture is in this file: `node --test` runs every .js under `test/`, so a
- * separate fixture module would be executed as a test (README Deviations 15).
+ * What a browser suite SHARES — the Chromium lookup, the extension launch line and the
+ * stage/check machinery — lives in `../testlib/browserFixture.js`. `node --test` runs
+ * every .js under `test/`, so a helper module in THIS directory would be executed as a
+ * suite containing no tests; `testlib` is outside that glob. What stays here is this
+ * suite's own fixture: the hostile page below and the server that serves it.
  *
  * Skips (never fails) when Playwright or a Chromium build is unavailable — and skips as
- * REPORTED checks: `stage()` and `check()` below keep this suite's contribution to
- * `# tests` the same number whether it passes, skips or breaks, so a dead fixture cannot
- * delete its checks and leave the shortfall to be found by arithmetic.
+ * REPORTED checks: `stage()` and `check()` keep this suite's contribution to `# tests`
+ * the same number whether it passes, skips or breaks, so a dead fixture cannot delete
+ * its checks and leave the shortfall to be found by arithmetic.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,58 +34,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // The real constants: a rename in the contract breaks this suite loudly.
 import { MSG } from '../src/background/messages.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_DIR = path.resolve(HERE, '..');
-
-/* --------------------------------------------------------------- playwright lookup */
-
-/** Same derivation as `e2e.browser.test.js`: a global install is off this resolution path. */
-function globalPackageRoots() {
-  const roots = [];
-  try {
-    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
-  } catch {
-    /* npm is not on PATH */
-  }
-  roots.push(path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules'));
-  for (const entry of String(process.env.NODE_PATH || '').split(path.delimiter)) {
-    if (entry) roots.push(entry);
-  }
-  return [...new Set(roots.filter(Boolean))];
-}
-
-async function loadChromium() {
-  for (const name of ['playwright', 'playwright-core']) {
-    try {
-      const mod = await import(name);
-      if (mod && mod.chromium) return mod.chromium;
-    } catch {
-      /* not installed locally */
-    }
-  }
-  for (const root of globalPackageRoots()) {
-    for (const name of ['playwright', 'playwright-core']) {
-      for (const entry of ['index.mjs', 'index.js']) {
-        const file = path.join(root, name, entry);
-        if (!fs.existsSync(file)) continue;
-        try {
-          const mod = await import(pathToFileURL(file).href);
-          const chromium = (mod && mod.chromium) || (mod && mod.default && mod.default.chromium);
-          if (chromium) return chromium;
-        } catch {
-          /* try the next candidate */
-        }
-      }
-    }
-  }
-  return null;
-}
+import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
 
 /* ------------------------------------------------------------------------ fixtures */
 
@@ -133,88 +88,39 @@ if (!chromium) {
   test('picker browser suite', { skip: 'Playwright is not installed — `npm i -D playwright && npx playwright install chromium` enables it.' }, () => {});
 } else {
   test('the MockLab picker in real Chromium', async (t) => {
-    const timeline = [];
-    let broke = null;
-    let absent = null;
-
-    /**
-     * One setup stage: named, timed, capped by a budget of its own.
-     *
-     * A failure anywhere in a browser fixture used to fail ONE outer test and drop every
-     * check under it out of the totals without a word — which is how the M3 flake was
-     * found, by noticing `# tests` was 22 short of a remembered number. So a stage says
-     * which it was, how long it waited, and what the stages before it cost: a timeout is
-     * worth raising only when a measurement says the budget was the fault. The budget is
-     * enforced here, not left to Playwright's defaults, so a stage with no timeout of
-     * its own (opening a page) cannot hang the run.
-     */
-    async function stage(name, budgetMs, run) {
-      const started = Date.now();
-      let timer = null;
-      const work = Promise.resolve().then(run);
-      work.catch(() => {});   // whichever side of the race loses must not go unhandled
-      try {
-        const value = await Promise.race([work, new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`no answer inside this stage's own ${budgetMs} ms budget`)),
-            budgetMs
-          );
-        })]);
-        timeline.push(`${name} ${Date.now() - started}ms`);
-        return value;
-      } catch (err) {
-        broke =
-          `fixture stage "${name}" gave up after ${Date.now() - started} ms of a ${budgetMs} ms ` +
-          `budget: ${String((err && err.message) || err).split('\n')[0]}. Stages that finished ` +
-          `first: ${timeline.join(', ') || 'none'}.`;
-        throw new Error(broke);
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    /**
-     * One check. However the fixture ends, every check below REPORTS — skipped when the
-     * browser was absent, failed (naming the stage that died) when it was not.
-     */
-    const check = (name, fn) =>
-      absent ? t.test(name, { skip: absent }, () => {})
-        : t.test(name, broke ? () => assert.fail(`did not run — ${broke}`) : fn);
+    const { stage, optional, check, timeline } = createFixture(t);
 
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-pick-'));
     const fixtures = http.createServer(fixtureHandler);
     let fixtureOrigin = null;
 
-    let demoServer = null;
-    let demoOrigin = null;
-    // The two §16 M3 DoD subtests skip without the companion's demo site. The REASON is
-    // kept and printed in the skip: a bare `catch {}` here would turn a broken demo
-    // server into a silently absent one, and the DoD would stop being checked with the
-    // suite still reporting green.
-    let demoUnavailable = null;
-
     let ctx = null;
     let sw = null;
     let panel = null;
+    // The two §16 M3 DoD checks skip without the companion's demo site. `optional()`
+    // keeps the REASON and hands it back for the skip to print: a bare `catch {}` here
+    // would turn a broken demo server into a silently absent one, and the DoD would stop
+    // being checked with the suite still reporting green.
+    let demo = { value: null, why: null };
     const swErrors = [];
     try {
       fixtureOrigin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(fixtures)}`);
 
-      try {
+      demo = await optional('demo server', 10000, async () => {
         const { createServer } = await import('../../companion/src/index.js');
-        demoServer = createServer();
-        demoOrigin = await stage('demo server', 10000, async () => `http://127.0.0.1:${await listen(demoServer)}`);
-      } catch (err) {
-        demoServer = null;
-        demoUnavailable = String((err && err.message) || err).split('\n')[0];
-        broke = null;   // an absent demo site skips two checks; it does not break the fixture
-      }
+        const server = createServer();
+        return { server, origin: `http://127.0.0.1:${await listen(server)}` };
+      });
 
-      ctx = await stage('chromium launch + extension load', 60000, () =>
-        chromium.launchPersistentContext(profile, {
-          channel: 'chromium',
-          args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
-        }));
+      ctx = await stage(
+        'chromium launch + extension load', 60000,
+        () => launchExtension(chromium, profile),
+        // The ONLY stage in this file whose failure is an absent dependency rather than a
+        // defect. A Chromium that never launched means the M1 contract applies — skip,
+        // never fail, so `npm test -ws` stays green on a plain Node machine. Every stage
+        // after it is this product's own, and fails by name.
+        { absent: 'Chromium could not be launched' }
+      );
 
       sw = await stage('service-worker registration', 20000, async () =>
         ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
@@ -226,19 +132,15 @@ if (!chromium) {
         return page;
       });
       t.diagnostic(`fixture ready — ${timeline.join(', ')}`);
-    } catch (err) {
-      // A Chromium that never launched is an ABSENT DEPENDENCY, not a failing product:
-      // the M1 contract is to skip, never fail, so `npm test -ws` stays green on a plain
-      // Node machine — and the skip now carries the stage and the wait, so a launch that
-      // TIMED OUT reads differently from one never installed. Past the launch the fault
-      // is this suite's and `broke` stands. Either way the body below is entered so that
-      // every check reports; teardown is the `finally` at the end of it.
-      if (!ctx) {
-        absent = `Chromium could not be launched — ${broke}`;
-        broke = null;
-        t.skip(absent);
-      }
+    } catch {
+      // Nothing to decide here: the stage that failed already recorded whether this was
+      // an absent browser (skip) or a broken fixture (fail), and named itself either way.
+      // The body below is entered regardless so that every check reports; teardown is the
+      // `finally` at the end of it.
     }
+
+    /** The companion's demo site, or null — with `demo.why` saying why not. */
+    const demoSite = demo.value;
 
     const send = (type, payload) =>
       panel.evaluate(([t2, p]) => chrome.runtime.sendMessage({ type: t2, payload: p }), [type, payload]);
@@ -407,13 +309,13 @@ if (!chromium) {
 
       /* ═══════════════════════════════════════════════ §16 M3 DoD 1 — the demo pill */
       await check('§16 M3 DoD — picking the demo status pill finds `status`', async (tt) => {
-        if (!demoServer) { tt.skip(`the companion demo site is not available: ${demoUnavailable}`); return; }
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
         const page = await ctx.newPage();
         const pageErrors = [];
         page.on('pageerror', (e) => pageErrors.push(String(e)));
         page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()); });
 
-        await page.goto(demoOrigin + '/demo/?case=pill', { waitUntil: 'load' });
+        await page.goto(demoSite.origin + '/demo/?case=pill', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
         const sources = await waitForSources(tabId, 2);
         assert.equal(sources.sources.length, 2, 'both demo sources are captured before the pick');
@@ -477,9 +379,9 @@ if (!chromium) {
 
       /* ═══════════════════════════════════════════════ §16 M3 DoD 2 — the demo price */
       await check('§16 M3 DoD — picking the demo price finds price.total', async (tt) => {
-        if (!demoServer) { tt.skip(`the companion demo site is not available: ${demoUnavailable}`); return; }
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
         const page = await ctx.newPage();
-        await page.goto(demoOrigin + '/demo/?case=price', { waitUntil: 'load' });
+        await page.goto(demoSite.origin + '/demo/?case=price', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
         await waitForSources(tabId, 2);
 
@@ -510,7 +412,7 @@ if (!chromium) {
     } finally {
       if (ctx) await ctx.close().catch(() => {});
       fixtures.close();
-      if (demoServer) demoServer.close();
+      if (demoSite) demoSite.server.close();
       fs.rmSync(profile, { recursive: true, force: true });
     }
   });

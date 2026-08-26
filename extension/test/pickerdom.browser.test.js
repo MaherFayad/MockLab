@@ -14,61 +14,24 @@
  * uniqueness, §7.3's computed colours. A fake DOM would answer whatever it was written
  * to answer.
  *
- * Skips (never fails) when Playwright or a Chromium build is unavailable.
+ * What a browser suite SHARES — the Chromium lookup and the stage/check machinery —
+ * lives in `../testlib/browserFixture.js`; `node --test` runs every .js under `test/`,
+ * so a helper module in THIS directory would be executed as a suite containing no tests.
+ *
+ * Skips (never fails) when Playwright or a Chromium build is unavailable — and skips as
+ * REPORTED checks, which this file could not afford while it carried its own copy of the
+ * machinery (README Deviation 45 records the eight lines §17.10's cap left it).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ELEMENT_JS = path.resolve(HERE, '..', 'src', 'content', 'element.js');
-const PICKER_JS = path.resolve(HERE, '..', 'src', 'content', 'picker.js');
+import { EXTENSION_DIR, loadChromium, createFixture } from '../testlib/browserFixture.js';
 
-/** Same derivation as the other browser suites: a global install is off this path. */
-function globalPackageRoots() {
-  const roots = [];
-  try {
-    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
-  } catch {
-    /* npm is not on PATH */
-  }
-  roots.push(path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules'));
-  for (const entry of String(process.env.NODE_PATH || '').split(path.delimiter)) {
-    if (entry) roots.push(entry);
-  }
-  return [...new Set(roots.filter(Boolean))];
-}
-
-async function loadChromium() {
-  for (const name of ['playwright', 'playwright-core']) {
-    try {
-      const mod = await import(name);
-      if (mod && mod.chromium) return mod.chromium;
-    } catch {
-      /* not installed locally */
-    }
-  }
-  for (const root of globalPackageRoots()) {
-    for (const name of ['playwright', 'playwright-core']) {
-      for (const entry of ['index.mjs', 'index.js']) {
-        const file = path.join(root, name, entry);
-        if (!fs.existsSync(file)) continue;
-        try {
-          const mod = await import(pathToFileURL(file).href);
-          const chromium = (mod && mod.chromium) || (mod && mod.default && mod.default.chromium);
-          if (chromium) return chromium;
-        } catch {
-          /* try the next candidate */
-        }
-      }
-    }
-  }
-  return null;
-}
+const ELEMENT_JS = path.join(EXTENSION_DIR, 'src', 'content', 'element.js');
+const PICKER_JS = path.join(EXTENSION_DIR, 'src', 'content', 'picker.js');
 
 /**
  * The demo's status pill, READ from the demo rather than copied into this file. A copy
@@ -76,7 +39,7 @@ async function loadChromium() {
  * demo says `padding: 0.3125rem 0.875rem` (5px 14px), so its label ("the demo's own
  * pill CSS") was false and its ratio (2.57x) was a number about nothing.
  */
-const DEMO_INDEX = path.resolve(HERE, '..', '..', 'companion', 'src', 'demo', 'index.html');
+const DEMO_INDEX = path.resolve(EXTENSION_DIR, '..', 'companion', 'src', 'demo', 'index.html');
 
 function demoPillGeometry() {
   const css = fs.readFileSync(DEMO_INDEX, 'utf8');
@@ -138,31 +101,31 @@ if (!chromium) {
   test('picker DOM-logic browser suite', { skip: 'Playwright is not installed — `npm i -D playwright && npx playwright install chromium` enables it.' }, () => {});
 } else {
   test('picker.js against real Chromium layout', async (t) => {
+    const { stage, check, timeline } = createFixture(t);
     const server = http.createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       res.end(LOGIC);
     });
-    const origin = `http://127.0.0.1:${await listen(server)}`;
 
-    // NAMED stages: a dead fixture deletes every check under it from the run, so it must
-    // say which stage and how long it waited. `picker.browser.test.js` has the fuller
-    // form (checks reported, not deleted); it does not fit here under §17.10's budget.
+    let origin = null;
     let browser = null;
     let ctx = null;
-    const startedAt = Date.now();
     try {
-      browser = await chromium.launch();
-      ctx = await browser.newContext();
-    } catch (err) {
-      server.close();
-      if (browser) await browser.close().catch(() => {});
-      t.skip(`the fixture stopped at "${browser ? 'browser context' : 'chromium launch'}" after ` +
-        `${Date.now() - startedAt} ms — ${String((err && err.message) || err).split('\n')[0]}. No check ran.`);
-      return;
+      origin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(server)}`);
+      // The one stage whose failure is an absent dependency and not a defect. This suite
+      // needs no extension — it loads `element.js` and `picker.js` into an ordinary page
+      // — so it launches a plain browser rather than a persistent profile.
+      browser = await stage('chromium launch', 60000, () => chromium.launch(),
+        { absent: 'Chromium could not be launched' });
+      ctx = await stage('browser context', 20000, () => browser.newContext());
+      t.diagnostic(`fixture ready — ${timeline.join(', ')}`);
+    } catch {
+      // The stage recorded which it was and how long it waited. Every check below
+      // reports either way, which is what keeps this file's `# tests` a constant.
     }
 
     try {
-    await t.test('§6.2 fingerprints, and §6.2 re-resolution after a reload', async () => {
+    await check('§6.2 fingerprints, and §6.2 re-resolution after a reload', async () => {
       const page = await ctx.newPage();
       await page.goto(origin + '/logic?case=fingerprint', { waitUntil: 'load' });
       await page.addScriptTag({ path: ELEMENT_JS });
@@ -230,7 +193,7 @@ if (!chromium) {
       await page.close();
     });
 
-    await t.test('§6.1 the smart walk stops where the meaning stops', async () => {
+    await check('§6.1 the smart walk stops where the meaning stops', async () => {
       const page = await ctx.newPage();
       await page.goto(origin + '/logic?case=walk', { waitUntil: 'load' });
       await page.addScriptTag({ path: ELEMENT_JS });
@@ -367,7 +330,7 @@ if (!chromium) {
       await page.close();
     });
 
-    await t.test('§6.1 the walk is capped at 4 levels', async () => {
+    await check('§6.1 the walk is capped at 4 levels', async () => {
       const page = await ctx.newPage();
       await page.goto(origin + '/logic?case=cap', { waitUntil: 'load' });
       await page.addScriptTag({ path: ELEMENT_JS });
@@ -396,7 +359,7 @@ if (!chromium) {
      * is audited directly: every add is recorded, every remove is matched against it,
      * and anything left over is a leak.
      */
-    await t.test('§6.1 every listener is capture-phase, and every one comes off', async () => {
+    await check('§6.1 every listener is capture-phase, and every one comes off', async () => {
       const page = await ctx.newPage();
       await page.addInitScript(() => {
         window.__ml = { adds: [], removes: [] };
@@ -441,7 +404,7 @@ if (!chromium) {
       await page.close();
     });
 
-    await t.test('§7.3 the snapshot records what a rendered element looks like', async () => {
+    await check('§7.3 the snapshot records what a rendered element looks like', async () => {
       const page = await ctx.newPage();
       await page.goto(origin + '/logic?case=snapshot', { waitUntil: 'load' });
       await page.addScriptTag({ path: ELEMENT_JS });
@@ -512,7 +475,7 @@ if (!chromium) {
       await page.close();
     });
     } finally {
-      await browser.close().catch(() => {});
+      if (browser) await browser.close().catch(() => {});
       server.close();
     }
   });

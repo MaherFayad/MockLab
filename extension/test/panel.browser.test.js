@@ -22,23 +22,27 @@
  * Every expected string is imported from `../src/panel/strings.js`, so §17.6 holds here
  * too: this file cannot drift from §11's copy, because it has no copy of its own.
  *
- * All fixtures live in this one file on purpose — `node --test` executes EVERY .js file
- * under `test/`, so a shared helper module would be run as a test file.
+ * What a browser suite SHARES — the Chromium lookup, the extension launch line and the
+ * stage/check machinery — lives in `../testlib/browserFixture.js`. `node --test`
+ * executes EVERY .js file under `test/`, so a helper module in this directory would be
+ * run as a test file; `testlib` is outside that glob. The fixtures below are the ones
+ * only this suite has any use for.
+ *
+ * Every check REPORTS, whatever happens to the fixture (README Deviation 45). This
+ * file's contribution to `# tests` is therefore a constant — which matters most here,
+ * because the subtest that keeps "Verified ✓" off an unproven Link is one of these, and
+ * a fixture that quietly deleted it would leave §1.1 unguarded and CI green.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { S } from '../src/panel/strings.js';
 import { MSG } from '../src/background/messages.js';
 import { createServer } from '../../companion/src/index.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_DIR = path.resolve(HERE, '..');
+import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
 
 /** The value the demo maps to a red pill and a banner (§14). */
 const CANCELLED = 'CANCELLED';
@@ -64,54 +68,6 @@ const SENTINEL = '⟪sentinel⟫';
  */
 const REACHED_EVERYTHING = { sources: 2, bounded: 0, complete: true };
 const STOPPED_SHORT = { sources: 40, bounded: 3, complete: false };
-
-/* ------------------------------------------------------- portable Playwright */
-
-/**
- * Directories where a GLOBALLY installed package lives. A global install is not on this
- * workspace's resolution path, so a bare `import('playwright')` misses it. Every root
- * here is derived from the running Node — none is a path from one machine.
- */
-function globalPackageRoots() {
-  const roots = [];
-  try {
-    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
-  } catch {
-    /* npm is not on PATH — the other guesses still stand */
-  }
-  roots.push(path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules'));
-  for (const entry of String(process.env.NODE_PATH || '').split(path.delimiter)) {
-    if (entry) roots.push(entry);
-  }
-  return [...new Set(roots.filter(Boolean))];
-}
-
-async function loadChromium() {
-  for (const name of ['playwright', 'playwright-core']) {
-    try {
-      const mod = await import(name);
-      if (mod && mod.chromium) return mod.chromium;
-    } catch {
-      /* not installed locally */
-    }
-  }
-  for (const root of globalPackageRoots()) {
-    for (const name of ['playwright', 'playwright-core']) {
-      for (const entry of ['index.mjs', 'index.js']) {
-        const file = path.join(root, name, entry);
-        if (!fs.existsSync(file)) continue;
-        try {
-          const mod = await import(pathToFileURL(file).href);
-          const chromium = (mod && mod.chromium) || (mod && mod.default && mod.default.chromium);
-          if (chromium) return chromium;
-        } catch {
-          /* try the next candidate */
-        }
-      }
-    }
-  }
-  return null;
-}
 
 /* --------------------------------------------------------------- page helpers */
 
@@ -312,58 +268,102 @@ if (!chromium) {
   test('panel browser suite', { skip: 'Playwright is not installed — `npm i -D playwright && npx playwright install chromium` enables it.' }, () => {});
 } else {
   test('side panel — PLAN.md §10 and the §16 M2 and M3 definitions of done', async (t) => {
+    const { stage, check, timeline } = createFixture(t);
+
     let server = null;
-    let ctx = null;
     let profile = null;
-
-    try {
-      server = createServer();
-      // Port 0: never collide with a companion the developer already has running.
-      await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', resolve);
-      });
-      profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-panel-'));
-      ctx = await chromium.launchPersistentContext(profile, {
-        channel: 'chromium',
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
-      });
-    } catch (err) {
-      // No Chromium build (or no sandbox to launch it in) is an ABSENT DEPENDENCY, not
-      // a failing product. Same contract as the M1 suite: skip loudly, never fail.
-      if (ctx) await ctx.close().catch(() => {});
-      if (server) server.close();
-      if (profile) fs.rmSync(profile, { recursive: true, force: true });
-      t.skip(`Chromium could not be launched (${err && err.message}) — install it with \`npx playwright install chromium\`.`);
-      return;
-    }
-
-    const demoUrl = `http://127.0.0.1:${server.address().port}/demo/`;
+    let ctx = null;
+    let worker = null;
+    let demo = null;
+    let panel = null;
+    let demoUrl = null;
     const panelErrors = [];
 
     try {
-      let [worker] = ctx.serviceWorkers();
-      if (!worker) worker = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
-      const extensionId = new URL(worker.url()).host;
+      server = createServer();
+      demoUrl = await stage('demo server', 10000, async () => {
+        // Port 0: never collide with a companion the developer already has running.
+        await new Promise((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(0, '127.0.0.1', resolve);
+        });
+        return `http://127.0.0.1:${server.address().port}/demo/`;
+      });
 
-      const demo = await ctx.newPage();
-      await demo.goto(demoUrl, { waitUntil: 'networkidle' });
+      profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-panel-'));
+      // No Chromium build (or no sandbox to launch it in) is an ABSENT DEPENDENCY, not a
+      // failing product, and this is the only stage that may say so. Every stage after it
+      // fails by name — a service worker that never registers is not a missing browser.
+      ctx = await stage(
+        'chromium launch + extension load', 60000,
+        () => launchExtension(chromium, profile),
+        { absent: 'Chromium could not be launched' }
+      );
 
-      const panel = await ctx.newPage();
-      panel.on('pageerror', (err) => panelErrors.push(`pageerror: ${err.message}`));
-      panel.on('console', (msg) => msg.type() === 'error' && panelErrors.push(msg.text()));
-      await panel.setViewportSize({ width: 400, height: 900 });
-      await panel.goto(`chrome-extension://${extensionId}/src/panel/panel.html`);
+      worker = await stage('service-worker registration', 20000, async () =>
+        ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
 
-      // The panel reads the ACTIVE tab, exactly as it does when Chrome hosts it in the
-      // side panel next to the page. Here it is an ordinary tab, so the demo has to be
-      // brought forward or the panel would describe itself.
-      await demo.bringToFront();
-      await panel.waitForTimeout(800);
-      await panel.click('label[for="tab-sources"]');
-      await panel.waitForTimeout(600);
+      demo = await stage('demo page renders both of its sources', 30000, async () => {
+        const page = await ctx.newPage();
+        await page.goto(demoUrl, { waitUntil: 'load' });
+        /**
+         * `networkidle` stood here, and it is the reason this stage exists.
+         *
+         * It waits for a quiet NETWORK — a proxy for the thing this suite actually needs,
+         * which is that the demo has RENDERED from both of its sources (§14: trip.json
+         * over fetch, user.json over XHR). The proxy can be satisfied while the page is
+         * still blank, and it can also never be satisfied at all, on Playwright's default
+         * 30 s timeout, inside a fixture that used to take every subtest down with it and
+         * say nothing. The condition below is the real one: both placeholders replaced by
+         * the site's own rendering code.
+         */
+        await page.waitForFunction(() => {
+          const rendered = (id) => {
+            const node = document.getElementById(id);
+            const text = node ? node.textContent.trim() : '';
+            return text !== '' && text !== '…';
+          };
+          return rendered('status-pill') && rendered('passenger-chip');
+        }, null, { timeout: 20000 });
+        return page;
+      });
 
-      await t.test('the typography is bundled, not fetched from a third party (§1.4)', async () => {
+      panel = await stage('panel page', 30000, async () => {
+        const page = await ctx.newPage();
+        page.on('pageerror', (err) => panelErrors.push(`pageerror: ${err.message}`));
+        page.on('console', (msg) => msg.type() === 'error' && panelErrors.push(msg.text()));
+        await page.setViewportSize({ width: 400, height: 900 });
+        await page.goto(`chrome-extension://${new URL(worker.url()).host}/src/panel/panel.html`);
+        return page;
+      });
+
+      await stage('the panel describes the demo tab', 20000, async () => {
+        // The panel reads the ACTIVE tab, exactly as it does when Chrome hosts it in the
+        // side panel next to the page. Here it is an ordinary tab, so the demo has to be
+        // brought forward or the panel would describe itself.
+        //
+        // Two fixed sleeps stood here, 800 ms then 600 ms, for two events that are both
+        // observable: the site bar naming the demo's host, and the source list drawing a
+        // card per captured source. A sleep asserts nothing — it is only ever too short
+        // (flake) or too long (slow), and it cannot tell the two apart.
+        await demo.bringToFront();
+        await panel.click('label[for="tab-sources"]');
+        await panel.waitForFunction((host) => {
+          const named = document.querySelector('#sitebar .sitebar__host');
+          return Boolean(named && named.textContent.includes(host)) &&
+            document.querySelectorAll('#source-list .card').length >= 2;
+        }, '127.0.0.1', { timeout: 15000 });
+      });
+      t.diagnostic(`fixture ready — ${timeline.join(', ')}`);
+    } catch {
+      // Whichever stage failed has already recorded whether the browser was absent (every
+      // check skips) or the fixture broke (every check fails, naming the stage and the
+      // wait). Nothing is decided here — the body below runs either way so that every
+      // check reports, and teardown is the `finally` at the end of it.
+    }
+
+    try {
+      await check('the typography is bundled, not fetched from a third party (§1.4)', async () => {
         const fonts = await panel.evaluate(async () => {
           await document.fonts.ready;
           return {
@@ -378,14 +378,14 @@ if (!chromium) {
         assert.equal(/^\s*@import/m.test(css), false, 'panel.css must not @import a remote stylesheet');
       });
 
-      await t.test('the Sources tab lists both demo sources with friendly names (§10.2)', async () => {
+      await check('the Sources tab lists both demo sources with friendly names (§10.2)', async () => {
         const names = await panel.$$eval('#source-list .card__title .truncate', (nodes) => nodes.map((n) => n.textContent));
         assert.deepEqual([...names].sort(), ['Trip', 'User']);
         const meta = await cardFor(panel, 'Trip').locator('.card__meta').innerText();
         assert.ok(meta.includes(S.sources.fields(18)), `expected "${S.sources.fields(18)}" in "${meta}"`);
       });
 
-      await t.test('a card opens the response tree, scalar rows offer both §10.2 actions', async () => {
+      await check('a card opens the response tree, scalar rows offer both §10.2 actions', async () => {
         await cardFor(panel, 'Trip').locator('.card__head').click();
         await panel.waitForTimeout(700);
         const rows = await panel.locator('#source-list .tree__row').count();
@@ -396,7 +396,7 @@ if (!chromium) {
         assert.ok(labels.includes(S.sources.showOnPage), 'the ◎ action must be present');
       });
 
-      await t.test('the editor says Possible, never Verified (§1.1, §10.6, §17.4)', async () => {
+      await check('the editor says Possible, never Verified (§1.1, §10.6, §17.4)', async () => {
         await rootRow(panel, 'ON_TIME').locator(`button[aria-label="${S.sources.changeValue}"]`).click();
         await panel.waitForTimeout(500);
 
@@ -417,7 +417,7 @@ if (!chromium) {
         );
       });
 
-      await t.test('apply & refresh: the SITE renders the new state, with no probe (§16 M2)', async () => {
+      await check('apply & refresh: the SITE renders the new state, with no probe (§16 M2)', async () => {
         await panel.fill('#ml-value', CANCELLED);
         await panel.click('.editor__actions .btn--primary');
         await panel.waitForTimeout(2500);
@@ -450,7 +450,7 @@ if (!chromium) {
         assert.equal(link.lastVerifiedAt, 0);
       });
 
-      await t.test('the changed row shows real → new, and the site bar counts it (§10.2, §1.5)', async () => {
+      await check('the changed row shows real → new, and the site bar counts it (§10.2, §1.5)', async () => {
         await panel.waitForTimeout(600);
         const changed = await panel.locator('#source-list .tree__row--changed').first().innerText();
         assert.ok(changed.includes('ON_TIME'), 'the real value stays visible');
@@ -467,7 +467,7 @@ if (!chromium) {
         assert.equal(badge, '1', 'the toolbar badge mirrors the active-change count');
       });
 
-      await t.test('no tab tooltip covers the Reset site control (§10 site bar)', async () => {
+      await check('no tab tooltip covers the Reset site control (§10 site bar)', async () => {
         // A tooltip that hides the way to undo every change is worse than no tooltip.
         // The tab strip opens its bubbles downward into the site bar's margin, and that
         // margin is sized for them — a geometry relationship no other kind of test sees.
@@ -540,7 +540,7 @@ if (!chromium) {
         }
       });
 
-      await t.test('the change survives 10 refreshes (§16 M2)', async () => {
+      await check('the change survives 10 refreshes (§16 M2)', async () => {
         let survived = 0;
         for (let i = 0; i < 10; i += 1) {
           await demo.reload({ waitUntil: 'networkidle' });
@@ -550,7 +550,7 @@ if (!chromium) {
         assert.equal(survived, 10);
       });
 
-      await t.test('Reset site restores the real page (§1.5, §10)', async () => {
+      await check('Reset site restores the real page (§1.5, §10)', async () => {
         await panel.click('#sitebar .btn--danger'); // asks first
         await panel.waitForTimeout(300);
         const confirming = await panel.locator('#sitebar').innerText();
@@ -570,7 +570,7 @@ if (!chromium) {
 
       /* ───────────────────────────────── the Pick tab — PLAN.md §10.1 states A, B, C */
 
-      await t.test('State A is calm, and promises nothing it has not proved (§10.1A, §17.12)', async () => {
+      await check('State A is calm, and promises nothing it has not proved (§10.1A, §17.12)', async () => {
         await panel.click('label[for="tab-pick"]');
         await panel.waitForTimeout(400);
 
@@ -594,7 +594,7 @@ if (!chromium) {
         assert.equal(everything.includes(S.chips.verified), false, `"${S.chips.verified}" must not appear anywhere before a probe has run`);
       });
 
-      await t.test('§16 M3 — the button picks the demo pill, and the tab follows the page (§10.1B, §10.1C)', async () => {
+      await check('§16 M3 — the button picks the demo pill, and the tab follows the page (§10.1B, §10.1C)', async () => {
         // The one subtest here that uses no fixture at all: the real button, the real
         // service worker, the real page agent, the real demo. Everything below this
         // point simulates a state; this asserts that the state can actually be reached.
@@ -679,7 +679,7 @@ if (!chromium) {
         await panel.waitForTimeout(400);
       });
 
-      await t.test('the picker button is enabled exactly when it can actually pick (§1.1, §17.8)', async () => {
+      await check('the picker button is enabled exactly when it can actually pick (§1.1, §17.8)', async () => {
         // pick.js names the message types it sends and refuses to send one that is not
         // there. The invariant holds in both directions: a button that cannot do its job
         // must say so, and a button that can must not be dimmed for no reason. It is not
@@ -697,7 +697,7 @@ if (!chromium) {
         }
       });
 
-      await t.test('State B dims the panel to 60% and keeps the live instruction readable (§10.1B)', async () => {
+      await check('State B dims the panel to 60% and keeps the live instruction readable (§10.1B)', async () => {
         const seen = await renderPick(panel, { pick: { picking: true, element: null, candidates: [] } });
 
         assert.equal(seen.primary.disabled, true, '§10.1B: the button becomes disabled while picking');
@@ -723,7 +723,7 @@ if (!chromium) {
         assert.notEqual(idle.primary.paint.shadow, 'none', 'a button you CAN press keeps its §9.2 glow');
       });
 
-      await t.test('State C lists possible sources honestly (§10.1C, §10.6)', async () => {
+      await check('State C lists possible sources honestly (§10.1C, §10.6)', async () => {
         // Shaped like the demo's own result, collision included: "ON_TIME" sits at both
         // `$.status` and `$.booking.status`, so two rows share a source AND a value.
         const candidates = [
@@ -773,7 +773,7 @@ if (!chromium) {
         assert.equal(seen.rootText.includes(S.probe.intro), false, 'do not describe a run that cannot start');
       });
 
-      await t.test('State C shows at most 12 possibilities (§10.1C)', async () => {
+      await check('State C shows at most 12 possibilities (§10.1C)', async () => {
         const many = Array.from({ length: 25 }, (_, i) => ({ sigId: 'sig-trip', path: `$.f${i}`, value: i, score: i / 100 }));
         const seen = await renderPick(panel, {
           sources: [{ sigId: 'sig-trip', name: 'Trip' }],
@@ -783,7 +783,7 @@ if (!chromium) {
         assert.deepEqual(seen.rows.map((row) => row.value), ['24', '23', '22', '21', '20', '19', '18', '17', '16', '15', '14', '13']);
       });
 
-      await t.test('State C with nothing found says so, and offers §6.3’s way out', async () => {
+      await check('State C with nothing found says so, and offers §6.3’s way out', async () => {
         const seen = await renderPick(panel, {
           pick: { picking: false, element: { text: 'On time' }, candidates: [], searched: REACHED_EVERYTHING }
         });
@@ -813,7 +813,7 @@ if (!chromium) {
        *   3. the wording being hardcoded in pick.js rather than taken from strings.js —
        *      caught by rendering with the key sentinelled (§17.6).
        */
-      await t.test('State C after a search that stopped short never claims the data is empty (§1.1, §17.12)', async () => {
+      await check('State C after a search that stopped short never claims the data is empty (§1.1, §17.12)', async () => {
         const element = { text: 'On time' };
         const bounded = await renderPick(panel, {
           pick: { picking: false, element, candidates: [], searched: STOPPED_SHORT }
@@ -874,7 +874,7 @@ if (!chromium) {
         assert.deepEqual(swapped.empties, [SENTINEL], '§17.6: this sentence must come from strings.js');
       });
 
-      await t.test('a list built from a search that stopped short says it may not be all of it (§1.1)', async () => {
+      await check('a list built from a search that stopped short says it may not be all of it (§1.1)', async () => {
         const candidates = [
           { sigId: 'sig-trip', path: '$.status', value: 'ON_TIME', score: 0.45 },
           { sigId: 'sig-user', path: '$.label', value: 'On time', score: 1 }
@@ -926,7 +926,7 @@ if (!chromium) {
         assert.deepEqual(swapped.notes, [SENTINEL], '§17.6: this sentence must come from strings.js');
       });
 
-      await t.test('an element with no text of its own says so instead of drawing an empty card', async () => {
+      await check('an element with no text of its own says so instead of drawing an empty card', async () => {
         const seen = await renderPick(panel, {
           // No text of its own means no needles, so §6.3 searches nothing and reports
           // the search complete — the honest answer here really is `noCandidates`.
@@ -935,7 +935,7 @@ if (!chromium) {
         assert.equal(seen.picked, S.pick.noText);
       });
 
-      await t.test('§10.1A’s Recent links list shows verified Links and ONLY verified Links (§17.12)', async () => {
+      await check('§10.1A’s Recent links list shows verified Links and ONLY verified Links (§17.12)', async () => {
         const proved = verifiedLink('$.status', 'On time', 'ON_TIME', 300);
         const links = [
           { ...proved, id: 'a', path: '$.a', lastVerifiedAt: 100 },
@@ -978,7 +978,7 @@ if (!chromium) {
         assert.equal(after.bodyText.includes(S.chips.verified), false);
       });
 
-      await t.test('all four status chips meet WCAG 2.2 AA in both themes (§16 M7)', async () => {
+      await check('all four status chips meet WCAG 2.2 AA in both themes (§16 M7)', async () => {
         for (const scheme of ['light', 'dark']) {
           await panel.emulateMedia({ colorScheme: scheme });
           await panel.waitForTimeout(150);
@@ -1021,7 +1021,7 @@ if (!chromium) {
         await panel.emulateMedia({ colorScheme: 'light' });
       });
 
-      await t.test('the panel logged nothing to the console the whole way through', () => {
+      await check('the panel logged nothing to the console the whole way through', () => {
         assert.deepEqual(panelErrors, []);
       });
     } finally {

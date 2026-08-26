@@ -8,11 +8,16 @@
  * released. Each of those is asserted here against the genuine service worker and the
  * genuine MAIN-world patch, so they cannot come back quietly.
  *
- * Every fixture lives in this file on purpose: `node --test` treats EVERY .js file
- * under `test/` as a test file, so a separate fixture module would be executed as one.
+ * What a browser suite SHARES — the Chromium lookup, the extension launch line and the
+ * stage/check machinery — lives in `../testlib/browserFixture.js`. `node --test` treats
+ * EVERY .js file under `test/` as a test file, so a helper module in this directory
+ * would be executed as one; `testlib` is outside that glob. The fixtures below are this
+ * suite's own: the hostile little server, and the bodies it serves.
  *
  * Skips (never fails) when Playwright or a Chromium build is unavailable, so
- * `npm test -ws` stays green on a machine that only has Node.
+ * `npm test -ws` stays green on a machine that only has Node — and skips as REPORTED
+ * checks, so this suite's contribution to `# tests` is the same number whether it
+ * passes, skips or breaks (README Deviation 45).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,17 +25,13 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // This file runs in Node, which HAS a module graph — unlike the two content scripts,
 // whose mirrored constants are a genuine necessity (§17.2). Nothing here needs to
 // duplicate the contract, so nothing here does: these are the real constants the
 // service worker answers to, and a rename in messages.js breaks this suite loudly.
 import { MSG } from '../src/background/messages.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_DIR = path.resolve(HERE, '..');
+import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
 
 /**
  * In-page read deadlines for a capture-only body, mirrored from interceptor.js. The
@@ -51,55 +52,6 @@ const SHAPES = [
   'path=%2Fa%2Fb%2Fc',                // encoded slashes
   'hotelId=44212114&cb=RANDOM'        // starred value + a dropped cache-buster
 ];
-
-/**
- * Directories where a GLOBALLY installed package lives. A global install is not on this
- * workspace's resolution path, so `import('playwright')` misses it — which is why an
- * earlier version of this file carried an absolute path from one machine. That path
- * would have shipped and resolved nowhere for anyone else; these are all derived at run
- * time from the running Node.
- */
-function globalPackageRoots() {
-  const roots = [];
-  try {
-    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
-  } catch {
-    /* npm is not on PATH — the other two guesses still stand */
-  }
-  // node lives at <prefix>/bin/node; global packages at <prefix>/lib/node_modules.
-  roots.push(path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules'));
-  for (const entry of String(process.env.NODE_PATH || '').split(path.delimiter)) {
-    if (entry) roots.push(entry);
-  }
-  return [...new Set(roots.filter(Boolean))];
-}
-
-async function loadChromium() {
-  for (const name of ['playwright', 'playwright-core']) {
-    try {
-      const mod = await import(name);
-      if (mod && mod.chromium) return mod.chromium;
-    } catch {
-      /* not installed locally */
-    }
-  }
-  for (const root of globalPackageRoots()) {
-    for (const name of ['playwright', 'playwright-core']) {
-      for (const entry of ['index.mjs', 'index.js']) {
-        const file = path.join(root, name, entry);
-        if (!fs.existsSync(file)) continue;
-        try {
-          const mod = await import(pathToFileURL(file).href);
-          const chromium = (mod && mod.chromium) || (mod && mod.default && mod.default.chromium);
-          if (chromium) return chromium;
-        } catch {
-          /* try the next candidate */
-        }
-      }
-    }
-  }
-  return null;
-}
 
 /* ------------------------------------------------------------------ fixtures */
 
@@ -292,45 +244,61 @@ if (!chromium) {
   test('browser end-to-end suite', { skip: 'Playwright is not installed — `npm i -D playwright && npx playwright install chromium` enables it.' }, () => {});
 } else {
   test('MockLab in real Chromium', async (t) => {
+    const { stage, optional, check, timeline } = createFixture(t);
+
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-e2e-'));
     const fixtures = http.createServer(fixtureHandler);
-    const fixturePort = await listen(fixtures);
-    const fixtureOrigin = `http://127.0.0.1:${fixturePort}`;
 
-    let demoServer = null;
-    let demoOrigin = null;
-    try {
-      const { createServer } = await import('../../companion/src/index.js');
-      demoServer = createServer();
-      demoOrigin = `http://127.0.0.1:${await listen(demoServer)}`;
-    } catch {
-      demoServer = null; // the demo site is optional; its subtest skips without it
-    }
-
+    let fixtureOrigin = null;
     let ctx = null;
+    let sw = null;
+    let panel = null;
+    // The demo site is optional here — five checks below need it and the rest do not —
+    // so its failure skips those checks WITH THE REASON, and breaks nothing.
+    let demo = { value: null, why: null };
+    const swErrors = [];
+
     try {
-      ctx = await chromium.launchPersistentContext(profile, {
-        channel: 'chromium',
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
+      fixtureOrigin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(fixtures)}`);
+
+      demo = await optional('demo server', 10000, async () => {
+        const { createServer } = await import('../../companion/src/index.js');
+        const server = createServer();
+        return { server, origin: `http://127.0.0.1:${await listen(server)}` };
       });
-    } catch (err) {
-      fixtures.close();
-      if (demoServer) demoServer.close();
-      fs.rmSync(profile, { recursive: true, force: true });
-      t.skip(`Chromium could not be launched (${err.message.split('\n')[0]})`);
-      return;
+
+      // The ONE stage whose failure means an absent dependency rather than a defect.
+      // Everything after it — a service worker that never registers, a panel page that
+      // never opens — is this product failing, and says so by name instead of sending
+      // whoever reads CI to check whether Chromium is installed.
+      ctx = await stage(
+        'chromium launch + extension load', 60000,
+        () => launchExtension(chromium, profile),
+        { absent: 'Chromium could not be launched' }
+      );
+
+      sw = await stage('service-worker registration', 20000, async () =>
+        ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
+      sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+
+      // The panel talks to the worker with chrome.runtime.sendMessage, and a message the
+      // worker sends is never delivered back to itself — so drive it from a real
+      // extension page, exactly as the Sources tab will.
+      panel = await stage('panel page', 30000, async () => {
+        const page = await ctx.newPage();
+        await page.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
+        return page;
+      });
+      t.diagnostic(`fixture ready — ${timeline.join(', ')}`);
+    } catch {
+      // The stage that failed already recorded whether this was an absent browser (every
+      // check skips) or a broken fixture (every check fails, naming the stage). Nothing
+      // is decided here; the body below is entered either way so that every check
+      // reports, and teardown is the `finally` at the end of it.
     }
 
-    let sw = ctx.serviceWorkers()[0];
-    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
-    const swErrors = [];
-    sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
-
-    // The panel talks to the worker with chrome.runtime.sendMessage, and a message the
-    // worker sends is never delivered back to itself — so drive it from a real
-    // extension page, exactly as the Sources tab will.
-    const panel = await ctx.newPage();
-    await panel.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
+    /** The companion's demo site, or null — with `demo.why` saying why not. */
+    const demoSite = demo.value;
 
     const listSources = (tabId) =>
       panel.evaluate(([type, payload]) => chrome.runtime.sendMessage({ type, payload }), [MSG.LIST_SOURCES, { tabId }]);
@@ -420,15 +388,15 @@ if (!chromium) {
 
     try {
       /* ------------------------------------------------- §16 M1 DoD, on the demo */
-      await t.test('the demo yields exactly two named sources, and SPA navigation adds none', async (tt) => {
-        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+      await check('the demo yields exactly two named sources, and SPA navigation adds none', async (tt) => {
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
         const page = await ctx.newPage();
         const pageErrors = [];
         page.on('pageerror', (e) => pageErrors.push(String(e)));
         page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()); });
 
         const startedAt = Date.now();
-        await page.goto(demoOrigin + '/demo/', { waitUntil: 'load' });
+        await page.goto(demoSite.origin + '/demo/', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
         const res = await waitForSources(tabId, 2);
         const elapsed = Date.now() - startedAt;
@@ -461,7 +429,7 @@ if (!chromium) {
       });
 
       /* ---------- the §10.2 meta row and §12.4 #2 must count the WHOLE body ---------- */
-      await t.test('"{n} fields" is the whole body, not the part an old bounded walk reached', async () => {
+      await check('"{n} fields" is the whole body, not the part an old bounded walk reached', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/deep?case=fields', { waitUntil: 'load' });
         await page.waitForFunction(() => window.__deepDone === 6000, null, { timeout: 10000 });
@@ -489,7 +457,7 @@ if (!chromium) {
       });
 
       /* ------------------------------------- D1: streaming must never block a page */
-      await t.test('streamed responses resolve at their headers and keep flowing', async () => {
+      await check('streamed responses resolve at their headers and keep flowing', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/streams', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
@@ -508,7 +476,7 @@ if (!chromium) {
       });
 
       /* ------------------------------- D14: no added latency when nothing matches */
-      await t.test('a fetch with no matching Change resolves at its headers, not its body', async () => {
+      await check('a fetch with no matching Change resolves at its headers, not its body', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/streams', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
@@ -531,7 +499,7 @@ if (!chromium) {
       });
 
       /* -------------------- D8: an endless body is released, and nothing leaks out */
-      await t.test('an endless response is released and no rejection reaches the page', async () => {
+      await check('an endless response is released and no rejection reaches the page', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/streams', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
@@ -552,7 +520,7 @@ if (!chromium) {
       });
 
       /* ---- D11: the round-trip invariant, against the REAL in-page matcher ---- */
-      await t.test('every compiled entry matches the URL its signature came from', async () => {
+      await check('every compiled entry matches the URL its signature came from', async () => {
         const page = await ctx.newPage();
         const pageErrors = [];
         page.on('pageerror', (e) => pageErrors.push(String(e)));
@@ -588,7 +556,7 @@ if (!chromium) {
       });
 
       /* ------------------ a literal "*" must not degrade into a wildcard in-page */
-      await t.test('a param whose value is literally * does not match other values', async () => {
+      await check('a param whose value is literally * does not match other values', async () => {
         const page = await ctx.newPage();
         // A document load is not a fetch, so the URL has to be requested from a page.
         await page.goto(fixtureOrigin + '/blank?case=literal-star', { waitUntil: 'load' });
@@ -614,18 +582,18 @@ if (!chromium) {
       });
 
       /* --------------------------- the engine: the site renders the mocked state */
-      await t.test('the site itself re-renders from mocked data, over fetch and XHR', async (tt) => {
-        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+      await check('the site itself re-renders from mocked data, over fetch and XHR', async (tt) => {
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
         const page = await ctx.newPage();
-        await page.goto(demoOrigin + '/demo/', { waitUntil: 'load' });
+        await page.goto(demoSite.origin + '/demo/', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
         const res = await waitForSources(tabId, 2);
         const tripSig = res.sources.find((s) => s.via === 'fetch').sigId;
         const userSig = res.sources.find((s) => s.via === 'xhr').sigId;
 
-        await plantChanges(demoOrigin, [
-          { id: 'a', origin: demoOrigin, sigId: tripSig, path: '$.status', value: 'CANCELLED', enabled: true, createdAt: Date.now() },
-          { id: 'b', origin: demoOrigin, sigId: userSig, path: '$.user.displayName', value: 'Test Passenger', enabled: true, createdAt: Date.now() }
+        await plantChanges(demoSite.origin, [
+          { id: 'a', origin: demoSite.origin, sigId: tripSig, path: '$.status', value: 'CANCELLED', enabled: true, createdAt: Date.now() },
+          { id: 'b', origin: demoSite.origin, sigId: userSig, path: '$.user.displayName', value: 'Test Passenger', enabled: true, createdAt: Date.now() }
         ]);
         await sleep(300);
         await page.reload({ waitUntil: 'load' });
@@ -647,7 +615,7 @@ if (!chromium) {
         const after = await listSources(tabId);
         assert.ok(after.sources.every((s) => s.mocked), 'both sources are flagged mocked');
 
-        await plantChanges(demoOrigin, []);
+        await plantChanges(demoSite.origin, []);
         await sleep(300);
         await page.reload({ waitUntil: 'load' });
         await sleep(500);
@@ -666,14 +634,14 @@ if (!chromium) {
        * storage directly, and no probe exists yet: probe.js is still a stub at M2, so
        * the pill turning red is the value edit alone.
        * ══════════════════════════════════════════════════════════════════════════ */
-      await t.test('M2 DoD: a value edit turns the pill red, survives 10 refreshes, and Reset site restores', async (tt) => {
-        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+      await check('M2 DoD: a value edit turns the pill red, survives 10 refreshes, and Reset site restores', async (tt) => {
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
         const page = await ctx.newPage();
         const pageErrors = [];
         page.on('pageerror', (e) => pageErrors.push(String(e)));
         page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()); });
 
-        await page.goto(demoOrigin + '/demo/', { waitUntil: 'load' });
+        await page.goto(demoSite.origin + '/demo/', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
         const tabId = await tabIdOf(page);
         const sources = await waitForSources(tabId, 2);
@@ -711,7 +679,7 @@ if (!chromium) {
         assert.equal(await waitForBadge(tabId, '1'), '1', 'the badge says one Change is on');
 
         const second = await ctx.newPage();
-        await second.goto(demoOrigin + '/demo/?tab=2', { waitUntil: 'load' });
+        await second.goto(demoSite.origin + '/demo/?tab=2', { waitUntil: 'load' });
         assert.equal(await waitForBadge(await tabIdOf(second), '1'), '1', 'a second tab on the same site shows it too');
         // A THIRD origin, with no Changes of its own. Same server, but `localhost` and
         // `127.0.0.1` are different origins — and the fixture origin cannot be used
@@ -764,11 +732,11 @@ if (!chromium) {
       });
 
       /* ---- §10.5 danger zone: "Reset everything", across two sites at once ---- */
-      await t.test('Reset everything clears every site and the pages go back to real', async (tt) => {
-        if (!demoServer) { tt.skip('the companion demo site is not available'); return; }
+      await check('Reset everything clears every site and the pages go back to real', async (tt) => {
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
 
         const demoPage = await ctx.newPage();
-        await demoPage.goto(demoOrigin + '/demo/?run=reset-all', { waitUntil: 'load' });
+        await demoPage.goto(demoSite.origin + '/demo/?run=reset-all', { waitUntil: 'load' });
         const demoTab = await tabIdOf(demoPage);
         const demoSources = await waitForSources(demoTab, 2);
         await sendMessage(MSG.SET_VALUE, {
@@ -799,7 +767,7 @@ if (!chromium) {
         const reset = await sendMessage(MSG.RESET_ALL, { tabId: demoTab });
         assert.equal(reset.ok, true);
         assert.ok(reset.cleared.changes >= 2, `at least both sites' Changes went (${reset.cleared.changes})`);
-        assert.ok(reset.cleared.origins.includes(demoOrigin), 'the demo origin is reported');
+        assert.ok(reset.cleared.origins.includes(demoSite.origin), 'the demo origin is reported');
         assert.ok(reset.cleared.origins.includes(fixtureOrigin), 'the fixture origin is reported');
 
         // The real point of running this in a browser: Changes are REMOVED, not written
@@ -813,16 +781,16 @@ if (!chromium) {
           'REAL',
           'site two is real again without being reloaded — the match list was re-pushed'
         );
-        assert.deepEqual((await sendMessage(MSG.LIST_CHANGES, { origin: demoOrigin })).changes, []);
+        assert.deepEqual((await sendMessage(MSG.LIST_CHANGES, { origin: demoSite.origin })).changes, []);
         assert.deepEqual((await sendMessage(MSG.LIST_CHANGES, { origin: fixtureOrigin })).changes, []);
-        assert.deepEqual((await sendMessage(MSG.GET_BINDINGS, { origin: demoOrigin })).bindings, []);
+        assert.deepEqual((await sendMessage(MSG.GET_BINDINGS, { origin: demoSite.origin })).bindings, []);
 
         await demoPage.close();
         await otherPage.close();
       });
 
       /* ---- Deviation 16: a Change that could not be applied is never silent ---- */
-      await t.test('a Change on a too-slow response is reported dropped, not applied', async () => {
+      await check('a Change on a too-slow response is reported dropped, not applied', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/blank?case=dropped', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
@@ -859,7 +827,7 @@ if (!chromium) {
       });
 
       /* ---- §4: over 2 MB the body is a 512-character preview, not an empty one ---- */
-      await t.test('a body over the 2 MB cap is stored as a real preview', async () => {
+      await check('a body over the 2 MB cap is stored as a real preview', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/blank?case=huge', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
@@ -894,7 +862,7 @@ if (!chromium) {
       });
 
       /* ------------------------------------------- §17.2: the original Response */
-      await t.test('an unmatched fetch hands back the original, unconsumed Response', async () => {
+      await check('an unmatched fetch hands back the original, unconsumed Response', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/blank?case=identity', { waitUntil: 'load' });
         await assertInterceptorInstalled(page);
@@ -912,9 +880,9 @@ if (!chromium) {
 
       assert.deepEqual(swErrors, [], 'the service worker console stays clean');
     } finally {
-      await ctx.close();
+      if (ctx) await ctx.close().catch(() => {});
       fixtures.close();
-      if (demoServer) demoServer.close();
+      if (demoSite) demoSite.server.close();
       fs.rmSync(profile, { recursive: true, force: true });
     }
   });
@@ -930,49 +898,89 @@ if (!chromium) {
    * origin is byte-identical across the restart.
    */
   test('a Change survives a browser restart and applies on the FIRST load after it', async (t) => {
+    // This test has no subtests: its two launches are one narrative, and every
+    // assertion is a step in it. So the constant-`# tests` half of the fixture contract
+    // holds here for free (one test, always reported) and only the STAGE half is used —
+    // which is the half this test was getting wrong.
+    const fixture = createFixture(t);
+    const { stage, optional } = fixture;
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-restart-'));
-    let demoServer = null;
-    let demoOrigin = null;
-    try {
+
+    const demo = await optional('demo server', 10000, async () => {
       const { createServer } = await import('../../companion/src/index.js');
-      demoServer = createServer();
-      demoOrigin = `http://127.0.0.1:${await listen(demoServer)}`;
-    } catch {
-      demoServer = null;
-    }
-    if (!demoServer) {
+      const server = createServer();
+      return { server, origin: `http://127.0.0.1:${await listen(server)}` };
+    });
+    if (!demo.value) {
       fs.rmSync(profile, { recursive: true, force: true });
-      t.skip('the companion demo site is not available');
+      t.skip(`the companion demo site is not available: ${demo.why}`);
       return;
     }
+    const demoSite = demo.value;
 
-    /** Boot Chromium on the shared profile and hand back everything a subtest needs. */
-    async function boot() {
-      const ctx = await chromium.launchPersistentContext(profile, {
-        channel: 'chromium',
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
+    /**
+     * Boot Chromium on the shared profile and hand back everything a phase needs.
+     *
+     * THREE stages, not one call that hides three waits. This function used to bundle the
+     * launch, the service-worker registration and the panel page together, and its
+     * caller's `catch` turned every one of them into `t.skip("Chromium could not be
+     * launched…")`. A 20 s service-worker timeout reported as an absent browser is a
+     * genuine failure wearing an environment gap's clothes: CI fails any suite that
+     * reports a skip (README Deviation 41), so it WOULD have been caught — with the wrong
+     * diagnosis, sending whoever read it to check whether Chromium was installed.
+     *
+     * Only the launch may claim the dependency is absent, and only on the first boot: by
+     * the second, Chromium has demonstrably launched once on this very machine, so a
+     * failure there is this product's and fails, naming its stage.
+     */
+    /**
+     * Every context a boot has opened, closed by whichever path ends the phase.
+     *
+     * `boot` returns three things and can fail after two of them exist, so the caller
+     * cannot be the only one holding the handle: a launch that succeeded and a
+     * service-worker wait that did not used to leave a whole Chromium running with
+     * nobody's reference on it, and `node --test` then waited on that process FOREVER —
+     * a hang where the intended report was a named failure.
+     */
+    const opened = [];
+    const closeAll = async () => {
+      for (const ctx of opened.splice(0)) await ctx.close().catch(() => {});
+    };
+
+    async function boot(label, { mayBeAbsent = false } = {}) {
+      const ctx = await stage(
+        `${label}: chromium launch + extension load`, 60000,
+        () => launchExtension(chromium, profile),
+        mayBeAbsent ? { absent: 'Chromium could not be launched' } : {}
+      );
+      opened.push(ctx);
+      const sw = await stage(`${label}: service-worker registration`, 20000, async () =>
+        ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
+      const panel = await stage(`${label}: panel page`, 30000, async () => {
+        const page = await ctx.newPage();
+        await page.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
+        return page;
       });
-      let sw = ctx.serviceWorkers()[0];
-      if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
-      const panel = await ctx.newPage();
-      await panel.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
       return { ctx, sw, panel };
     }
 
     let first = null;
     try {
-      first = await boot();
+      first = await boot('launch 1', { mayBeAbsent: true });
     } catch (err) {
-      if (demoServer) demoServer.close();
+      await closeAll();
+      demoSite.server.close();
       fs.rmSync(profile, { recursive: true, force: true });
-      t.skip(`Chromium could not be launched (${err.message.split('\n')[0]})`);
+      // An absent browser has already skipped this test, with the stage and the wait in
+      // the reason. Anything past the launch is a defect and must read as one.
+      if (!fixture.absent) throw err;
       return;
     }
 
     try {
       /* ---------------------------------------------------- launch 1: make the edit */
       const page = await first.ctx.newPage();
-      await page.goto(demoOrigin + '/demo/?run=1', { waitUntil: 'load' });
+      await page.goto(demoSite.origin + '/demo/?run=1', { waitUntil: 'load' });
 
       const tabId = await first.sw.evaluate(async (u) => {
         const tabs = await chrome.tabs.query({});
@@ -998,18 +1006,19 @@ if (!chromium) {
       );
       assert.equal(applied.ok, true, 'the Change was stored before the restart');
     } finally {
-      await first.ctx.close();
+      await closeAll();
     }
 
     /* ------------------------------------ launch 2: a genuinely cold service worker */
-    const second = await boot();
+    let second = null;
     try {
+      second = await boot('launch 2');
       const page = await second.ctx.newPage();
       const pageErrors = [];
       page.on('pageerror', (e) => pageErrors.push(String(e)));
       // ONE load. No reload, no second chance: this is the load that must already be
       // mocked, or the persistence guarantee is not real.
-      await page.goto(demoOrigin + '/demo/?run=2', { waitUntil: 'load' });
+      await page.goto(demoSite.origin + '/demo/?run=2', { waitUntil: 'load' });
 
       const deadline = Date.now() + 6000;
       let shown = null;
@@ -1039,8 +1048,11 @@ if (!chromium) {
       assert.equal(badge, '1', 'the badge was repainted from storage on the cold start');
       assert.deepEqual(pageErrors, [], 'the demo console stays clean across the restart');
     } finally {
-      await second.ctx.close();
-      demoServer.close();
+      // Reached however launch 2 ends. The second boot used to sit outside this block,
+      // so a failure there leaked the demo server and the profile directory as well as
+      // reporting itself wrongly.
+      await closeAll();
+      demoSite.server.close();
       fs.rmSync(profile, { recursive: true, force: true });
     }
   });
