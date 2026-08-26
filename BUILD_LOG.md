@@ -714,7 +714,18 @@ carry-forwards that only exist in later commits — the section described two di
 trees.** That is the failure the M2 entry's "Stale evidence" note was written about,
 recurring one milestone later in the paragraph reporting the evidence.
 
-**QA verdict:** _pending qa-verifier_
+**QA verdict:** PASS on the code, across five passes. The §16 M3 DoD was re-run by QA on
+its own Playwright harness — not ours — at four separate commits and passed every time,
+as did all twelve §17 rules. Four FAIL verdicts were returned, and **every one of them was
+a defect in this record or in README, never in shipped code**: a false justification, a
+figure attributed to the wrong pill, stale carry-forwards, and counts sitting where no
+guard reads.
+
+**Process change, from here to M7.** A defect in code or in a guard gates a milestone and
+is re-verified. A defect in prose is fixed and the build moves on. Four rounds spent
+re-verifying corrections to sentences bought accuracy in the record at a cost the record
+was not worth, and the milestone that most needs verification attention — M4, where
+`state: "verified"` becomes real — was waiting behind it.
 
 **Three carry-forwards, all closed before M4 — recorded here because the first version of
 this paragraph listed them as open and was never updated:**
