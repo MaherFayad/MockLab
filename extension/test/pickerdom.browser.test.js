@@ -1,5 +1,5 @@
 /**
- * `picker.js`'s DOM logic, measured by real Chromium (PLAN.md §6.1, §6.2, §7.3).
+ * The DOM logic of `element.js` and `picker.js`, measured by real Chromium (§6.1, §6.2, §7.3).
  *
  * OWNER: probe-engineer. Split from `picker.browser.test.js` under §17.10.
  *
@@ -144,15 +144,22 @@ if (!chromium) {
     });
     const origin = `http://127.0.0.1:${await listen(server)}`;
 
+    // NAMED stages: a dead fixture deletes every check under it from the run, so it must
+    // say which stage and how long it waited. `picker.browser.test.js` has the fuller
+    // form (checks reported, not deleted); it does not fit here under §17.10's budget.
     let browser = null;
+    let ctx = null;
+    const startedAt = Date.now();
     try {
       browser = await chromium.launch();
+      ctx = await browser.newContext();
     } catch (err) {
       server.close();
-      t.skip(`Chromium could not be launched (${err.message.split('\n')[0]})`);
+      if (browser) await browser.close().catch(() => {});
+      t.skip(`the fixture stopped at "${browser ? 'browser context' : 'chromium launch'}" after ` +
+        `${Date.now() - startedAt} ms — ${String((err && err.message) || err).split('\n')[0]}. No check ran.`);
       return;
     }
-    const ctx = await browser.newContext();
 
     try {
     await t.test('§6.2 fingerprints, and §6.2 re-resolution after a reload', async () => {

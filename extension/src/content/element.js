@@ -4,11 +4,11 @@
  *
  * OWNER: probe-engineer.
  *
- * A third ISOLATED-world content script, listed beside `agent.js` and `picker.js` in the
- * manifest. The split is §17.10 and it follows a real seam: `picker.js` is an INTERACTION
- * (an overlay, a cursor, capture-phase listeners), while everything here is a pure
- * QUESTION about an element that the M4 probe asks on every reload with no picker in
- * sight. The two browser suites already split along the same line.
+ * The third ISOLATED-world content script: the manifest's one ISOLATED entry lists
+ * `agent.js`, this file, then `picker.js`. §17.10 is why, and the seam is real —
+ * `picker.js` is the INTERACTION (overlay, cursor, listeners), this is the pure QUESTION
+ * about an element that the M4 probe asks with no picker running. No test holds that
+ * line: the two browser suites split on whether an extension is loaded, not on this.
  *
  * ISOLATED-world scripts of one extension share a global the page cannot reach, so the
  * contract is `globalThis.__mocklabElement`:

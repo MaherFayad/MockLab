@@ -4,10 +4,23 @@
  * OWNER: probe-engineer (pick mode, snapshots, settle detection — M3/M4).
  * The MAIN <-> service-worker relay below is interceptor-engineer's, delivered at M1.
  *
- * The picker itself lives in `picker.js`, a SECOND ISOLATED-world content script listed
- * beside this one in the manifest (§17.10: the two together are 650 lines). They share
- * this extension's isolated global — never the page's — and the whole contract between
- * them is `globalThis.__mocklabPicker`. This file owns the Port; that one owns the DOM.
+ * The picker itself lives in `picker.js`, and everything asked ABOUT an element in
+ * `element.js` (§6.2's fingerprint, §7.3's snapshot, §6.1's smart target). Both are
+ * ISOLATED-world content scripts listed beside this one, in the manifest's single
+ * ISOLATED entry — three files, not two. §17.10 is why there are three rather than one:
+ * each file stays inside its ~500-line cap, which `guards.lines.test.js` enforces from
+ * the files themselves (a file past the cap must be recorded in README with its real
+ * count). No line count is written here, deliberately: the one that used to be,
+ * "the two together are 650 lines", was already false in the commit that wrote it
+ * (`0ff2bd1` — which also added `element.js` and listed all three scripts in the
+ * manifest, while the same sentence called `picker.js` the SECOND of them). Both halves
+ * survived every pass since, because no guard reads a figure in a source header.
+ *
+ * All three share this extension's isolated global — never the page's. The whole
+ * contract between THIS file and the picker is `globalThis.__mocklabPicker`; the global
+ * `element.js` publishes is named in its own header and never read from here, which is
+ * why this file is not on the list `guards.contract.test.js` keeps for it.
+ * This file owns the Port; those two own the DOM.
  *
  * The page is a hostile environment: every inbound postMessage must carry the exact
  * per-page-load token or be ignored outright (PLAN.md §2).
@@ -149,8 +162,8 @@
   /* ── pick mode relay (§6.1) ────────────────────────────────────────────────── */
 
   /**
-   * `picker.js` is a second ISOLATED-world content script, so it shares this
-   * extension's isolated global — and only this extension's. It is looked up at call
+   * `picker.js` is another ISOLATED-world content script of this extension, so it
+   * shares this extension's isolated global — and only this. It is looked up at call
    * time rather than captured at load: if it ever fails to inject, the panel is told
    * so instead of being left on "Click something on the page…" for ever (§1.1).
    */

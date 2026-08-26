@@ -13,14 +13,17 @@
  *
  * This half drives the GENUINE extension end to end — panel -> service worker ->
  * content script -> service worker — so a break anywhere in that chain fails here.
- * `pickerdom.browser.test.js` is the other half: `picker.js`'s DOM logic, called
- * directly in a page, which is the only way to reach code that otherwise lives in an
- * extension's isolated world.
+ * `pickerdom.browser.test.js` is the other half: the DOM logic of `element.js` AND
+ * `picker.js`, called directly in a page, which is the only way to reach code that
+ * otherwise lives in an extension's isolated world.
  *
  * Every fixture is in this file: `node --test` runs every .js under `test/`, so a
  * separate fixture module would be executed as a test (README Deviations 15).
  *
- * Skips (never fails) when Playwright or a Chromium build is unavailable.
+ * Skips (never fails) when Playwright or a Chromium build is unavailable — and skips as
+ * REPORTED checks: `stage()` and `check()` below keep this suite's contribution to
+ * `# tests` the same number whether it passes, skips or breaks, so a dead fixture cannot
+ * delete its checks and leave the shortfall to be found by arithmetic.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -130,9 +133,57 @@ if (!chromium) {
   test('picker browser suite', { skip: 'Playwright is not installed — `npm i -D playwright && npx playwright install chromium` enables it.' }, () => {});
 } else {
   test('the MockLab picker in real Chromium', async (t) => {
+    const timeline = [];
+    let broke = null;
+    let absent = null;
+
+    /**
+     * One setup stage: named, timed, capped by a budget of its own.
+     *
+     * A failure anywhere in a browser fixture used to fail ONE outer test and drop every
+     * check under it out of the totals without a word — which is how the M3 flake was
+     * found, by noticing `# tests` was 22 short of a remembered number. So a stage says
+     * which it was, how long it waited, and what the stages before it cost: a timeout is
+     * worth raising only when a measurement says the budget was the fault. The budget is
+     * enforced here, not left to Playwright's defaults, so a stage with no timeout of
+     * its own (opening a page) cannot hang the run.
+     */
+    async function stage(name, budgetMs, run) {
+      const started = Date.now();
+      let timer = null;
+      const work = Promise.resolve().then(run);
+      work.catch(() => {});   // whichever side of the race loses must not go unhandled
+      try {
+        const value = await Promise.race([work, new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`no answer inside this stage's own ${budgetMs} ms budget`)),
+            budgetMs
+          );
+        })]);
+        timeline.push(`${name} ${Date.now() - started}ms`);
+        return value;
+      } catch (err) {
+        broke =
+          `fixture stage "${name}" gave up after ${Date.now() - started} ms of a ${budgetMs} ms ` +
+          `budget: ${String((err && err.message) || err).split('\n')[0]}. Stages that finished ` +
+          `first: ${timeline.join(', ') || 'none'}.`;
+        throw new Error(broke);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    /**
+     * One check. However the fixture ends, every check below REPORTS — skipped when the
+     * browser was absent, failed (naming the stage that died) when it was not.
+     */
+    const check = (name, fn) =>
+      absent ? t.test(name, { skip: absent }, () => {})
+        : t.test(name, broke ? () => assert.fail(`did not run — ${broke}`) : fn);
+
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mocklab-pick-'));
     const fixtures = http.createServer(fixtureHandler);
-    const fixtureOrigin = `http://127.0.0.1:${await listen(fixtures)}`;
+    let fixtureOrigin = null;
 
     let demoServer = null;
     let demoOrigin = null;
@@ -141,36 +192,53 @@ if (!chromium) {
     // server into a silently absent one, and the DoD would stop being checked with the
     // suite still reporting green.
     let demoUnavailable = null;
-    try {
-      const { createServer } = await import('../../companion/src/index.js');
-      demoServer = createServer();
-      demoOrigin = `http://127.0.0.1:${await listen(demoServer)}`;
-    } catch (err) {
-      demoServer = null;
-      demoUnavailable = String((err && err.message) || err).split('\n')[0];
-    }
 
     let ctx = null;
-    try {
-      ctx = await chromium.launchPersistentContext(profile, {
-        channel: 'chromium',
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
-      });
-    } catch (err) {
-      fixtures.close();
-      if (demoServer) demoServer.close();
-      fs.rmSync(profile, { recursive: true, force: true });
-      t.skip(`Chromium could not be launched (${err.message.split('\n')[0]})`);
-      return;
-    }
-
-    let sw = ctx.serviceWorkers()[0];
-    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
+    let sw = null;
+    let panel = null;
     const swErrors = [];
-    sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+    try {
+      fixtureOrigin = await stage('fixture server', 10000, async () => `http://127.0.0.1:${await listen(fixtures)}`);
 
-    const panel = await ctx.newPage();
-    await panel.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
+      try {
+        const { createServer } = await import('../../companion/src/index.js');
+        demoServer = createServer();
+        demoOrigin = await stage('demo server', 10000, async () => `http://127.0.0.1:${await listen(demoServer)}`);
+      } catch (err) {
+        demoServer = null;
+        demoUnavailable = String((err && err.message) || err).split('\n')[0];
+        broke = null;   // an absent demo site skips two checks; it does not break the fixture
+      }
+
+      ctx = await stage('chromium launch + extension load', 60000, () =>
+        chromium.launchPersistentContext(profile, {
+          channel: 'chromium',
+          args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`]
+        }));
+
+      sw = await stage('service-worker registration', 20000, async () =>
+        ctx.serviceWorkers()[0] || ctx.waitForEvent('serviceworker', { timeout: 20000 }));
+      sw.on('console', (m) => { if (m.type() === 'error') swErrors.push(m.text()); });
+
+      panel = await stage('panel page', 30000, async () => {
+        const page = await ctx.newPage();
+        await page.goto(sw.url().split('/src/')[0] + '/src/panel/panel.html');
+        return page;
+      });
+      t.diagnostic(`fixture ready — ${timeline.join(', ')}`);
+    } catch (err) {
+      // A Chromium that never launched is an ABSENT DEPENDENCY, not a failing product:
+      // the M1 contract is to skip, never fail, so `npm test -ws` stays green on a plain
+      // Node machine — and the skip now carries the stage and the wait, so a launch that
+      // TIMED OUT reads differently from one never installed. Past the launch the fault
+      // is this suite's and `broke` stands. Either way the body below is entered so that
+      // every check reports; teardown is the `finally` at the end of it.
+      if (!ctx) {
+        absent = `Chromium could not be launched — ${broke}`;
+        broke = null;
+        t.skip(absent);
+      }
+    }
 
     const send = (type, payload) =>
       panel.evaluate(([t2, p]) => chrome.runtime.sendMessage({ type: t2, payload: p }), [type, payload]);
@@ -248,7 +316,7 @@ if (!chromium) {
 
     try {
       /* ═══════════════════════════════════ §6.1 — the overlay contract, on a hostile page */
-      await t.test('§6.1 the hover overlay survives a page that resets everything', async () => {
+      await check('§6.1 the hover overlay survives a page that resets everything', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/hostile?case=overlay', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
@@ -280,7 +348,7 @@ if (!chromium) {
         await page.close();
       });
 
-      await t.test('§6.1 the accent follows prefers-color-scheme', async () => {
+      await check('§6.1 the accent follows prefers-color-scheme', async () => {
         const page = await ctx.newPage();
         await page.emulateMedia({ colorScheme: 'dark' });
         await page.goto(fixtureOrigin + '/hostile?case=dark', { waitUntil: 'load' });
@@ -295,7 +363,7 @@ if (!chromium) {
       });
 
       /* ══════════════════════════════════ §6.1 — the page must not feel the picker */
-      await t.test('§6.1 pick mode swallows the press, and Escape gives the page back', async () => {
+      await check('§6.1 pick mode swallows the press, and Escape gives the page back', async () => {
         const page = await ctx.newPage();
         await page.goto(fixtureOrigin + '/hostile?case=escape', { waitUntil: 'load' });
         const tabId = await tabIdOf(page);
@@ -338,7 +406,7 @@ if (!chromium) {
       });
 
       /* ═══════════════════════════════════════════════ §16 M3 DoD 1 — the demo pill */
-      await t.test('§16 M3 DoD — picking the demo status pill finds `status`', async (tt) => {
+      await check('§16 M3 DoD — picking the demo status pill finds `status`', async (tt) => {
         if (!demoServer) { tt.skip(`the companion demo site is not available: ${demoUnavailable}`); return; }
         const page = await ctx.newPage();
         const pageErrors = [];
@@ -408,7 +476,7 @@ if (!chromium) {
       });
 
       /* ═══════════════════════════════════════════════ §16 M3 DoD 2 — the demo price */
-      await t.test('§16 M3 DoD — picking the demo price finds price.total', async (tt) => {
+      await check('§16 M3 DoD — picking the demo price finds price.total', async (tt) => {
         if (!demoServer) { tt.skip(`the companion demo site is not available: ${demoUnavailable}`); return; }
         const page = await ctx.newPage();
         await page.goto(demoOrigin + '/demo/?case=price', { waitUntil: 'load' });
@@ -431,14 +499,16 @@ if (!chromium) {
       });
 
       /* ══════════════════════════════════════════════════ honest failure, no fantasy */
-      await t.test('§1.1 a tab with no page agent is told so, not left waiting', async () => {
+      await check('§1.1 a tab with no page agent is told so, not left waiting', async () => {
         const answer = await send(MSG.START_PICK, { tabId: 987654321 });
         assert.deepEqual(answer, { ok: false, reason: 'no-content-script' });
       });
 
-      assert.deepEqual(swErrors, [], 'the service worker logged no errors during any of this');
+      await check('the service worker logged no errors during any of this', () => {
+        assert.deepEqual(swErrors, []);
+      });
     } finally {
-      await ctx.close().catch(() => {});
+      if (ctx) await ctx.close().catch(() => {});
       fixtures.close();
       if (demoServer) demoServer.close();
       fs.rmSync(profile, { recursive: true, force: true });

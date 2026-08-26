@@ -54,7 +54,7 @@ export const MAX_PATHS = 20000;
  *
  * Raising the per-response cap raises the worst case with it: 200 captured sources each
  * at the 20 000-leaf ceiling is 4 million leaves and measured 3.2 s of blocked service
- * worker — for one click. This budget bounds that at roughly a tenth of it. Sources are
+ * worker — for one click. This budget bounds that at a thirtieth of it. Sources are
  * searched newest-first (`pickApi.capturedSources`), so what is dropped is the oldest.
  *
  * It is only tolerable BECAUSE the result says so: anything past the budget counts in
