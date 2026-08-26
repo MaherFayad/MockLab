@@ -314,3 +314,43 @@ test('21 a cancel one step EARLIER still stops the run and proves nothing', asyn
   assert.equal(view.failure, PROBE_FAIL.CANCELLED);
   assert.deepEqual(await getBindings(ORIGIN), [], 'and no Link appears in Sources');
 });
+
+/* ══════════════ the false Verified §7.1's own paranoid cycle exists for ═══════════ */
+
+test('22 a rhythm two control runs cannot see is confirmed — and the third cycle refuses it', async () => {
+  // Recorded rather than fixed, because the fix is already in §7.1 and is opt-in.
+  //
+  // An element driven by nothing but the load counter, whose period happens to line up
+  // with the probe's own schedule: X X Y Y Y X. CONTROL_A and CONTROL_B both see X, so
+  // §7.2's mask — which is two samples wide — cannot know it moves at all. Every later
+  // step then reads exactly as proof: the batch changes it, the single field changes it,
+  // VERIFY_ON changes it, VERIFY_OFF puts it back. Nothing in §7 is skipped and the
+  // answer is still wrong. Two samples cannot detect a period of three; only more
+  // samples can, and §7.1's "[optional 3rd cycle if settings.paranoid]" is the spec's
+  // own answer. This asserts BOTH halves, so neither can rot: the default run really is
+  // fooled, and the paranoid run really does refuse.
+  const RHYTHM = ['X', 'X', 'Y', 'Y', 'Y', 'X'];
+  const rhythm = (_bodies, load) => [{ key: KEY.pill, snapshot: node(RHYTHM[(load - 1) % RHYTHM.length]) }];
+
+  const fooled = makeWorld({ render: rhythm });
+  await fooled.start();
+  const view = await finish(fooled);
+  assert.equal(view.phase, PROBE_PHASE.DONE, `got ${view.failure} ${view.detail || ''}`);
+  assert.equal(view.binding.state, 'verified', 'spec-conformant, and wrong — this is the known hole');
+  assert.equal(view.reload.index, 6, 'X X Y Y Y X, one value per reload');
+  assert.deepEqual(await probeChanges(), []);
+
+  // The same page, the same rhythm, with §10.5's "Extra-careful checking" on. The second
+  // VERIFY_ON lands on load 7, which is X again — equal to the control, so the element
+  // did NOT change, and a run that cannot repeat its own result proves nothing.
+  const { updateSettings } = await import('../src/background/ruleStore.js');
+  const careful = makeWorld({ render: rhythm });
+  await updateSettings({ paranoid: true });
+  await careful.start();
+  const refused = await finish(careful);
+  await updateSettings({ paranoid: false });
+  assert.equal(refused.phase, PROBE_PHASE.FAILED);
+  assert.equal(refused.failure, PROBE_FAIL.NONE_CONFIRMED);
+  assert.deepEqual(await getBindings(ORIGIN), [], '§17.12: nothing was proved, so nothing is stored');
+  assert.deepEqual(await probeChanges(), []);
+});
