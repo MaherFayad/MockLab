@@ -260,7 +260,7 @@ const PREFIXES = ['msg:', 'page:', 'port:'];
  */
 const DERIVATION_EXEMPT = ['port:probeFingerprints', 'port:probeResult', 'port:probeSnapshot'];
 
-test('§17.8 every message type\'s wire value is derivable from the name it is exported under', async () => {
+test('§17.8 every wire value is derivable from its name, unique, and on one transport', async () => {
   const messages = await import('../src/background/messages.js');
   const entries = wireEntries(messages);
 
@@ -387,6 +387,169 @@ test('§17.8 the value pin can tell a conforming table from a mutated one', asyn
     wireLiterals(`const A = 'page:hello'; const B = "port:picked"; const C = \`msg:highlight\`; const D = 'idle';`),
     ['page:hello', 'port:picked', 'msg:highlight']
   );
+});
+
+/* ═════════ the third way a message type goes wrong: reading it off the wrong table ══
+ *
+ * The two audits above pin a value to its name and a hand-written literal to a value.
+ * Neither can see the commonest way §17.8 is broken by someone who obeyed it: writing
+ * `MSG.PROBE_CHANGED` when `PROBE_CHANGED` lives in `PROBE_MSG`. That is not a magic
+ * string — it is a constant, from this module, spelled correctly — and it evaluates to
+ * `undefined`.
+ *
+ * It fails the way everything in this file fails: silently. `panel.js` compares the
+ * incoming type against it, `undefined` never equals a string, and the panel simply
+ * stops reacting to that broadcast; the tab keeps rendering, no error is thrown, and the
+ * feature is just quieter than it should be. This is the same shape as the content-script
+ * method audit further down — `api.smartTraget(raw)` returns `undefined` inside a
+ * try/catch — and it is checked the same way: ask the module what it actually exports.
+ *
+ * Scope is the whole extension workspace including tests, because a suite asserting
+ * against `PROBE_MSG.SOMETHING_ELSE` is asserting against `undefined` and will pass no
+ * matter what the code does. The tables are read from the module rather than listed, so
+ * one added later is covered without anyone extending a line here.
+ *
+ * KNOWN BOUNDARY, stated rather than pretended away — and it was stated wrong first, so
+ * it is stated from a measurement now. This resolves only reads that NAME the key. A
+ * computed one, `MSG[name]`, is not checked and is not forbidden either: `panel/pick.js`
+ * and `panel/probe.js` both walk a declared list of contract names that way ON PURPOSE,
+ * to render §10.1's honest not-ready screen when this module does not define a type yet.
+ * Forbidding it would delete the mechanism that makes a missing constant visible to the
+ * user instead of invisible. Those lists are audited from the panel's side, by its own
+ * suites; what is added here is the half nothing was looking at — a key named literally,
+ * on the wrong table, in a file that will never mention it again.
+ *
+ * The first version of this note claimed there were no computed reads in the workspace.
+ * There are two. It was written without looking, which is the exact defect this file
+ * exists to catch, committed inside the guard that catches it.
+ * ══════════════════════════════════════════════════════════════════════════════════ */
+
+test('§17.8 every constant read off a message table is one that table defines', async () => {
+  const messages = await import('../src/background/messages.js');
+  const tables = Object.entries(messages).filter(([, value]) => value && typeof value === 'object');
+  assert.ok(tables.length >= 11, `only ${tables.length} tables found — the collector has stopped seeing exports`);
+
+  // `TABLE.KEY`, not preceded by a word character or a dot — so `M5_MSG.X` is not read
+  // as `MSG.X`. The `(?!\$\{)` skips `` `TABLE.${key}` ``, which is how three assertion
+  // MESSAGES in this repo name a key in prose; `$` is a legal identifier start, so
+  // without it the audit reports its own error strings as broken reads.
+  const access = new RegExp(
+    `(?<![\\w$.])(${tables.map(([name]) => name).join('|')})\\s*\\.\\s*(?!\\$\\{)([A-Za-z_$][\\w$]*)`,
+    'g'
+  );
+
+  const undefinedReads = [];
+  let checked = 0;
+  for (const file of CONTENT_SCOPE) {
+    const code = stripComments(read(file));
+    const lineAt = (index) => code.slice(0, index).split('\n').length;
+    for (const match of code.matchAll(access)) {
+      checked += 1;
+      if (!Object.prototype.hasOwnProperty.call(messages[match[1]], match[2])) {
+        undefinedReads.push(`${rel(file)}:${lineAt(match.index)} ${match[1]}.${match[2]}`);
+      }
+    }
+  }
+
+  // A floor, so this cannot pass by reading nothing — the failure mode every audit in
+  // this file exists to prevent.
+  assert.ok(checked >= 300, `only ${checked} reads of a message table found — the scan stopped seeing files`);
+  assert.deepEqual(
+    undefinedReads,
+    [],
+    'this constant is `undefined`: it is read off a table that does not define it. ' +
+      'Nothing throws — a comparison against `undefined` is simply never true — so the ' +
+      'feature stops and the page keeps working. Read it off the table that has it.'
+  );
+});
+
+/* ═════════ the OTHER unpinned values: payload vocabulary that is not a wire type ═══
+ *
+ * `PROBE_STEP.CLEANUP` is `cleanup` and `PROBE_FAIL.TIMEOUT` is `timeout`. Neither
+ * carries a transport prefix, so neither is a wire type and the three properties above
+ * say nothing about them — and they were the values that started this: retyping
+ * `PROBE_FAIL.TIMEOUT` was measured, on this tree, to pass every non-browser suite.
+ *
+ * Most of that is genuinely not pinnable, and saying so is the honest answer rather than
+ * inventing a rule. Both ends import this module and `panel/probe.js` keys its
+ * translation table BY THE CONSTANT (`{[F.TIMEOUT]: 'timeout'}`), so retyping the value
+ * moves the sender, the receiver and the table together and NOTHING observable changes.
+ * A mutation that changes no behaviour is not a defect, and a guard that failed on it
+ * would be pinning a spelling for its own sake.
+ *
+ * What IS pinnable is the part `messages.js` states as FACT. Its `PROBE_FAIL` comment
+ * says "the FIRST FIVE are keys of `S.probe` in strings.js", and `PROBE_STEP`'s says the
+ * four "are keys of `S.probe.step` … the panel renders `S.probe.step[step]`". Those are
+ * claims, and on this build a claim that nothing checks is the recurring defect, not a
+ * hypothetical one. Where a value is documented to BE a copy key, the value is pinned by
+ * that document — so the document is made to fail when it stops being true.
+ *
+ * KNOWN BOUNDARY, stated rather than pretended away, three parts:
+ *   • `PHASE`, `PROBE_PHASE` and `PROBE_STATE` are pinned by nothing here and cannot be.
+ *     They name screens and states, no copy key corresponds to them, and no file spells
+ *     them by hand. Retyping one is invisible because it IS invisible.
+ *   • The last six `PROBE_FAIL` values have no `S.probe` sentence on purpose (§11 wrote
+ *     copy for a probe that ran and found nothing, not for one that never started), so
+ *     they are asserted to stay OUT — otherwise this test would quietly start demanding
+ *     copy for a defect of MockLab's own, which §17.12 says must never read as a finding
+ *     about the site.
+ *   • Renaming a value AND its copy key together still passes. That is a real edit with
+ *     a real reason, not a slip; what is caught is the half-edit.
+ * ══════════════════════════════════════════════════════════════════════════════════ */
+
+test('§17.6 vs §17.8 every vocabulary value documented as a copy key is one', async () => {
+  const { PROBE_STEP, PROBE_FAIL } = await import('../src/background/messages.js');
+  const { S } = await import('../src/panel/strings.js');
+  const has = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+
+  // §11 gives the progress card four lines and the panel renders `S.probe.step[step]`,
+  // so a step whose value is not a key there renders NOTHING — on the screen whose whole
+  // promise (§10.1C) is that the user never thinks it is stuck.
+  const steps = Object.entries(PROBE_STEP);
+  assert.ok(steps.length >= 4, `only ${steps.length} probe steps — the collector has stopped seeing the table`);
+  assert.deepEqual(
+    steps.filter(([, value]) => !has(S.probe.step, value)).map(([key]) => key),
+    [],
+    'PROBE_STEP values are documented as keys of S.probe.step; the panel indexes that ' +
+      'table with them, so one that is not a key prints an empty progress line'
+  );
+
+  // The five findings ABOUT THE PAGE, which §11 wrote an honest sentence for each of.
+  const FINDINGS = ['TOO_NOISY', 'NONE_CONFIRMED', 'ELEMENT_LOST', 'NOT_REFETCHED', 'TIMEOUT'];
+  assert.deepEqual(
+    FINDINGS.filter((key) => !has(S.probe, PROBE_FAIL[key])),
+    [],
+    "messages.js documents these five PROBE_FAIL values as keys of S.probe — §11's " +
+      'sentence for each. Retyping one leaves the failure card with no sentence to print.'
+  );
+  // §6.3's own ending, which §11 put in `pick` rather than `probe`.
+  assert.ok(has(S.pick, PROBE_FAIL.NO_CANDIDATES), 'PROBE_FAIL.NO_CANDIDATES is a key of S.pick');
+
+  // And the converse, which is the half that keeps this honest: the REST must have no
+  // sentence. A run nobody started, a tab with no page agent, the user's own Stop, and a
+  // defect of MockLab's own are not findings about the site, and giving one an
+  // `S.probe.*` sentence is how it would start being reported as one (§17.12, §1.1).
+  const named = new Set([...FINDINGS.map((key) => PROBE_FAIL[key]), PROBE_FAIL.NO_CANDIDATES]);
+  assert.deepEqual(
+    Object.entries(PROBE_FAIL)
+      .filter(([, value]) => !named.has(value) && has(S.probe, value))
+      .map(([key]) => key),
+    [],
+    'this ending has acquired an S.probe sentence. It is not a finding about the page — ' +
+      "§11's `errors.pageBroke` is what the card falls back to, on purpose."
+  );
+});
+
+test('§17.6 vs §17.8 the vocabulary pin can tell a documented key from a retyped one', async () => {
+  const { S } = await import('../src/panel/strings.js');
+  const has = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+  // The two mutations that were measured to pass every non-browser suite before this
+  // test existed. Both must be visible to exactly the comparison used above.
+  assert.equal(has(S.probe.step, 'cleaningUp'), false, 'a retyped PROBE_STEP value is not a copy key');
+  assert.equal(has(S.probe, 'timedOut'), false, 'a retyped PROBE_FAIL value is not a copy key');
+  // And the comparison is not vacuous — the real values ARE keys.
+  assert.equal(has(S.probe.step, 'cleanup'), true);
+  assert.equal(has(S.probe, 'timeout'), true);
 });
 
 /**

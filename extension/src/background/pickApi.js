@@ -14,7 +14,7 @@
  * may write that word.
  */
 
-import { MSG, PORT_MSG, PHASE } from './messages.js';
+import { MSG, PORT_MSG, PHASE, PROBE_FAIL } from './messages.js';
 import { findCandidates } from './candidates.js';
 import { overlaysFor } from './effectiveBody.js';
 import { friendlyName } from './signatures.js';
@@ -250,7 +250,7 @@ export function createPickApi(deps) {
         // extension was installed) can never answer. Say so now rather than leaving
         // the panel on "Click something on the page…" for ever (§1.1).
         if (!sendToTab(tabId, PORT_MSG.PICK_START, {})) {
-          return { ok: false, reason: 'no-content-script' };
+          return { ok: false, reason: PROBE_FAIL.NO_CONTENT_SCRIPT };
         }
         record.origin = originOf(tabId) || record.origin;
         record.phase = PHASE.PICKING;
