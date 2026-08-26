@@ -167,6 +167,35 @@ test('§17.10 every line count README states is the file\'s real one', () => {
  * KNOWN BOUNDARY 3: (c) frees the value 500 only AFTER the parser has had its turn, so
  * "`x.js` is 500 lines" is still read and checked like any other count; only unattached
  * restatements of the rule go free.
+ *
+ * ── and (e), the hole every clause above still had ─────────────────────────────────
+ *
+ * (a) through (d) all begin at LINE_FIGURE, which needs the word "line(s)" — so a claim
+ * omitting the word was invisible to the checker for the same reason it is easy to miss
+ * as a reader. Deviation 43 enumerated four files that way, one readable count and then
+ * "`guards.contract.test.js` 329, … `extension/testlib/audit.js` (111)", and QA rewrote
+ * all four figures to 999/888/777/666 with the whole suite green. Nothing here detects a
+ * number being WRONG; only the SHAPE is, and these four had no shape to check. So (e): a
+ * bare number in APPOSITION to a backticked `*.js` path — separated from it by
+ * punctuation and nothing else — is a claim about that file, word or no word.
+ *
+ * KNOWN BOUNDARY 4: apposition is read in ONE direction, path then number. "329 `x.js`"
+ * is NOT flagged, because Deviation 35 writes "Same precedent as Deviation 21
+ * (`badge.js`)" — a cross-reference three characters from a path, in exactly that order,
+ * with nothing in the text separating it from a size. Left uncaught on purpose rather
+ * than flagged and routed around; that row is a fixture below, so whoever wants to close
+ * this side finds the thing blocking it already on screen.
+ *
+ * KNOWN BOUNDARY 5: the number must end on punctuation or the line, never a word, so
+ * "`x.js` 3 times" stays a quantity of something else. Both historical shapes end on ","
+ * or ")". A figure that DOES carry the word is left to (a)–(d): (e) never re-reports a
+ * span LINE_FIGURE matched, so those exemptions are not re-litigated here.
+ *
+ * SPEC_CAP does not extend to (e), deliberately: (c) frees a RESTATEMENT of §17.10's rule,
+ * and a restatement is a sentence ("caps files at ~500 lines"). Apposition has no room for
+ * one, because the gap admits no letters — so "`x.js` (500)" is a claim about x.js and is
+ * read as one. Clause (d) DOES extend to it, and is literally the same code: a row may
+ * quote a bare figure while correcting it, as Deviation 33 quotes "295 lines each".
  * ═══════════════════════════════════════════════════════════════════════════════════ */
 
 /** How far a figure may sit from a backticked path and still be read as a count of it. */
@@ -186,6 +215,22 @@ const LINE_FIGURE =
 /** "is"/"are" and their hedges immediately before a figure: the row is stating a size. */
 const COPULA_BEFORE =
   /\b(?:is|are|was|were)\s+(?:(?:now|itself|already|each|only|about|roughly|around|approximately)\s+)*$/i;
+
+/**
+ * Everything allowed BETWEEN a path and a bare number counting it: whitespace, a bracket,
+ * a dash, a comma, a colon, a bold marker, a tilde. No letter, no `.`, no `§` — those are
+ * what turn "beside" into a sentence, and a sentence is prose.
+ */
+const APPOSITION_GAP = '[ \\t(\\[*,:=~\u2248\u2013\u2014-]{0,6}';
+
+/**
+ * Clause (e): "`guards.contract.test.js` 329", "`extension/testlib/audit.js` (111)" — a
+ * path, punctuation, a number, no word "lines" anywhere. The lookaheads are the
+ * section-number guard (a figure may not run into a decimal or a `§17.10`) and KNOWN
+ * BOUNDARY 5. A factory, like `readableCount()`, because a `g` regex carries state.
+ */
+const pathThenNumber = () =>
+  new RegExp('`([\\w./-]+\\.js)`' + APPOSITION_GAP + '(\\d+)(?!\\.?\\d)(?!\\s*[A-Za-z])', 'g');
 
 /**
  * Every line-count-shaped claim in one line of the table that `recordedLineCounts()`
@@ -221,6 +266,22 @@ function unreadableCounts(line, label) {
           `reads as a count of it, but not as ${READABLE_SHAPE}.`
       );
     }
+  }
+
+  // Clause (e). Everything above needed the word "lines" to start; this needs only a
+  // number sitting where a count of the path beside it would sit.
+  const figures = [...line.matchAll(LINE_FIGURE)].map((m) => [m.index, m.index + m[0].length]);
+  for (const match of line.matchAll(pathThenNumber())) {
+    const end = match.index + match[0].length;
+    const span = [end - match[2].length, end];
+    const covers = ([from, to]) => span[0] >= from && span[1] <= to;
+
+    if (figures.some(covers)) continue; // carries the word: (a)–(d) already had their turn
+    if (quoted.some(covers) && readable.length) continue; // clause (d), unchanged
+    found.push(
+      `${label}: "${match[2]}" sits directly beside \`${match[1]}\` with no word between ` +
+        `them, so it reads as a count of it, but not as ${READABLE_SHAPE}.`
+    );
   }
   return found;
 }
@@ -287,7 +348,8 @@ test('§17.10 the unreadable-count audit catches both phrasings that hid a stale
 test('§17.10 the unreadable-count audit leaves the table\'s honest prose alone', () => {
   // The real rows, not copies of them: (a) would leave the hole open, (b) would make the
   // guard something people route around, and only the live text can prove (b) today.
-  for (const number of [11, 22, 26, 27, 33, 43]) {
+  // 35 joins the list with clause (e): it is the row that decides KNOWN BOUNDARY 4.
+  for (const number of [11, 22, 26, 27, 33, 35]) {
     assert.deepEqual(
       unreadableCounts(tableRow(number), `Deviation ${number}`),
       [],
@@ -295,11 +357,112 @@ test('§17.10 the unreadable-count audit leaves the table\'s honest prose alone'
         'around this audit, which is worse than not having it'
     );
   }
-  // Named individually, because each is a different way to mention lines innocently.
+  // Named individually, because each is a different way to mention lines innocently, and
+  // a row-level deepEqual would still pass if the row stopped containing the figure.
   assert.match(tableRow(22), /caps files at ~500 lines/, '§17.10\'s cap, quoted as the rule it is');
+  assert.match(tableRow(26), /caps files at ~500 lines/, 'and the second row that restates it');
   assert.match(tableRow(27), /passed 1000 lines/, 'a threshold a file crossed, not its size');
   assert.match(tableRow(27), /~90-line Playwright resolver/, 'the cost of a split that was not made');
   assert.match(tableRow(33), /"295 lines each"/, 'the false figure quoted while correcting it');
+  assert.match(tableRow(35), /Deviation 21 \(`badge\.js`\)/, 'a cross-reference, in clause (e)\'s shape reversed');
+
+  // Deviation 43 is asserted figure by figure rather than row-clean: it is the fixture
+  // clause (e) was written for, so it is RED until rewritten and this has to hold on both
+  // sides of that. What it protects is the prose in the same row — those numbers are
+  // history and cost, not sizes, and (e) must not sweep them up on its way to the four.
+  const prose = ['808 lines', '602-line', '1031', '520', '231 names'];
+  for (const figure of prose) {
+    assert.ok(tableRow(43).includes(figure), `Deviation 43 states "${figure}" as prose`);
+    const swept = unreadableCounts(tableRow(43), 'Deviation 43').filter((claim) =>
+      claim.includes(`"${/\d+/.exec(figure)[0]}"`)
+    );
+    assert.deepEqual(swept, [], `"${figure}" is history or cost, not a file's size — leave it`);
+  }
+});
+
+test('§17.10 a bare number beside a path is a count of it, word or no word', () => {
+  // Verbatim from README at e72bfe9. One readable count, then four files given their
+  // sizes by apposition alone — the shape QA proved invisible to BOTH passes: the parser
+  // could not read them, and the unreadable-shape audit could not see them either.
+  const enumerated =
+    '| 43 | M3 | The guards are split by theme — `extension/test/guards.test.js` is 254 lines, ' +
+    '`guards.contract.test.js` 329, `guards.strings.test.js` 283, `guards.lines.test.js` 354, ' +
+    'with shared helpers in `extension/testlib/audit.js` (111). | why |';
+
+  const claims = unreadableCounts(enumerated, 'Deviation 43');
+  const naming = (figure, file) =>
+    claims.filter((claim) => claim.includes(`"${figure}"`) && claim.includes(file));
+  for (const [figure, file] of [
+    ['329', 'guards.contract.test.js'],
+    ['283', 'guards.strings.test.js'],
+    ['354', 'guards.lines.test.js'],
+    ['111', 'extension/testlib/audit.js']
+  ]) {
+    assert.equal(naming(figure, file).length, 1, `"${figure}" must be read as a count of ${file}`);
+  }
+  assert.equal(claims.length, 4, `exactly the four unreadable ones. Got: ${JSON.stringify(claims)}`);
+  assert.ok(
+    claims.every((claim) => !claim.includes('"254"')),
+    'the readable count in the same row is read by the parser, so it is not re-reported here'
+  );
+
+  // The same row with every figure false — QA's mutation, which the whole suite passed.
+  // It must fail for the SAME reason, message for message once the digits are blanked:
+  // nothing detects a number being WRONG until the shape lets it be read.
+  const falsified = enumerated
+    .replace('` 329', '` 999')
+    .replace('` 283', '` 888')
+    .replace('` 354', '` 777')
+    .replace('(111)', '(666)');
+  const blank = (list) => list.map((claim) => claim.replace(/"\d+"/, '"N"'));
+  assert.deepEqual(
+    blank(unreadableCounts(falsified, 'Deviation 43')),
+    blank(claims),
+    'the false figures fail identically to the true ones — the guard is about shape'
+  );
+  for (const figure of ['999', '888', '777', '666']) {
+    assert.ok(
+      unreadableCounts(falsified, 'Deviation 43').some((claim) => claim.includes(`"${figure}"`)),
+      `and each false figure is named: ${figure}`
+    );
+  }
+});
+
+test('§17.10 clause (e) is a shape, not a number hunt', () => {
+  const cases = [
+    ['bold markers around the path', '| 9 | M3 | **`a.js`** 329, and more. | why |', 1],
+    ['a parenthesised figure', '| 9 | M3 | helpers in `a.js` (111). | why |', 1],
+    ['§17.10\'s own cap has no sentence to hide in here', '| 9 | M3 | `a.js` (500). | why |', 1],
+    ['the readable rewrite of the same claim', '| 9 | M3 | `a.js` is 329 lines. | why |', 0],
+    ['a count of something that is not lines', '| 9 | M3 | `a.js` 3 times faster. | why |', 0],
+    ['a section reference after a path', '| 9 | M3 | `a.js`, §17.10, was split. | why |', 0],
+    ['a cross-reference in the reverse order (KNOWN BOUNDARY 4)', '| 9 | M3 | as Deviation 21 (`a.js`). | why |', 0],
+    ['a sentence between the path and the number', '| 9 | M3 | `a.js` was split at M3. Then 640 arrived. | why |', 0],
+    ['a quoted bare figure beside a checked count', '| 9 | M3 | `a.js` is 12 lines (first "`a.js` 329"). | why |', 0]
+  ];
+  for (const [what, row, expected] of cases) {
+    assert.equal(
+      unreadableCounts(row, 'Deviation 9').length,
+      expected,
+      `${what} — expected ${expected} claim(s) from: ${row}`
+    );
+  }
+});
+
+test('§17.10 the audit\'s own self-check would fire if either pattern stopped matching', () => {
+  // The floor in the live-table test believes a number this function produces. These
+  // prove it is a real count of real matches: a table with nothing to read reports
+  // nothing read, which is below the floor and fails.
+  const nothing = auditTable('| 9 | M3 | `a.js` was split from `b.js`. | §17.10 says so. |');
+  assert.equal(nothing.figures, 0, 'no figure in the text, none counted');
+  assert.ok(nothing.figures < 8, 'and the live-table floor of 8 would fail on such a table');
+  assert.deepEqual(nothing.claims, [], 'while a row with no figures at all raises nothing');
+
+  // Clause (e) cannot have a floor on the live table: once the row above is rewritten
+  // readable, the honest number of bare figures there is ZERO, and a floor would then
+  // demand the table keep a defect to stay green. The fixtures in the test above are its
+  // guarantee instead — neuter `pathThenNumber()` and all four assertions fail.
+  assert.equal([...'`a.js` 329'.matchAll(pathThenNumber())].length, 1, 'pathThenNumber() matches');
 });
 
 test('§17.10 the audit is not fooled by a quote, a pronoun or a hedge', () => {
