@@ -13,8 +13,22 @@ import { MSG } from '../background/messages.js';
 import { el, clear, ICON, withTip } from './dom.js';
 import { renderSources } from './sources.js';
 import { renderPickTab, pickingChrome, cancelPick, loadPick } from './pick.js';
+import { EMPTY_PROBE, VIEW, readProbe } from './probe.js';
 
 const TOAST_MS = 3200;
+
+/**
+ * How often the panel re-reads a RUNNING probe on its own (§10.1C: "NEVER let the user
+ * think it's stuck").
+ *
+ * The worker broadcasts on every state change and that is what normally drives this
+ * screen. This is the backstop for the two ways that promise can quietly break — an
+ * evicted service worker, and a broadcast this panel simply did not receive — because
+ * the failure mode is a card that says "Double-checking…" over a probe that stopped
+ * running, and it is indistinguishable from a slow one. 1200ms is well under the time
+ * one reload+settle takes (§7.3 caps it at 8s), so the picture is never far behind.
+ */
+const PROBE_POLL_MS = 1200;
 
 const state = {
   tab: 'pick',
@@ -28,8 +42,10 @@ const state = {
   changeCount: 0,
   /** §10.1's three states are a function of this alone — see pick.js. */
   pick: { picking: false, element: null, candidates: [] },
-  /** Proven Links for this origin (§10.1A). Everything here is `candidate` until M4. */
+  /** Proven Links for this origin (§10.1A). */
   bindings: [],
+  /** §10.1's progress card, State D and the failure cards — see probe.js. */
+  probe: { ...EMPTY_PROBE },
   settings: { advancedMode: false, paranoid: false },
   query: '',
   open: null,
@@ -93,7 +109,7 @@ function toast(text, danger = false) {
 function setTab(name) {
   state.tab = name;
   const order = ['pick', 'sources', 'scenarios', 'settings'];
-  dom.tabs.style.setProperty('--seg', String(Math.max(0, order.indexOf(name))));
+  dom.tabs.style.setProperty('--seg-x', String(Math.max(0, order.indexOf(name))));
   for (const tab of order) {
     document.getElementById(`panel-${tab}`).classList.toggle('hidden', tab !== name);
   }
@@ -181,7 +197,7 @@ function renderScenarios() {
   clear(dom.scenarioActions);
   const make = el('button', { type: 'button', class: 'btn btn--primary', disabled: true, text: S.scenarios.new });
   const bring = el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.scenarios.import });
-  dom.scenarioActions.append(make, bring, el('p', { class: 'help', text: S.soon }));
+  dom.scenarioActions.append(make, bring, el('p', { class: 'help', text: S.notYet }));
 }
 
 /* ───────────────────────────────────────────────────────────── settings — §10.5 */
@@ -225,7 +241,7 @@ function renderSettings() {
       onChange: (value) => saveSetting({ paranoid: value })
     }),
     // Deep mode attaches the debugger (§8) and lands at §16 M7.
-    withTip(checkRow({ label: S.deep.label, help: S.deep.help, checked: false, disabled: true }), [S.soon], { up: true })
+    withTip(checkRow({ label: S.deep.label, help: S.deep.help, checked: false, disabled: true }), [S.notYet], { up: true })
   );
 
   clear(dom.settingsCompanion);
@@ -236,7 +252,7 @@ function renderSettings() {
       el('span', { class: 'dot' }),
       el('span', { class: 'check-row__text' }, el('span', { class: 'check-row__label', text: S.companion.disconnected }))
     ),
-    withTip(el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.companion.setup }), [S.soon], { up: true })
+    withTip(el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.companion.setup }), [S.notYet], { up: true })
   );
 
   clear(dom.settingsDanger);
@@ -381,6 +397,7 @@ async function refresh() {
   const links = await send(MSG.GET_BINDINGS, { tabId: state.tabId });
   state.bindings = links.ok ? links.bindings || [] : [];
   await loadPick(ctx);
+  await readProbe(ctx);
   render();
 }
 
@@ -392,11 +409,15 @@ async function loadSettings() {
 function wireEvents() {
   chrome.runtime.onMessage.addListener((message) => {
     const type = message && message.type;
-    if (type === MSG.SOURCES_CHANGED || type === MSG.CHANGES_CHANGED) void refresh();
+    // `matches` and not `===` on purpose: a type this build's messages.js does not
+    // define yet is `undefined`, and `undefined === undefined` would make every
+    // typeless message look like that broadcast.
+    const matches = (constant) => typeof constant === 'string' && type === constant;
+    if (matches(MSG.SOURCES_CHANGED) || matches(MSG.CHANGES_CHANGED)) void refresh();
     // Pick mode can also be entered or cancelled from somewhere that is not this panel
     // — the page's own Escape key, or an agent over MCP (§1.6) — so the tab follows the
-    // worker rather than only its own clicks.
-    else if (type === MSG.PICK_CHANGED) void refresh();
+    // worker rather than only its own clicks. The same is true of a probe (§12.4 #5).
+    else if (matches(MSG.PICK_CHANGED) || matches(MSG.PROBE_CHANGED)) void refresh();
     return false;
   });
   chrome.tabs.onActivated.addListener(() => void refresh());
@@ -416,12 +437,23 @@ function wireEvents() {
   });
 }
 
+/**
+ * The anti-"is it stuck?" backstop described at PROBE_POLL_MS. Runs only while a probe
+ * is actually running, so an idle panel sends nothing at all.
+ */
+function watchProbe() {
+  setInterval(() => {
+    if (state.probe && state.probe.view === VIEW.RUNNING) void refresh();
+  }, PROBE_POLL_MS);
+}
+
 async function boot() {
   fillStatic();
-  dom.tabs.style.setProperty('--seg', '0');
+  dom.tabs.style.setProperty('--seg-x', '0');
   document.getElementById('search-icon').append(ICON.search());
   wireTabs();
   wireEvents();
+  watchProbe();
   await loadSettings();
   await refresh();
 }

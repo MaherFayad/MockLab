@@ -7,19 +7,19 @@
  * §17.7: every colour comes from panel.css.
  * §17.8: every message uses a declared constant from `background/messages.js`.
  *
- * ── What this file deliberately does NOT do ─────────────────────────────────────
- * State D (the result / editor card) and the probe progress card are §16 M4. Nothing
- * below runs a probe, and §17.12 is the reason the omission is loud rather than faked:
- * a wrong "Verified ✓" is the worst bug this product can have, so at M3
- *   - `probe.cta` is rendered, and rendered DISABLED with the reason beside it. Hiding
- *     it would misdescribe the screen; enabling it would promise an experiment that
- *     cannot run yet;
- *   - the candidate rows are rows, not buttons. There is no editor behind them at M3
- *     and an affordance that leads nowhere is a lie told with CSS;
- *   - the "Recent links" list filters on `state === 'verified'` and nothing else, so
- *     until a probe has confirmed something it renders NOTHING AT ALL — no heading, no
- *     empty-state box. An empty box under "Recent links on this site" would promise a
- *     shelf that fills itself; absence is the honest picture of "nothing is proven".
+ * ── What this file owns, and what `probe.js` next door owns ─────────────────────
+ * Everything up to the moment an experiment starts: idle, picking, and the ranked list
+ * of guesses. The progress card, State D and the failure cards are `probe.js`, and the
+ * one-way import runs from here to there — so `probe.js` may never import this file.
+ *
+ * Two M3 promises are kept, and one is finally paid off:
+ *   - the candidate rows are still rows, not buttons. There is no editor behind a GUESS;
+ *     the way to a value is through the experiment, which is the button under them;
+ *   - the "Recent links" list still filters on `state === 'verified'` and nothing looser
+ *     — not `!== 'candidate'`, not truthiness, not "has elements";
+ *   - those cards get their chevron and their click BACK, because State D now exists for
+ *     them to open (Deviation 29). At M3 a chevron would have been a promise that
+ *     something opens, drawn over nothing.
  *
  * ── Where this tab's message types live ─────────────────────────────────────────
  * Entering pick mode means reaching `content/agent.js`, which the panel can only do
@@ -35,8 +35,9 @@
 import { S } from './strings.js';
 import { MSG, PHASE } from '../background/messages.js';
 import { el, clear, ICON } from './dom.js';
-import { formatValue } from './sources.js';
-import { parsePath } from '../shared/jsonpath.js';
+import { formatValue, fieldLabel } from './sources.js';
+import { VIEW, EMPTY_PROBE, canProbe, linkChip, openLink, renderFailure, renderProgress, startProbe } from './probe.js';
+import { renderResult } from './result.js';
 
 /** §10.1C — "max 12 rows". */
 const MAX_CANDIDATES = 12;
@@ -95,9 +96,43 @@ function canPick(ctx) {
 export function renderPickTab(root, ctx) {
   clear(root);
   const pick = ctx.state.pick || EMPTY_PICK;
-  if (pick.picking) renderPicking(root);
-  else if (pick.element) renderCandidates(root, ctx, pick);
+  const probe = ctx.state.probe || EMPTY_PROBE;
+  // A running experiment outranks everything: §10.1C calls its card "full-panel", and
+  // the person has been told not to touch the page until it finishes.
+  if (probe.view === VIEW.RUNNING) {
+    renderProgress(root, ctx);
+    return;
+  }
+  if (pick.picking) {
+    renderPicking(root);
+    return;
+  }
+  if (probe.view === VIEW.RESULT) {
+    renderResult(root, ctx);
+    return;
+  }
+  if (probe.view === VIEW.FAILED) {
+    renderFailure(root, ctx);
+    // A failed run leaves the person somewhere, and §11's rule is to always say what to
+    // do next. Picking again is the next thing that exists, so the button is under it.
+    root.append(pickAgain(ctx));
+    return;
+  }
+  if (pick.element) renderCandidates(root, ctx, pick);
   else renderIdle(root, ctx);
+}
+
+/** The secondary "Pick an element" that closes State C and the failure cards. */
+function pickAgain(ctx) {
+  const ready = canPick(ctx);
+  const again = el(
+    'button',
+    { type: 'button', class: 'btn btn--secondary btn--wide', disabled: !ready },
+    ICON.pick(),
+    el('span', { text: S.pick.cta })
+  );
+  if (ready) again.addEventListener('click', () => void startPick(ctx));
+  return again;
 }
 
 /** §10.1 State A — "illustration-free, calm". */
@@ -197,32 +232,29 @@ function renderCandidates(root, ctx, pick) {
     for (const candidate of shown) rows.append(candidateRow(candidate, ctx));
     root.append(rows);
 
-    // §16 M4 owns the experiment. Disabled and explained beats hidden (the screen would
-    // then misdescribe itself) and beats enabled (it would promise a probe that cannot
-    // run). `S.soon` also names where the person CAN change a value today, which is
-    // exactly what the rows above just told them: a source and a field.
-    root.append(
-      el(
-        'div',
-        { class: 'pick-live' },
-        el('button', { type: 'button', class: 'btn btn--primary', disabled: true, text: S.probe.cta }),
-        el('p', { class: 'help', text: S.soon })
-      )
-    );
+    // §10.1C's experiment. Enabled exactly when it can really run — which is what the
+    // contract check answers, and nothing else: a button that promises an experiment it
+    // cannot start is the same lie as a chevron over an editor that does not exist.
+    const ready = canProbe(ctx);
+    const cta = el('button', { type: 'button', class: 'btn btn--primary', disabled: !ready, text: S.probe.cta });
+    if (ready) cta.addEventListener('click', () => void startProbe(ctx));
+    const live = el('div', { class: 'pick-live' }, cta);
+    // §11's `probe.intro` is what the person needs BEFORE pressing: how long it takes,
+    // and that they must not click inside the page. It is only true if the button works.
+    live.append(el('p', { class: 'help', text: ready ? S.probe.intro : S.soon }));
+    root.append(live);
   } else if (wholeDataSearched) {
     // §6.3: "If ZERO candidates: tell the user honestly … and offer Check all fields".
     // This branch is the only one entitled to `noCandidates`, because that string is a
     // claim about the data ("couldn't find this text in any data the page loaded") and
     // only a search that reached the end of the data can make it.
     root.append(el('p', { class: 'empty', text: S.pick.noCandidates }));
-    root.append(
-      el(
-        'div',
-        { class: 'pick-live' },
-        el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.pick.checkAll }),
-        el('p', { class: 'help', text: S.soon })
-      )
-    );
+    const ready = canProbe(ctx);
+    const all = el('button', { type: 'button', class: 'btn btn--secondary', disabled: !ready, text: S.pick.checkAll });
+    if (ready) all.addEventListener('click', () => void startProbe(ctx, { exhaustive: true }));
+    const live = el('div', { class: 'pick-live' }, all);
+    if (!ready) live.append(el('p', { class: 'help', text: S.soon }));
+    root.append(live);
   } else {
     // Empty AND bounded. A different sentence, and deliberately no button under it.
     //
@@ -236,15 +268,7 @@ function renderCandidates(root, ctx, pick) {
     root.append(el('p', { class: 'empty', text: S.pick.searchIncomplete }));
   }
 
-  const ready = canPick(ctx);
-  const again = el(
-    'button',
-    { type: 'button', class: 'btn btn--secondary btn--wide', disabled: !ready },
-    ICON.pick(),
-    el('span', { text: S.pick.cta })
-  );
-  if (ready) again.addEventListener('click', () => void startPick(ctx));
-  root.append(again);
+  root.append(pickAgain(ctx));
 }
 
 /**
@@ -275,20 +299,6 @@ function candidateRow(candidate, ctx) {
 }
 
 /**
- * A field, read out the way the §10.2 tree draws it: the keys the site itself used,
- * from the outside in, with the `$.` and the brackets that only a programmer needs
- * dropped. `$.booking.status` → "booking · status". An unparseable path falls back to
- * itself rather than to nothing — showing something odd beats showing an unlabelled row.
- */
-function fieldLabel(path) {
-  const tokens = parsePath(String(path || ''));
-  if (!tokens || !tokens.length) return String(path || '');
-  return tokens
-    .map((token) => (token.type === 'index' ? S.glyph.index(token.value) : String(token.value)))
-    .reduce((trail, part) => S.glyph.joinDot(trail, part));
-}
-
-/**
  * §10.1A — "last 3 verified Links for this site as selection cards".
  *
  * §17.12 lives in the filter on the next line. `state === 'verified'` and nothing
@@ -311,28 +321,29 @@ function recentLinks(ctx) {
 }
 
 /**
- * One proven Link. §10.1A ends this card with a chevron into the editor (State D),
- * which is §16 M4 — so at M3 the card carries no chevron and no click handler. A
- * chevron is a promise that something opens; drawing one over nothing is the same lie
- * as an enabled `probe.cta`. It comes back with State D.
+ * One proven Link. §10.1A ends this card with a chevron into the editor, and at M4 that
+ * editor exists — so the chevron and the click come back (Deviation 29). It is a real
+ * <button>: the card opens something, and a div with a click handler is a control that
+ * a keyboard cannot reach.
+ *
+ * The chip is `linkChip(link.state)`, which derives BOTH the word and the colour from
+ * the Link's own state. There is no argument to pass a word in, so no call site can pair
+ * "Verified ✓" with a Link that is not verified — and `recentLinks` has already filtered
+ * to `state === 'verified'`, so a slip that widened that filter would paint an amber
+ * "Possible" card into this list rather than a green lie.
  */
 function recentCard(link, ctx) {
   const where = (link.elements && link.elements[0] && link.elements[0].textAnchor) || '';
   const values = Array.isArray(link.observedValues) ? link.observedValues : [];
-  return el(
-    'div',
-    { class: 'card card--static' },
+  const card = el(
+    'button',
+    { type: 'button', class: 'card card--link', dataset: { linkState: String(link.state || '') } },
     el(
       'div',
       { class: 'card__title' },
       el('span', { class: 'truncate', text: where ? S.glyph.quote(where) : sourceName(ctx, link.sigId) }),
-      // The chip's colour comes from the DATUM, never from a word written beside it.
-      // `recentLinks` has already filtered to `state === 'verified'`, so this reads the
-      // same fact twice — which is the point: a copy-paste slip that widens that filter
-      // now shows the wrong-coloured chip loudly instead of painting every Link green.
-      // It also keeps §17.4's grep honest: the literal 'verified' is assigned in exactly
-      // one place in this codebase, and it is not a render helper's argument.
-      chipNode(link.state, S.chips.verified)
+      linkChip(link.state),
+      el('span', { class: 'card__chevron' }, ICON.chevron())
     ),
     el(
       'div',
@@ -341,6 +352,8 @@ function recentCard(link, ctx) {
       values.length ? el('span', { class: 'mono truncate', text: formatValue(values[0]) }) : null
     )
   );
+  card.addEventListener('click', () => openLink(ctx, link));
+  return card;
 }
 
 /**
@@ -354,6 +367,7 @@ function sourceName(ctx, sigId, given) {
   return (source && source.name) || S.sources.fallbackName;
 }
 
+/** The one chip on this screen that describes a LIST rather than a datum (§10.1C). */
 function chipNode(kind, text) {
   return el('span', { class: `chip chip--${kind}`, text });
 }

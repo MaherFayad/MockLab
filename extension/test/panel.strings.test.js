@@ -206,15 +206,28 @@ test('§10.1D a value that HAS text of its own is seeded with exactly that text'
 test('§17.6 nothing in the panel puts a literal on screen', () => {
   // Every word the panel renders leaves through one of these four doors: `el(…, {text})`
   // for a text node, an accessible name / placeholder / title given as an option, the
-  // same three assigned to a node, and `setAttribute`. A quoted word at any of them is
-  // copy that never passed through §11 — which is how the `'null'` above got out.
+  // same three assigned to a node, and `setAttribute`. A quoted word IMMEDIATELY at any
+  // of them is copy that never passed through §11 — which is how the `'null'` above got
+  // out.
+  //
+  // ONLY immediately, and the word is doing work: these regexes read the token that
+  // follows the sink, so a literal one operator further out is invisible here —
+  // `text: state.hostname || 'No page selected yet'`, either arm of a ternary, either
+  // side of a `+`. QA proved that on a live branch: sixteen tests, sixteen passes, with
+  // real off-§11 copy on screen. `guards.strings.test.js` (OWNER: interceptor-engineer)
+  // classifies the whole EXPRESSION at a copy sink and catches those; the two audits
+  // overlap on purpose and neither can see all of the other's doors.
+  //
+  // The named-option door was also only half-watched here: the key had to be QUOTED, so
+  // `el('input', { placeholder: 'Type a name' })` — the way anyone would actually write
+  // it — matched nothing. The quotes are optional below now.
   const QUOTED = String.raw`(['"\`])((?:[^'"\`\\]|\\.)*)\1`;
-  const NAMED = '(?:aria-label|placeholder|title)';
+  const NAMED = "(?:'|\")?(?:aria-label|ariaLabel|placeholder|title)(?:'|\")?";
   const SINKS = [
     [new RegExp(String.raw`\btext:\s*${QUOTED}`, 'g'), 2],
-    [new RegExp(String.raw`(['"])${NAMED}\1\s*:\s*(['"\`])((?:[^'"\`\\]|\\.)*)\2`, 'g'), 3],
+    [new RegExp(String.raw`(?<![\w$.])${NAMED}\s*:\s*${QUOTED}`, 'g'), 2],
     [new RegExp(String.raw`\.(?:textContent|innerText|placeholder|title|ariaLabel)\s*=\s*${QUOTED}`, 'g'), 2],
-    [new RegExp(String.raw`setAttribute\(\s*(['"])${NAMED}\1\s*,\s*(['"\`])((?:[^'"\`\\]|\\.)*)\2`, 'g'), 3]
+    [new RegExp(String.raw`setAttribute\(\s*(['"])(?:aria-label|placeholder|title)\1\s*,\s*(['"\`])((?:[^'"\`\\]|\\.)*)\2`, 'g'), 3]
   ];
 
   const offenders = [];
@@ -239,6 +252,91 @@ test('§17.6 panel.html carries no copy either', () => {
     .replace(/<script[\s\S]*?<\/script>/g, '');
   const copy = [...html.matchAll(/>([^<>]*[A-Za-z][^<>]*)</g)].map((match) => match[1].trim()).filter(Boolean);
   assert.deepEqual(copy, [], 'put it in strings.js and render it with data-s');
+});
+
+/* ──────────────── §17.12: the one word the panel may never write down ─────────────
+ *
+ * `panel.probe.browser.test.js` proves the RENDERED behaviour — that a candidate Link
+ * never wears the verified chip — in a real browser. This is the backstop for the
+ * machine that has no Chromium, and it audits a different thing: not what is drawn, but
+ * whether the panel's source contains the word at all.
+ *
+ * The distinction matters because the browser proof is only as good as its fixtures. A
+ * screen nobody wrote a fixture for could still print `S.chips.verified` beside whatever
+ * it liked. `linkChip(state)` makes that impossible by construction — the word is looked
+ * up BY the state — and this test is what keeps it that way.
+ */
+test('§17.12 no panel file names the verified chip; the link’s own state looks it up', () => {
+  const offenders = [];
+  for (const file of fs.readdirSync(PANEL).filter((name) => name.endsWith('.js') && name !== 'strings.js')) {
+    const code = stripComments(read(file));
+    for (const match of code.matchAll(/S\.chips\.verified/g)) {
+      offenders.push(`${file}:${code.slice(0, match.index).split('\n').length}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'render the chip with `linkChip(binding.state)` — a word written beside a state is a ' +
+      'pairing a copy-paste can get wrong, and a wrong "Verified ✓" is the worst bug this ' +
+      'product can have (§17.12)'
+  );
+  // …and the mechanism that replaces it is really there. Without this the test above
+  // passes just as well after somebody deletes the chip altogether.
+  const probe = stripComments(read('probe.js'));
+  assert.match(probe, /S\.chips\[/, 'linkChip() looks the word up by the link state');
+  assert.match(
+    probe,
+    /state === 'verified'/,
+    "probe.js decides what a result card CLAIMS with an === 'verified' comparison and nothing looser"
+  );
+  assert.match(
+    stripComments(read('result.js')),
+    /proved\(binding\)/,
+    'State D asks that question rather than deciding for itself what counts as proved'
+  );
+});
+
+test('§17.12 “Found it” is printed from one place, and §11’s failure sentences from one each', () => {
+  const probe = stripComments(read('probe.js')) + stripComments(read('result.js'));
+  // `probe.found` asserts that MockLab PROVED which field drives the element. One place
+  // may say it; the browser suite proves that place is behind the verified comparison. A
+  // second occurrence is a second claim nobody checked.
+  assert.equal(probe.split('S.probe.found').length - 1, 1, 'exactly one place may claim a result was found');
+  // Each honest reason is named ONCE in the table the failure card reads, so a rewrite
+  // cannot quietly give two endings the same sentence — or one ending two. Counted
+  // inside `renderFailure` rather than across the file, because `notRefetched` is
+  // legitimately said elsewhere too: §11's "this data only loads once per visit" is true
+  // of a probe that could not re-observe the request (§7.2), of a result whose source
+  // did not come back, and of a Change saved against a request this visit never made
+  // (§1.1) — three situations, one fact.
+  const card = functionBody(read('probe.js'), 'renderFailure');
+  for (const key of ['noneConfirmed', 'tooNoisy', 'elementLost', 'timeout', 'notRefetched']) {
+    assert.equal(
+      card.split(`S.probe.${key}`).length - 1,
+      1,
+      `§11 probe.${key} is named ${card.split(`S.probe.${key}`).length - 1} times in the failure card's table`
+    );
+  }
+  assert.equal(card.split('S.pick.noCandidates').length - 1, 1, "§6.3's own ending needs its own sentence there too");
+  for (const key of ['control', 'testing', 'confirming', 'cleanup']) {
+    assert.match(probe, new RegExp(`S\\.probe\\.step\\.${key}`), `§11's probe.step.${key} line is not rendered anywhere`);
+  }
+  for (const key of ['reloads', 'cancel', 'affected', 'showMe', 'intro']) {
+    assert.match(probe, new RegExp(`S\\.probe\\.${key}`), `§10.1C/D needs §11's probe.${key}`);
+  }
+});
+
+test('§11 the four step lines are four different sentences', () => {
+  // The progress card's whole promise is that "every state change updates the line". Two
+  // steps that read identically are one step with extra waiting, and the copy table is
+  // where that would be introduced.
+  const lines = ['control', 'testing', 'confirming', 'cleanup'].map((key) => {
+    const value = S.probe.step[key];
+    assert.ok(value, `§11 names a probe.step.${key} and the copy table has none`);
+    return typeof value === 'function' ? value(12) : value;
+  });
+  assert.equal(new Set(lines).size, 4, `the probe's four steps read as ${new Set(lines).size} sentences`);
 });
 
 /* ────────────────── §6.3's bounded search: the sentence that must not be swapped in */

@@ -36,10 +36,19 @@ jobs:
     # visible to a unit test. Both files must be listed: a suite a CI job never invokes
     # is a suite that is not run, and this repository has already shipped one of those.
     #
+    # panel.probe.browser.test.js guards §17.12 at the moment it becomes possible to
+    # break: it renders §10.1's State D, its progress card and its failure cards, and
+    # holds every "Verified ✓" on screen to a link whose own state really is verified.
+    #
     # panel.browser.test.js guards §1.1 itself. Changing the editor's chip to
     # "Verified ✓" — the worst bug this product can have, per §17.12 — leaves EVERY
     # unit test, both §17.4 guard tests and the entire e2e suite green. Only subtest 4
     # of this file fails. Never drop it from this job.
+    #
+    # probe.browser.test.js guards M4, and it is the one suite that can catch the whole
+    # product lying. Deleting §7.2's two noise checks makes MockLab report the demo's
+    # rotating tip box as VERIFIED — a false "Verified ✓" on an element that changes by
+    # itself — with every unit test in the repository still green.
     #
     # This comment deliberately carries no test totals. It used to say "all 142 unit
     # tests"; the suite grew to 146 and the number rotted in place, asserting something
@@ -73,7 +82,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in e2e panel picker pickerdom; do
+          for suite in e2e panel panel.probe picker pickerdom probe; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"

@@ -10,7 +10,7 @@
 import { S } from './strings.js';
 import { MSG } from '../background/messages.js';
 import { el, clear, ICON, spinner, withTip } from './dom.js';
-import { joinPath } from '../shared/jsonpath.js';
+import { joinPath, parsePath } from '../shared/jsonpath.js';
 
 /** §10.2: "max initial depth 2" — the root and one level of containers start open. */
 const INITIAL_OPEN_DEPTH = 1;
@@ -58,10 +58,36 @@ export function draftFor(value) {
   return String(value);
 }
 
-function valueKind(value) {
+/**
+ * Which editor a value gets (§10.1D: "number/text/toggle per value type"). The word it
+ * returns is a CSS class name and a branch label, never anything a human reads — which
+ * is why `panel.strings.test.js` audits `formatValue` beside it and deliberately not
+ * this. Exported for the §10.1 State D editor in `probe.js`, which asks the same
+ * question about the same values.
+ */
+export function valueKind(value) {
   if (value === null || value === undefined) return 'null';
   const t = typeof value;
   return t === 'string' || t === 'number' || t === 'boolean' ? t : 'null';
+}
+
+/**
+ * A field, read out the way the §10.2 tree draws it: the keys the site itself used,
+ * from the outside in, with the `$.` and the brackets that only a programmer needs
+ * dropped. `$.booking.status` -> "booking · status". An unparseable path falls back to
+ * itself rather than to nothing — showing something odd beats showing an unlabelled row.
+ *
+ * Lives here, with the other value formatting, because BOTH Pick-tab screens need it and
+ * neither may import the other: §10.1C labels its candidate rows with it (two rows of
+ * the demo's own data are otherwise drawn identically) and §10.1D names the proved field
+ * with it.
+ */
+export function fieldLabel(path) {
+  const tokens = parsePath(String(path || ''));
+  if (!tokens || !tokens.length) return String(path || '');
+  return tokens
+    .map((token) => (token.type === 'index' ? S.glyph.index(token.value) : String(token.value)))
+    .reduce((trail, part) => S.glyph.joinDot(trail, part));
 }
 
 function isContainer(value) {
@@ -310,7 +336,7 @@ function rowActions({ key, value, path, change, source, ctx }) {
   // shown disabled rather than hidden so the row's vocabulary matches §10.2, and it says
   // why instead of doing nothing quietly.
   const show = el('button', { type: 'button', class: 'icon-btn', disabled: true, 'aria-label': S.sources.showOnPage }, ICON.target());
-  actions.append(withTip(show, [S.sources.showOnPage, S.soon], { up: true }));
+  actions.append(withTip(show, [S.sources.showOnPage, S.notYet], { up: true }));
 
   if (change) {
     const remove = el('button', { type: 'button', class: 'icon-btn icon-btn--danger', 'aria-label': S.sources.removeChange }, ICON.trash());
@@ -414,8 +440,14 @@ function inputFor(e, ctx) {
   return input;
 }
 
-/** The typed value a Change stores, or an error string in §11's voice. */
-function coerce(e) {
+/**
+ * The typed value a Change stores, or an error string in §11's voice. Exported because
+ * §10.1 State D's editor coerces the same three kinds from the same three fields, and a
+ * second copy of this would be a second place for "450" to become the text "450".
+ *
+ * @param {{kind:string, bool:boolean, draft:string}} e
+ */
+export function coerceValue(e) {
   if (e.kind === 'boolean') return { value: e.bool };
   if (e.kind === 'number') {
     const value = Number(e.draft.trim());
@@ -428,7 +460,7 @@ function coerce(e) {
 async function applyEdit(ctx, button) {
   const e = ctx.state.editing;
   if (!e || e.busy) return;
-  const result = coerce(e);
+  const result = coerceValue(e);
   if (result.error) {
     e.error = result.error;
     ctx.rerender();

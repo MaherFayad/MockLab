@@ -241,7 +241,17 @@ export const S = {
     joinDot: (a, b) => `${a} · ${b}`,
     joinLabel: (a, b) => `${a}: ${b}`
   },
-  // + not in §11 — this build stops at PLAN.md §16 M2, so the Pick and Scenario actions
-  // are visibly present but inert. Saying so beats a control that silently does nothing.
-  soon: 'Not ready yet — for now, change values from the Sources tab.'
+  // + not in §11 — a control that is visibly present but inert. Saying so beats a
+  // control that silently does nothing.
+  //
+  // TWO strings, because §11's "always say what to do next" only has an answer for one
+  // of them. `soon` is for the controls whose job — change a value — CAN be done another
+  // way today, so it names that way. `notYet` is for the ones where there is no other
+  // way: highlighting on the page, saving a Scenario, Deep mode, pairing an AI. Reusing
+  // `soon` there put "change values from the Sources tab" under "Save as Scenario",
+  // which is advice about a different task, and misdirection is a worse answer than
+  // admitting there is nothing to do — the rule is a means to §1.1, not the other way
+  // round. Found by reading the screens rather than by any test.
+  soon: 'Not ready yet — for now, change values from the Sources tab.',
+  notYet: 'Not ready yet — this part of MockLab is still being built.'
 };

@@ -62,7 +62,7 @@ const wholeName = (value) => new RegExp(`(?<![\\w$])${value.replace(/[$]/g, '\\$
  */
 const MIRRORS = {
   element: [
-    'extension/src/content/element.js',
+    'extension/src/content/agent.js', 'extension/src/content/element.js',
     'extension/src/content/picker.js',
     'extension/test/pickerdom.browser.test.js'
   ],

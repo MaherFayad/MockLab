@@ -20,6 +20,9 @@
  *
  * M3 adds pick mode's wiring (pickApi.js): the route from the panel to the page agent's
  * picker, and back with one element that candidates.js turns into §6.3's guesses.
+ *
+ * M4 adds the probe's wiring (probe.js): the panel's START/CANCEL/GET, the snapshot
+ * request that goes out the moment a reloaded document says hello, and the answer back.
  */
 
 import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
@@ -28,6 +31,7 @@ import { originOf, rememberSignature, groupChangesBySignature, countActiveChange
 import { parsePath, countLeaves, getByPath } from '../shared/jsonpath.js';
 import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
 import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
+import { createProbeApi, PROBE_MESSAGE_TYPES, PROBE_MSG, PROBE_PORT_MSG, sweepProbeChanges } from './probe.js';
 import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
 
 /**
@@ -51,28 +55,14 @@ if (chrome.sidePanel) {
 }
 
 /**
- * PLAN.md §7.1 / §17.5: probe Changes are internal scaffolding and must never
- * outlive the probe that created them. M4 replaces this with the ruleStore call;
- * until then it is a direct storage sweep so the guarantee holds from day one.
+ * PLAN.md §7.1 / §17.5. The sweep moved into `probeChanges.js` at M4, beside the CLEANUP
+ * that is §17.5's other half. What stays here is the part that matters most: the BARE
+ * call, at module top level — `onStartup` does not fire after a crash, and a crash is the
+ * case this exists for. Proved in a real browser at M0, unchanged since.
  */
-async function deleteCrashedProbeChanges() {
-  try {
-    const all = await chrome.storage.local.get(null);
-    const writes = {};
-    for (const [key, value] of Object.entries(all)) {
-      if (!key.startsWith('changes:') || !Array.isArray(value)) continue;
-      const kept = value.filter((change) => change && change.probe !== true);
-      if (kept.length !== value.length) writes[key] = kept;
-    }
-    if (Object.keys(writes).length) await chrome.storage.local.set(writes);
-  } catch (err) {
-    console.error('[MockLab] probe cleanup on startup failed', err);
-  }
-}
-
-chrome.runtime.onStartup?.addListener(deleteCrashedProbeChanges);
-chrome.runtime.onInstalled?.addListener(deleteCrashedProbeChanges);
-deleteCrashedProbeChanges();
+chrome.runtime.onStartup?.addListener(sweepProbeChanges);
+chrome.runtime.onInstalled?.addListener(sweepProbeChanges);
+void sweepProbeChanges();
 
 /**
  * The badge is browser state, not worker state, so a cold start must repaint it — after
@@ -306,6 +296,8 @@ function handlePortMessage(tabId, message) {
       if (isNewDocument) {
         // The captures this tab's candidates point at have just been cleared.
         pickApi.onNewDocument(tabId);
+        // A running probe is waiting for exactly this document (§7.3).
+        probeApi.onNewDocument(tabId);
         notifyPanel(tabId, 'reset');
       }
       break;
@@ -317,6 +309,9 @@ function handlePortMessage(tabId, message) {
       break;
     case PORT_MSG.PICKED:
       pickApi.onPicked(tabId, message.payload);
+      break;
+    case PROBE_PORT_MSG.RESULT:
+      probeApi.onProbeResult(tabId, message.payload);
       break;
     case PORT_MSG.SOFT_NAV: {
       const state = tabState.get(tabId);
@@ -359,6 +354,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   pickApi.forgetTab(tabId);
+  probeApi.forgetTab(tabId);
   tabState.delete(tabId);
   tabPorts.delete(tabId);
   lastNotifyAt.delete(tabId);
@@ -458,31 +454,43 @@ const changesApi = createChangesApi({
 /* ============================================ M3 — picker & candidate discovery */
 
 /**
- * Pick mode's wiring (PLAN.md §6.1, §6.3). The behaviour lives in `pickApi.js`; the
- * worker supplies the four things only it can: how to reach a tab's page agent, what
- * that tab has captured, which origin it is on, and how to tell the panel.
+ * What pick mode and the probe both need from the worker, written once because they
+ * must not disagree: the live Ports for a tab (a chrome:// page or a tab opened before
+ * MockLab was installed has none, and §1.1 says to say so rather than leave the panel
+ * waiting), and the tab's origin with everything it has captured — which §6.3 searches
+ * and §7.2's replay check re-reads after every probe reload.
  */
-const pickApi = createPickApi({
+const pageAccess = {
   resolveTabId,
-
-  /**
-   * The live Ports for a tab, or null. A tab with no page agent — a chrome:// page, or
-   * one opened before MockLab was installed — can never answer a pick, and §1.1 says to
-   * tell the user that rather than leave the panel waiting for ever.
-   */
   portsFor: (tabId) => tabPorts.get(tabId) || null,
+  tabRecord: (tabId) => tabState.get(tabId) || null
+};
 
-  /** The tab's origin and everything it has captured — §6.3 searches all of it. */
-  tabRecord: (tabId) => tabState.get(tabId) || null,
-
+/** Pick mode (PLAN.md §6.1, §6.3). The behaviour lives in `pickApi.js`. */
+const pickApi = createPickApi({
+  ...pageAccess,
   /** Data-free beyond the phase, like every other panel broadcast in this file. */
-  notify(tabId, phase) {
-    chrome.runtime
+  notify: (tabId, phase) =>
+    void chrome.runtime
       .sendMessage({ type: MSG.PICK_CHANGED, payload: { tabId, phase } })
-      .catch(() => {
-        /* no panel open — expected, not an error */
-      });
-  }
+      .catch(() => {})
+});
+
+/* ══════════════════════════════════════════════════ M4 — the probe (PLAN.md §7) */
+
+/**
+ * The probe (PLAN.md §7). Beyond `pageAccess` it needs what the user picked (§6.1) and
+ * a reload — deliberately the same `chrome.tabs.reload` "Apply & refresh page" performs,
+ * because otherwise what the probe proves is not what happens afterwards.
+ */
+const probeApi = createProbeApi({
+  ...pageAccess,
+  pickedElement: (tabId) => pickApi.pickedElement(tabId),
+  reload: (tabId) => chrome.tabs.reload(tabId).then(() => true, () => false),
+  notify: (tabId, state) =>
+    void chrome.runtime
+      .sendMessage({ type: PROBE_MSG.PROBE_CHANGED, payload: { tabId, state } })
+      .catch(() => {})
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -490,9 +498,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const isSources = type === MSG.LIST_SOURCES || type === MSG.GET_RESPONSE;
   const isChanges = typeof type === 'string' && CHANGE_MESSAGE_TYPES.has(type);
   const isPick = typeof type === 'string' && PICK_MESSAGE_TYPES.has(type);
-  if (!isSources && !isChanges && !isPick) return false;
+  const isProbe = typeof type === 'string' && PROBE_MESSAGE_TYPES.has(type);
+  if (!isSources && !isChanges && !isPick && !isProbe) return false;
 
-  const answer = isChanges ? changesApi.handle(message) : isPick ? pickApi.handle(message) : handleMessage(message);
+  const answer = isChanges ? changesApi.handle(message)
+    : isPick ? pickApi.handle(message)
+      : isProbe ? probeApi.handle(message) : handleMessage(message);
   answer
     .then(sendResponse)
     .catch((err) => {

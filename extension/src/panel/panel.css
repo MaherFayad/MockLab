@@ -83,7 +83,16 @@
  * background, at >= 4.6:1. Nothing in the §9.1 block is touched.
  */
 :root {
-  --on-accent: #FFFFFF;              /* button label on --accent, both themes */
+  --on-accent: #FFFFFF;              /* the §9.2 sheen and checkmark, both themes */
+  /* The LABEL on an accent or danger fill, which is a different question from the sheen
+   * drawn over it. §9.1's dark --accent (#4A90FF) is a light blue: white 14px/600 on it
+   * measures 3.12:1, under WCAG 2.2 AA 1.4.3 — and that is the label on "Apply & refresh
+   * page", the button this whole product is pointed at. Dark --danger (#F28B82) is worse
+   * at 2.25:1 under the danger toast. Both are fixed by inking the LABEL rather than by
+   * inventing a second blue: a light fill takes dark text, exactly as the light theme's
+   * dark fill takes white. Light: 4.85 on --accent, 5.28 on --danger. Dark: 5.42 and
+   * 7.53. Measured by `panel.browser.test.js`, in both themes, on every filled button. */
+  --on-accent-text: #FFFFFF;
   --chip-verified-text: #1A7B36;     /* 4.71 on --bg-success */
   --chip-possible-text: #A05F00;     /* 4.66 on --bg-warning */
   --chip-stale-text: #636970;        /* 4.65 on --bg-tertiary */
@@ -98,6 +107,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --on-accent-text: #1E1F24;       /* 5.42 on --accent, 7.53 on --danger */
     --chip-verified-text: #81C995;   /* 6.51 on --bg-success */
     --chip-possible-text: #FDD663;   /* 8.93 on --bg-warning */
     --chip-stale-text: #9B9EA4;      /* 4.62 on --bg-tertiary */
@@ -154,12 +164,18 @@ h2 { font-size: 1rem; font-weight: 600; }
 
 /* ──────────────────────────────────────── segmented control — §9.2 (DGA "segmented") */
 
-.segmented { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px; background: var(--bg-secondary); border: 1.5px solid var(--border); border-radius: var(--radius-m); }
+/* One recipe, two users: the four main tabs (4 columns, 1 row) and §10.1D's value picker,
+ * which has as many segments as the field has observed values and therefore has to wrap.
+ * The thumb moves on BOTH axes so the spring survives the wrap — a picker that dropped
+ * to a plain radio list for a 6-value enum would be a second control vocabulary for the
+ * same job. Defaults are the tab strip's, so that block below is unchanged by all this. */
+.segmented { --seg-cols: 4; --seg-rows: 1; --seg-x: 0; --seg-y: 0; position: relative; display: grid; grid-template-columns: repeat(var(--seg-cols), 1fr); padding: 4px; background: var(--bg-secondary); border: 1.5px solid var(--border); border-radius: var(--radius-m); }
 .segmented::before {
-  content: ''; position: absolute; inset-block: 4px; inset-inline-start: 4px;
-  inline-size: calc((100% - 8px) / 4);   /* §9.2's calc(25% - 4px), landed exactly on a cell */
+  content: ''; position: absolute; inset-block-start: 4px; inset-inline-start: 4px;
+  inline-size: calc((100% - 8px) / var(--seg-cols));   /* §9.2's calc(25% - 4px), landed exactly on a cell */
+  block-size: calc((100% - 8px) / var(--seg-rows));
   background: var(--bg); border-radius: calc(var(--radius-m) - 3px); box-shadow: var(--shadow-sm);
-  transform: translateX(calc(var(--seg, 0) * 100% * var(--dir)));
+  transform: translate(calc(var(--seg-x) * 100% * var(--dir)), calc(var(--seg-y) * 100%));
   transition: transform var(--transition-spring);
 }
 .segmented__opt { position: relative; }
@@ -185,6 +201,15 @@ h2 { font-size: 1rem; font-weight: 600; }
 .tip:hover .tip__bubble, .tip:focus-within .tip__bubble { opacity: 1; transform: translate(calc(-50% * var(--dir)), 0); }
 .tip--up .tip__bubble { inset-block-start: auto; inset-block-end: calc(100% + 6px); transform: translate(calc(-50% * var(--dir)), 4px); }
 .tip--up:hover .tip__bubble, .tip--up:focus-within .tip__bubble { transform: translate(calc(-50% * var(--dir)), 0); }
+/* A bubble is centred on its control and is up to 14rem wide, so a control near the end
+ * of a 320–420px panel pushes it off the edge — measured at 42px outside the panel on
+ * §10.1D's "Show me". `--end` anchors it to the control's own inline end instead, which
+ * is the only placement that cannot overflow on that side. Must stay AFTER `--up`: it
+ * overrides the same two properties. */
+.tip--end .tip__bubble { inset-inline-start: auto; inset-inline-end: 0; transform: translateY(-4px); }
+.tip--end.tip--up .tip__bubble { transform: translateY(4px); }
+.tip--end:hover .tip__bubble, .tip--end:focus-within .tip__bubble,
+.tip--end.tip--up:hover .tip__bubble, .tip--end.tip--up:focus-within .tip__bubble { transform: none; }
 
 /* ──────────────────────────────────────────────────────────── site bar — §10 shell */
 
@@ -214,7 +239,7 @@ h2 { font-size: 1rem; font-weight: 600; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-s); border: none; background: none; font-size: var(--font-size-m); font-weight: 600; cursor: pointer; border-radius: var(--radius-m); transition: all var(--transition-rule); }
 .btn:disabled { cursor: not-allowed; }
 
-.btn--primary { position: relative; overflow: hidden; inline-size: 100%; padding: 0.6875rem 1rem; background: var(--accent); color: var(--on-accent); box-shadow: var(--shadow-button); }
+.btn--primary { position: relative; overflow: hidden; inline-size: 100%; padding: 0.6875rem 1rem; background: var(--accent); color: var(--on-accent-text); box-shadow: var(--shadow-button); }
 .btn--primary::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, color-mix(in srgb, var(--on-accent) 22%, transparent), transparent); opacity: 0; transition: opacity var(--transition-rule); }
 .btn--primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); box-shadow: var(--shadow-md), var(--shadow-button); }
 .btn--primary:hover:not(:disabled)::before { opacity: 1; }
@@ -239,9 +264,13 @@ h2 { font-size: 1rem; font-weight: 600; }
 .icon-btn:disabled { color: var(--icon-tertiary); cursor: not-allowed; }
 .icon-btn--danger:hover:not(:disabled) { background: var(--bg-danger); color: var(--danger); }
 
+/* The ring paints with `currentColor`, so it is legible on whatever surface it is put
+ * on: white inside a primary button (whose own colour is --on-accent), --accent on the
+ * §10.1 progress card, --text in a §10.2 tree row. It used to be pinned to --on-accent
+ * everywhere, which made it a white ring on a white card outside a button. */
 .spinner { inline-size: 1rem; block-size: 1rem; animation: spin 1s linear infinite; }
-.spinner .s-from { stop-color: var(--on-accent); stop-opacity: 0; }
-.spinner .s-to { stop-color: var(--on-accent); stop-opacity: 1; }
+.spinner .s-from { stop-color: currentColor; stop-opacity: 0; }
+.spinner .s-to { stop-color: currentColor; stop-opacity: 1; }
 
 /* ────────────────────────────────────── selection cards — §9.2 (DGA "library-card") */
 
@@ -402,16 +431,83 @@ body.is-picking .pick-live .btn--primary:disabled { opacity: 1; filter: none; }
 .cand__field { flex: 1 0 100%; color: var(--text-secondary); font-size: var(--font-size-s); }
 .cand__path { flex: 1 0 100%; color: var(--text-tertiary); }
 
-/* A recent Link, shown as information rather than as a control until State D exists. */
-.card--static { cursor: default; }
-.card--static:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--border); }
-.card--static:active { transform: none; }
-.card--static .card__title > .truncate { flex: 1 1 auto; min-inline-size: 0; }
+/* A recent Link (§10.1A). A real <button>, because at M4 it opens State D — so it has to
+ * be reachable by keyboard and announce itself as a control. It inherits the DGA
+ * library-card recipe whole; only the things a <button> does not get for free are set
+ * here. */
+.card--link { font-size: var(--font-size-m); line-height: 1.45; color: var(--text); }
+.card--link .card__title > .truncate { flex: 1 1 auto; min-inline-size: 0; }
+.card--link .card__chevron { flex: none; }
+.card--link:hover .card__chevron { color: var(--accent); transform: translateX(calc(2px * var(--dir))); }
+
+/* ────────────────────────────── §10.1C — the probe progress card, and §10.1D's cards
+ *
+ * This is the screen a person watches for eight page reloads, and §10.1's instruction
+ * for it is absolute: "NEVER let the user think it's stuck". Four things carry that,
+ * from fastest to slowest: the spinner (which paints in --accent here — see the note on
+ * `.spinner`, it was pinned to white and invisible outside a button), the step line, the
+ * refresh counter, and the standing instruction, which never changes because "Don't
+ * click inside the page while it runs" is true for the whole run.
+ *
+ * Centred and roomy rather than stretched to the viewport: §10.1C's "full-panel" is
+ * about the card REPLACING the tab's other content, which the render does. A card padded
+ * to a fixed fraction of the window would only be full on one window size. */
+.probe-card { animation: fadeIn 300ms cubic-bezier(0.4, 0, 0.2, 1) both; display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--gap-m); padding: var(--gap-l) var(--gap-m); border: 1.5px solid var(--border); border-radius: var(--radius-m); background: var(--bg-secondary); box-shadow: var(--shadow-sm); }
+.probe-card__spin { color: var(--accent); }
+.probe-card__spin .spinner { inline-size: 2.5rem; block-size: 2.5rem; }
+.probe-step { font-size: 1rem; font-weight: 600; min-block-size: 1.45rem; }
+.probe-step:empty { display: none; }
+.probe-count { color: var(--text-secondary); }
+.probe-card__intro { max-inline-size: 26rem; }
+.probe-card .btn { inline-size: 100%; }
+
+/* §9.2's cancel-button recipe at full width. The compact `.btn--danger` is a text button
+ * for the site bar; the one thing that stops a probe needs a real target and a border. */
+.btn--danger.btn--wide { padding: 0.5rem 0.875rem; font-size: var(--font-size-m); border: 1.5px solid var(--border-danger); background: var(--bg); }
+.btn--danger.btn--wide:hover:not(:disabled) { background: var(--bg-danger); border-color: var(--danger); }
+
+/* §10.1D — the result card. */
+.result { animation: slideDown 300ms cubic-bezier(0.4, 0, 0.2, 1) both; display: flex; flex-direction: column; gap: var(--gap-m); padding: var(--gap-m); border: 1.5px solid var(--border); border-radius: var(--radius-m); background: var(--bg-secondary); box-shadow: var(--shadow-md); }
+.result__head { display: flex; align-items: center; gap: var(--gap-s); }
+.result__head h2 { flex: 1; min-inline-size: 0; }
+.result__where { display: flex; align-items: center; gap: var(--gap-s); flex-wrap: wrap; }
+.result__source { font-weight: 600; min-inline-size: 0; }
+.result__real, .result__path { color: var(--text-secondary); }
+.result__path { color: var(--text-tertiary); }
+.result > .editor__group, .result > .editor__actions { margin: 0; }
+
+/* The field, named in the site's own words. Deliberately NOT one of §10.6's four status
+ * chips and deliberately not styled like one: it is monospaced, because it is the site's
+ * vocabulary rather than MockLab's, and it carries the neutral surface the §10.2 tab
+ * already uses for a non-status label. */
+.chip--field { color: var(--text); background: var(--bg-tertiary); border: 1px solid var(--border); font-weight: 500; max-inline-size: 100%; }
+
+/* "This change affects {k} places on the page — [Show me]" (§10.1D). */
+.result__affected { display: flex; align-items: center; gap: var(--gap-s); padding: var(--gap-s); border-radius: var(--radius-s); background: var(--chip-changed-bg); }
+.result__affected-text { flex: 1; min-inline-size: 0; font-size: var(--font-size-s); color: var(--text); }
+/* --text-secondary on this tint measures 4.25:1. The row's own accent ink is what the
+ * tint was tuned against (4.66), and it also makes "Show me" read as the action it is. */
+.result__affected .btn--ghost { color: var(--chip-changed-text); }
+.result__affected .btn--ghost:hover:not(:disabled) { background: var(--bg); }
+
+/* §10.1D's failure variants. Warning, not danger: nothing broke and nobody did anything
+ * wrong — MockLab looked and did not find, which is the honest half of §0.2. */
+.fail-card { animation: fadeIn 300ms cubic-bezier(0.4, 0, 0.2, 1) both; display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--gap-s); padding: var(--gap-m); border: 1.5px solid var(--warning); border-radius: var(--radius-m); background: var(--bg-warning); }
+.fail-card__icon { flex: none; display: flex; color: var(--chip-possible-text); }
+.fail-card__text { flex: 1; min-inline-size: 0; color: var(--chip-possible-text); }
+.fail-card .btn, .fail-card .tip { flex: 1 0 100%; }
+
+/* §10.1D's value picker: §9.2's segmented control, with as many segments as the field
+ * has real values. Long enum values wrap to a grid rather than being squeezed into
+ * unreadable columns, and the spring thumb follows on both axes. */
+.segmented--values .segmented__opt label { display: block; block-size: auto; min-block-size: 1.875rem; padding: 0.3125rem 0.5rem; color: var(--text-secondary); opacity: 1; text-align: center; font-size: var(--font-size-s); }
+.segmented--values .segmented__opt:hover label { opacity: 1; color: var(--text); }
+.segmented--values .segmented__opt input:checked ~ label { opacity: 1; color: var(--accent); font-weight: 600; }
 
 /* ───────────────────────────────────────────────────────────────────── toast */
 
 .toast { position: fixed; inset-block-end: var(--gap-m); inset-inline: var(--gap-m); z-index: 40; display: flex; align-items: center; gap: var(--gap-s); padding: 0.625rem 0.875rem; border-radius: var(--radius-m); background: var(--bg-inverse); color: var(--text-oninverse); box-shadow: var(--shadow-lg); font-size: var(--font-size-s); font-weight: 500; animation: toastIn var(--transition-spring) both; }
-.toast--danger { background: var(--danger); color: var(--on-accent); }
+.toast--danger { background: var(--danger); color: var(--on-accent-text); }
 
 /* ───────────────────────────────────────────────────── settings & danger zone */
 

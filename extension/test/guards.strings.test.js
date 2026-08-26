@@ -8,12 +8,12 @@
  * The division of labour with `panel.strings.test.js` (OWNER: panel-designer): that file
  * audits the panel from the inside — it calls the render helpers, swaps `strings.js` for
  * a sentinel, and reads the functions that format values. This one audits from the
- * outside, over whole files, and its scope is everything the panel's audit is not
- * looking at.
+ * outside, over whole files: everything the panel's audit is not looking at, plus — at
+ * the fifth and sixth doors below — the sinks it looks at but cannot see all of.
  *
  * Scope: shipping source in BOTH workspaces. `test/` is excluded on purpose — a fixture
- * quoting a copy string is a fixture, not copy. The one audit below that DOES read the
- * panel says why where it stands.
+ * quoting a copy string is a fixture, not copy. The audits below that DO read the panel
+ * say why where they stand.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -113,12 +113,12 @@ test('§17.6 the audit itself reads all three quotes, which is how the gap got i
  * scope — this one reads ARGUMENT POSITIONS, that one reads property names, and neither
  * can see the other's door.
  *
- * KNOWN BOUNDARY, stated rather than pretended away: an argument only counts when the
- * WHOLE of it is a literal, or when it is an array literal whose elements are. That is
- * what keeps `el('p', { class: 'help' }, child)` from reporting its own class name, and
- * it means copy assembled at the call site — `'Some ' + word`, a template that
- * interpolates, a word held in a variable — is out of reach here exactly as it is in the
- * whole-literal audit above. The panel's own suite covers the rendered result.
+ * KNOWN BOUNDARY, stated rather than pretended away: an argument counts when a VALUE
+ * POSITION inside it holds a literal — the whole argument, an arm of the expression it
+ * is (`copyIn`, below), or an element of an array literal, which is how `withTip`
+ * receives its two lines. That is what keeps `el('p', { class: 'help' }, child)` from
+ * reporting its own class name. What is out of reach is stated with `copyIn`, since both
+ * doors now share it.
  * ══════════════════════════════════════════════════════════════════════════════════ */
 
 /** A WHOLE string literal: a quoted string, or a template with no `${…}` in it. */
@@ -140,16 +140,19 @@ const ARGUMENT_SINKS = [
 ];
 
 /**
- * The source text inside the parentheses opening at `open`, or null when they never
- * close. Quotes and templates are tracked, so a bracket inside a string is not counted —
- * an unterminated call is skipped rather than guessed at, which loses a call site
- * instead of inventing one.
+ * The one scanner every audit below reads source with. It walks `code` from `start`
+ * tracking quotes, templates and brackets, and returns the first index where
+ * `ends(character, index)` is true AT DEPTH 0 — or -1 when nothing ends it.
+ *
+ * One scanner rather than four: every audit here has to know that a bracket inside a
+ * string is not a bracket, and four copies of that rule is four chances for one of them
+ * to be subtly different from the others.
  */
-function insideParens(code, open) {
+function boundary(code, start, ends) {
   let depth = 0;
   let quote = '';
   let escaped = false;
-  for (let index = open; index < code.length; index += 1) {
+  for (let index = start; index < code.length; index += 1) {
     const character = code[index];
     if (quote) {
       if (escaped) escaped = false;
@@ -157,14 +160,25 @@ function insideParens(code, open) {
       else if (character === quote) quote = '';
       continue;
     }
+    if (depth === 0 && ends(character, index)) return index;
     if (character === '"' || character === "'" || character === '`') quote = character;
     else if ('([{'.includes(character)) depth += 1;
-    else if (')]}'.includes(character)) {
-      depth -= 1;
-      if (depth === 0) return code.slice(open + 1, index);
-    }
+    else if (')]}'.includes(character)) depth -= 1;
   }
-  return null;
+  return -1;
+}
+
+/** Every closer, which is what ends a call, an array literal or an object literal. */
+const CLOSER = (character) => ')]}'.includes(character);
+
+/**
+ * The source text inside the parentheses opening at `open`, or null when they never
+ * close — an unterminated call is skipped rather than guessed at, which loses a call site
+ * instead of inventing one.
+ */
+function insideParens(code, open) {
+  const close = boundary(code, open + 1, CLOSER);
+  return close === -1 ? null : code.slice(open + 1, close);
 }
 
 /**
@@ -173,45 +187,138 @@ function insideParens(code, open) {
  */
 function splitList(text) {
   const parts = [];
-  let depth = 0;
-  let quote = '';
-  let escaped = false;
-  let current = '';
-  for (const character of text) {
-    if (quote) {
-      current += character;
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === quote) quote = '';
-      continue;
-    }
-    if (character === '"' || character === "'" || character === '`') quote = character;
-    else if ('([{'.includes(character)) depth += 1;
-    else if (')]}'.includes(character)) depth -= 1;
-    else if (character === ',' && depth === 0) {
-      parts.push(current);
-      current = '';
-      continue;
-    }
-    current += character;
+  for (let start = 0; ; ) {
+    const comma = boundary(text, start, (character) => character === ',');
+    parts.push(text.slice(start, comma === -1 ? text.length : comma).trim());
+    if (comma === -1) break;
+    start = comma + 1;
   }
-  parts.push(current);
-  const trimmed = parts.map((part) => part.trim());
-  return trimmed.length === 1 && trimmed[0] === '' ? [] : trimmed;
+  return parts.length === 1 && parts[0] === '' ? [] : parts;
+}
+
+/* ───── the sixth door: a literal INSIDE the expression, not adjacent to the sink ─────
+ *
+ * Every sink above, and every sink `panel.strings.test.js` watches, is found by reading
+ * the token that IMMEDIATELY follows it — `\btext:\s*(['"`])…`. That regex sees
+ *
+ *     el('span', { class: 'sitebar__host truncate', text: 'No page selected yet' })
+ *
+ * and it does not see
+ *
+ *     el('span', { class: 'sitebar__host truncate', text: state.hostname || 'No page selected yet' })
+ *
+ * which renders the same word to the same reader. QA proved it as a live mutation on the
+ * no-active-tab branch of `panel/panel.js`: with that line in the tree, this file and
+ * `panel.strings.test.js` together ran 16 tests, 16 pass, 0 fail. A `||`, either arm of a
+ * ternary, a `+` concatenation and a template's static text are all copy, and all of them
+ * sit one token further out than those regexes reach. There is no breach in the tree
+ * today — the conditionals at a sink have an `S.*` in both arms. This is a vaccine,
+ * written before M5 and M6 pour new copy into the panel.
+ *
+ * `copyIn()` therefore classifies the whole EXPRESSION at a sink rather than the token
+ * after it: it splits at the operators that let a value through to the screen — `||`,
+ * `&&`, `??`, both arms of `?:`, `+` — and reports any operand that is a literal, the
+ * static text of any template, and anything quoted inside a template's `${…}`. Both doors
+ * use it: the three argument positions above, and the four property positions below.
+ *
+ * WHY THE PROPERTY DOORS ARE AUDITED HERE, in another owner's territory: the rule is the
+ * same rule, `panel.strings.test.js` belongs to panel-designer, and it is that file's own
+ * comment — "A quoted word at any of them is copy that never passed through §11" — that
+ * this closes. A quoted word behind a `||` is copy too, and nothing there can see it. The
+ * overlap is deliberate: a literal adjacent to a sink is now reported twice, which is the
+ * cheap direction to be wrong in.
+ *
+ * KNOWN BOUNDARY, stated rather than pretended away:
+ *   • an operand counts only when the WHOLE of it is a literal or a template. Copy that
+ *     arrives through a CALL — `t('Some words')` — is out of reach, and deliberately: a
+ *     call's arguments are values, not copy, or the panel's own formatters
+ *     (`S.probe.reloads(i, n)`, `S.glyph.quote(text)`) would be reported at every sink.
+ *   • a word held in a variable — `const gone = 'No page'; … text: host || gone` — is
+ *     invisible here; nothing in this file follows data. `panel.strings.test.js` swaps
+ *     `strings.js` for a sentinel and reads what the panel RENDERS; that is the audit
+ *     that can see it, and it is why both exist.
+ *   • inside a template, only static text containing a LETTER counts. Punctuation glue —
+ *     `` `${a}: ${b}` `` — is out of reach: the panel routes those through `S.glyph.join*`,
+ *     and a bare `text: ' · '` is still caught as a whole operand.
+ *   • an expression ends at the first `;`, top-level `,` or unmatched closer. An
+ *     assignment written without a semicolon runs on into the statement after it, which
+ *     can only make the audit read MORE text, never less.
+ *   • `text:` and `title:` are read as sinks wherever they are object keys, so a data
+ *     field of either name is audited as if it were rendered. That fails toward flagging.
+ * ══════════════════════════════════════════════════════════════════════════════════ */
+
+/** The operators that pass one of their operands through to the screen unchanged. */
+const VALUE_OPERATOR = /^(?:\|\||&&|\?\?|\+|\?(?!\.)|:)/;
+
+/**
+ * `expression` split at the top-level operators above, outside quotes and brackets — so
+ * the `||` in `S.probe.reloads(i, n || i)` stays inside the call it belongs to, and `?.`
+ * is not mistaken for a ternary.
+ */
+function operands(expression) {
+  const parts = [];
+  for (let start = 0; ; ) {
+    const at = boundary(expression, start, (character, index) => VALUE_OPERATOR.test(expression.slice(index)));
+    parts.push(expression.slice(start, at === -1 ? expression.length : at).trim());
+    if (at === -1) break;
+    start = at + VALUE_OPERATOR.exec(expression.slice(at))[0].length;
+  }
+  return parts.filter(Boolean);
+}
+
+/** A template split into its static `chunks` and the expressions in its `holes`. */
+function templateParts(template) {
+  const body = template.slice(1, -1);
+  const chunks = [];
+  const holes = [];
+  let current = '';
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] === '\\') {
+      current += body.slice(index, index + 2);
+      index += 1;
+      continue;
+    }
+    if (body[index] === '$' && body[index + 1] === '{') {
+      const hole = insideParens(body, index + 1);
+      // An unterminated hole means the template was mis-sliced; stop rather than guess.
+      if (hole === null) break;
+      chunks.push(current);
+      current = '';
+      holes.push(hole);
+      index += hole.length + 1;
+      continue;
+    }
+    current += body[index];
+  }
+  chunks.push(current);
+  return { chunks, holes };
 }
 
 /**
- * The copy an argument holds DIRECTLY: itself when the whole argument is a literal, and
- * its literal elements when it is an array literal — which is how `withTip` receives its
- * two lines. A nested `el(…)` child holds no copy attributable to THIS call site; it is
- * audited at its own, which is why nothing here recurses.
+ * Every piece of `expression` that puts a word on screen: each operand that is a whole
+ * literal, each template whose static text has a letter in it, whatever is quoted inside
+ * that template's holes, and — for an array literal, which is how `withTip` receives its
+ * two lines — the same applied to each element. A nested `el(…)` child holds no copy
+ * attributable to THIS call site; it is audited at its own, which is why nothing here
+ * recurses into a call.
  */
-function literalCopy(argument) {
-  if (WHOLE_LITERAL.test(argument)) return [argument];
-  if (argument.startsWith('[') && argument.endsWith(']')) {
-    return splitList(argument.slice(1, -1)).filter((item) => WHOLE_LITERAL.test(item));
+function copyIn(expression) {
+  const trimmed = expression.trim();
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    return splitList(trimmed.slice(1, -1)).flatMap(copyIn);
   }
-  return [];
+  const found = [];
+  for (const operand of operands(trimmed)) {
+    // An empty literal renders nothing and says nothing, so it is never copy.
+    if (WHOLE_LITERAL.test(operand)) {
+      if (stringLiterals(operand)[0]) found.push(operand);
+    } else if (operand.length > 1 && operand.startsWith('`') && operand.endsWith('`')) {
+      const { chunks, holes } = templateParts(operand);
+      if (chunks.some((chunk) => /\p{L}/u.test(chunk))) found.push(operand);
+      found.push(...holes.flatMap(copyIn));
+    }
+  }
+  return found;
 }
 
 /**
@@ -229,10 +336,7 @@ function argumentCopy(code) {
       const args = splitList(inner);
       const line = code.slice(0, match.index).split('\n').length;
       for (let index = from; index < Math.min(args.length, to); index += 1) {
-        for (const literal of literalCopy(args[index])) {
-          // An empty literal renders nothing and says nothing, so it is not copy.
-          if (stringLiterals(literal)[0]) found.push(`${line}: ${what} — ${literal}`);
-        }
+        for (const piece of copyIn(args[index])) found.push(`${line}: ${what} — ${piece}`);
       }
     }
   }
@@ -280,4 +384,112 @@ test('§17.6 the argument audit sees the door, and leaves the panel\'s real call
     'withTip(control, [S.tab.pick, S.tab.sources], { up: true });'
   ].join('\n');
   assert.deepEqual(argumentCopy(innocent), []);
+});
+
+/**
+ * The four property positions a word reaches a reader through, named the way
+ * `panel.strings.test.js` names them — an option `el()` renders (`text`, and an
+ * accessible name / placeholder / title), the same three assigned to a node, and
+ * `setAttribute`. Here they are openers, not whole matches: what follows each one is an
+ * EXPRESSION, read by `expressionAt` and classified by `copyIn`.
+ *
+ * The option key must sit where an object key can — after `{` or `,` — so the `text` in
+ * `flag ? text : other` is not read as one, and `-` in the lookbehind keeps
+ * `data-s-placeholder` out.
+ */
+const NAMED = '(?:aria-label|ariaLabel|placeholder|title)';
+const PROPERTY_SINKS = [
+  { what: 'an option that renders words', opener: new RegExp(String.raw`(?<=[{,]\s*)(['"]?)(?:text|${NAMED})\1\s*:`, 'g') },
+  { what: 'a property assigned to a node', opener: /\.\s*(?:textContent|innerText|placeholder|title|ariaLabel)\s*=(?![=>])/g },
+  { what: 'an attribute set on a node', opener: new RegExp(String.raw`setAttribute\(\s*(['"])${NAMED}\1\s*,`, 'g') }
+];
+
+/**
+ * The expression starting at `start`: up to the first `;`, the first comma at depth 0, or
+ * the closer that ends the object or call it sits in.
+ */
+function expressionAt(code, start) {
+  const end = boundary(code, start, (character) => CLOSER(character) || character === ',' || character === ';');
+  return code.slice(start, end === -1 ? code.length : end);
+}
+
+/**
+ * Every word `code` puts on screen from inside an expression at a property sink, as
+ * `line: what — piece`. Source order per sink, the same way `argumentCopy` is ordered.
+ *
+ * @param {string} code comment-free source
+ */
+function expressionCopy(code) {
+  const found = [];
+  for (const { what, opener } of PROPERTY_SINKS) {
+    for (const match of code.matchAll(opener)) {
+      const line = code.slice(0, match.index).split('\n').length;
+      for (const piece of copyIn(expressionAt(code, match.index + match[0].length))) {
+        found.push(`${line}: ${what} — ${piece}`);
+      }
+    }
+  }
+  return found;
+}
+
+test('§17.6 no word reaches the panel from inside an expression at a copy sink', () => {
+  const offenders = [];
+  for (const file of jsFiles(path.join(SRC, 'panel'))) {
+    if (path.basename(file) === 'strings.js') continue;
+    for (const hit of expressionCopy(stripComments(read(file)))) offenders.push(`${rel(file)}:${hit}`);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'route it through strings.js and pass the key (§17.6). A word behind a `||`, in an arm ' +
+      'of a ternary, on either side of a `+`, or written into a template is rendered exactly ' +
+      'like a word written against the sink — and the adjacent-literal regexes cannot see it.'
+  );
+});
+
+test('§17.6 the expression audit fails on QA’s mutation and on each shape beside it', () => {
+  // Without this, the test above is green because nothing is broken today and would stay
+  // green if the classifier stopped working. Line 1 is QA's mutation, verbatim.
+  const planted = [
+    "el('span', { class: 'sitebar__host truncate', text: state.hostname || 'No page selected yet' });",
+    "el('p', { class: 'help', text: ready ? S.probe.intro : 'Coming soon' });",
+    "el('h3', { text: 'Source: ' + sourceName(ctx, id) });",
+    "el('p', { text: S.editor.original(v) + ' (best guess)' });",
+    'el(\'p\', { text: `${places} places on the page` });',
+    "node.textContent = value ?? 'nothing';",
+    "box.setAttribute('aria-label', on ? S.sources.changeOn : 'Change is off');",
+    "el('span', { 'aria-label': `${stopping ? 'Stopping…' : S.probe.cancel}` });"
+  ].join('\n');
+  assert.deepEqual(expressionCopy(planted), [
+    "1: an option that renders words — 'No page selected yet'",
+    "2: an option that renders words — 'Coming soon'",
+    "3: an option that renders words — 'Source: '",
+    "4: an option that renders words — ' (best guess)'",
+    '5: an option that renders words — `${places} places on the page`',
+    "8: an option that renders words — 'Stopping…'",
+    "6: a property assigned to a node — 'nothing'",
+    "7: an attribute set on a node — 'Change is off'"
+  ]);
+
+  // The same operand rule at the three ARGUMENT doors, which share `copyIn`.
+  assert.deepEqual(
+    argumentCopy("el('div', {}, ready ? S.pick.cta : 'Pick an element');\nroot.append(name || 'Untitled');"),
+    ["1: a child of el() — 'Pick an element'", "2: a child appended to a node — 'Untitled'"]
+  );
+
+  // And the shapes the real panel is written in, which must NOT be flagged: the two
+  // conditionals that live at sinks today, a formatter's arguments, an `||` inside a
+  // call, literals at an option that is NOT a sink, a bare assignment, and an attribute
+  // whose value is not copy.
+  const innocent = [
+    "el('span', { class: 'sitebar__host truncate', text: state.hostname || S.site.noPage });",
+    "el('p', { class: 'help', text: ready ? S.probe.intro : S.soon });",
+    "el('span', { text: S.glyph.joinLabel(S.advanced.path, candidate.path) });",
+    "el('span', { text: S.probe.reloads(Number(r.index), Number(r.estimate) || Number(r.index)) });",
+    "el('label', { class: option.mono ? 'mono truncate' : 'truncate', for: id, text: option.label });",
+    "el('input', { type: 'checkbox', 'aria-label': change.enabled ? S.sources.changeOn : S.sources.changeOff });",
+    'node.textContent = value;',
+    "svg.setAttribute('aria-hidden', 'true');"
+  ].join('\n');
+  assert.deepEqual(expressionCopy(innocent), []);
 });

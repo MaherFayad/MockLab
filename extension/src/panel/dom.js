@@ -88,6 +88,29 @@ export const ICON = {
 /**
  * The DGA radial-gradient spinner (PLAN.md §9.2). Its two stops are painted from
  * panel.css (`.spinner .s-from` / `.s-to`) so no colour lives here.
+ *
+ * ── Rebuilt at M4, because the first version could not spin ─────────────────────
+ * It was a disc filled with a radial gradient CENTRED ON ITSELF (cx .5, cy .5), with a
+ * smaller disc of `currentColor` laid over the middle to fake a hole. Two consequences,
+ * both invisible to every test and obvious the moment the thing is looked at:
+ *
+ *   1. a gradient centred on the shape it fills is radially SYMMETRIC, so rotating it
+ *      changes nothing. `animation: spin 1s linear infinite` ran, painted the identical
+ *      frame 60 times a second, and the "loader" sat perfectly still;
+ *   2. the fake hole was `currentColor` — the colour of the TEXT around it, not of the
+ *      surface behind it. In the §10.2 tree that drew a solid dark dot on white; inside
+ *      a primary button, where the text is also white, the whole thing collapsed into a
+ *      soft white blob.
+ *
+ * §16 M4 is where that stops being cosmetic: §10.1's progress card is on screen for
+ * eight page reloads and its instruction is "NEVER let the user think it's stuck". A
+ * motionless loader is precisely that lie.
+ *
+ * The fix keeps §9.2's radial gradient and moves its CENTRE to the top of the ring
+ * (cx .5, cy 0), so opacity varies AROUND the circumference — transparent at the head,
+ * solid at the tail, the comet shape every spinner is. And the ring is a STROKE, not a
+ * disc with a patch over it, so the surface behind shows through on any background.
+ *
  * @param {string} id  unique gradient id — SVG gradients are document-scoped
  */
 export function spinner(id) {
@@ -98,37 +121,42 @@ export function spinner(id) {
   const defs = document.createElementNS(SVG_NS, 'defs');
   const grad = document.createElementNS(SVG_NS, 'radialGradient');
   grad.setAttribute('id', id);
+  // Centred on the TOP of the ring's box, radius 1 box-width: the far side of the ring
+  // lands on the last stop and the near side on the first. This asymmetry IS the motion.
   grad.setAttribute('cx', '0.5');
-  grad.setAttribute('cy', '0.5');
-  grad.setAttribute('r', '0.5');
-  for (const [offset, cls] of [['0.62', 's-from'], ['1', 's-to']]) {
+  grad.setAttribute('cy', '0');
+  grad.setAttribute('r', '1');
+  for (const [offset, cls] of [['0.35', 's-from'], ['1', 's-to']]) {
     const stop = document.createElementNS(SVG_NS, 'stop');
     stop.setAttribute('offset', offset);
     stop.setAttribute('class', cls);
     grad.append(stop);
   }
   defs.append(grad);
-  const circle = document.createElementNS(SVG_NS, 'circle');
-  circle.setAttribute('cx', '12');
-  circle.setAttribute('cy', '12');
-  circle.setAttribute('r', '9');
-  circle.setAttribute('fill', `url(#${id})`);
-  const hole = document.createElementNS(SVG_NS, 'circle');
-  hole.setAttribute('cx', '12');
-  hole.setAttribute('cy', '12');
-  hole.setAttribute('r', '6.2');
-  hole.setAttribute('fill', 'currentColor');
-  svg.append(defs, circle, hole);
+  const ring = document.createElementNS(SVG_NS, 'circle');
+  ring.setAttribute('cx', '12');
+  ring.setAttribute('cy', '12');
+  ring.setAttribute('r', '7.5');
+  ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', `url(#${id})`);
+  ring.setAttribute('stroke-width', '3');
+  svg.append(defs, ring);
   return svg;
 }
 
 /**
  * Wrap a control in the §9.2 tooltip. `lines[0]` is the label, `lines[1]` the dimmed
  * secondary line. Both come from strings.js — never from here.
- * @param {Node} control @param {string[]} lines @param {{up?:boolean}} [opts]
+ *
+ * `end` anchors the bubble to the control's inline END instead of centring it on the
+ * control. A centred 14rem bubble on a control near the edge of a 320px panel hangs off
+ * it; the panel is too narrow for the bubble to be centred everywhere.
+ *
+ * @param {Node} control @param {string[]} lines @param {{up?:boolean, end?:boolean}} [opts]
  */
 export function withTip(control, lines, opts = {}) {
   const bubble = el('span', { class: 'tip__bubble', role: 'tooltip', text: lines[0] });
   if (lines[1]) bubble.append(el('span', { text: lines[1] }));
-  return el('span', { class: 'tip' + (opts.up ? ' tip--up' : '') }, control, bubble);
+  const where = 'tip' + (opts.up ? ' tip--up' : '') + (opts.end ? ' tip--end' : '');
+  return el('span', { class: where }, control, bubble);
 }

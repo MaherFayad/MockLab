@@ -43,6 +43,7 @@ import { S } from '../src/panel/strings.js';
 import { MSG } from '../src/background/messages.js';
 import { createServer } from '../../companion/src/index.js';
 import { EXTENSION_DIR, loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
+import { readVerifiedChips, assertVerifiedHonesty } from '../testlib/verifiedChip.js';
 
 /** The value the demo maps to a red pill and a banner (§14). */
 const CANCELLED = 'CANCELLED';
@@ -123,6 +124,7 @@ function rootRow(panel, text) {
 function renderPick(page, patch, swap) {
   return page.evaluate(async ([given, swapKeys, sentinel]) => {
     const mod = await import('/src/panel/pick.js');
+    const probe = await import('/src/panel/probe.js');
     // The same module instance pick.js imports, so a key replaced here is the key it
     // reads. Restored in the `finally` below — every later subtest reads real copy.
     const { S } = await import('/src/panel/strings.js');
@@ -187,6 +189,10 @@ function renderPick(page, patch, swap) {
       const primary = root.querySelector('.btn--primary');
       return {
         missingContract: mod.missingPickContract(),
+        // §10.1C's experiment needs its own contract, which §16 M4 requested and which
+        // messages.js may or may not define yet. Every assertion about the probe button
+        // is stated against THIS rather than against today's answer.
+        missingProbe: probe.missingProbeContract(),
         rootText: root.innerText,
         bodyText: document.body.innerText,
         cards: root.querySelectorAll('.card').length,
@@ -245,6 +251,23 @@ function renderPick(page, patch, swap) {
       for (const key of Object.keys(saved)) S.pick[key] = saved[key];
     }
   }, [patch, swap, SENTINEL]);
+}
+
+/**
+ * §17.12's invariant, read out of the panel as it currently stands.
+ *
+ * From M2 to M3 this file asserted instead that §11's "Verified ✓" appeared NOWHERE in
+ * the panel body. That was true and load-bearing while no probe existed: every
+ * occurrence was a bug by construction. At M4 the word becomes legitimate, and the old
+ * assertion could only have been DELETED — which is how a product ships the bug it spent
+ * three milestones avoiding. It changes shape into the statement that was always meant,
+ * and the statement lives in `testlib/verifiedChip.js` so this suite and
+ * `panel.probe.browser.test.js` cannot drift apart about what honesty means here.
+ *
+ * @param {number} expected how many chips the FIXTURE entitles this screen to
+ */
+async function honesty(page, expected, where) {
+  assertVerifiedHonesty(await page.evaluate(readVerifiedChips, S.chips.verified), { expected, where });
 }
 
 /** A Binding the probe would write at M4 — the only thing §10.1A's list may ever show. */
@@ -589,9 +612,11 @@ if (!chromium) {
         assert.equal(await panel.locator('#panel-pick .empty').count(), 0, 'an empty shelf is still a promise — do not draw one');
         assert.equal(screen.includes(S.pick.recent), false, `"${S.pick.recent}" heads a list that does not exist yet`);
 
-        // §17.12 — the sentence this whole product is judged on.
-        const everything = await panel.locator('body').innerText();
-        assert.equal(everything.includes(S.chips.verified), false, `"${S.chips.verified}" must not appear anywhere before a probe has run`);
+        // §17.12 — the sentence this whole product is judged on. Nothing is proved on
+        // this screen, so the honest number of "Verified ✓" chips is zero; and any chip
+        // that DID appear would have to agree, in three independently written places,
+        // that the Link it describes is verified.
+        await honesty(panel, 0, 'State A with nothing proved');
       });
 
       await check('§16 M3 — the button picks the demo pill, and the tab follows the page (§10.1B, §10.1C)', async () => {
@@ -747,7 +772,7 @@ if (!chromium) {
         // §10.6: four chips are the entire status vocabulary, and an unproven guess is
         // "Possible". Once, over the list — never "Verified ✓", and never a fifth word.
         assert.deepEqual(seen.chips, [S.chips.candidate]);
-        assert.equal(seen.bodyText.includes(S.chips.verified), false, 'nothing here has been proved (§17.12)');
+        await honesty(panel, 0, 'State C — a list of guesses');
 
         assert.deepEqual(
           seen.rows.map((row) => row.value),
@@ -765,12 +790,15 @@ if (!chromium) {
           'each row names its field without a "$." or a bracket in sight'
         );
 
-        // §16 M4 owns the experiment. Shown, disabled, and explained — not hidden, and
-        // not enabled over nothing.
+        // §10.1C's experiment: shown, and offered exactly when it can really run. Stated
+        // as a property of the contract rather than as a fact about today, so it keeps
+        // holding when the probe's message types land — the same shape as the picker
+        // button's check above, which survived its own contract arriving mid-build.
         assert.equal(seen.primary.text, S.probe.cta, '§11 probe.cta must be on screen');
-        assert.equal(seen.primary.disabled, true, 'no probe can run at M3, so it must not offer to');
-        assert.ok(seen.helps.includes(S.soon), 'and it must say so, with somewhere to go instead');
-        assert.equal(seen.rootText.includes(S.probe.intro), false, 'do not describe a run that cannot start');
+        assert.equal(seen.primary.disabled, seen.missingProbe.length > 0, 'the button offers the experiment exactly when it can run it');
+        if (seen.primary.disabled) assert.ok(seen.helps.includes(S.soon), 'and a disabled hero button says so, with somewhere to go instead');
+        // §11's intro promises a run that takes half a minute; only say it if one can start.
+        assert.equal(seen.rootText.includes(S.probe.intro), !seen.primary.disabled, 'do not describe a run that cannot start');
       });
 
       await check('State C shows at most 12 possibilities (§10.1C)', async () => {
@@ -792,8 +820,8 @@ if (!chromium) {
         assert.equal(seen.chips.length, 0, 'there is no list, so there is nothing to call Possible');
         assert.equal(seen.rootText.includes(S.probe.cta), false, 'there is nothing to find the source among');
         assert.ok(
-          seen.secondaries.some((button) => button.text === S.pick.checkAll && button.disabled),
-          '§6.3 offers "Check all fields", and at M3 it cannot run yet'
+          seen.secondaries.some((button) => button.text === S.pick.checkAll && button.disabled === (seen.missingProbe.length > 0)),
+          '§6.3 offers "Check all fields", live exactly when the exhaustive run can actually start'
         );
       });
 
@@ -953,7 +981,7 @@ if (!chromium) {
         });
         assert.equal(unproven.cards, 0, 'a candidate or stale Link is not a proved one, and §10.1A lists only proved ones');
         assert.equal(unproven.rootText.includes(S.pick.recent), false, 'no list, so no heading over it');
-        assert.equal(unproven.bodyText.includes(S.chips.verified), false, `"${S.chips.verified}" must never come from an unproved Link`);
+        await honesty(panel, 0, '§10.1A with eight unproved Links');
 
         const shown = await renderPick(panel, { sources: [{ sigId: 'sig-trip', name: 'Trip' }], bindings: links });
         assert.equal(shown.cards, 3, '§10.1A: the last 3');
@@ -964,18 +992,23 @@ if (!chromium) {
         // Most recently proved first — "last 3" is a claim about time, not about order
         // of insertion.
         assert.equal(shown.rootText.indexOf(S.pick.recent) >= 0, true);
+        // Three cards, three chips, and every one of them describing a Link that really
+        // is verified — the count is what a widened filter breaks first.
+        await honesty(panel, 3, '§10.1A with four proved Links');
+
         for (const card of shown.linkCards) {
-          // State D is M4. A chevron and a pointer cursor both say "this opens" — over
-          // nothing, at M3, that is the same lie as an enabled probe button.
-          assert.equal(card.chevrons, 0, 'no chevron until there is an editor behind it');
-          assert.equal(card.clickable, false);
-          assert.equal(card.cursor, 'default');
+          // At M3 this asserted the opposite: a chevron is a promise that something
+          // opens, and there was nothing behind it. State D exists now (Deviation 29).
+          assert.equal(card.chevrons, 1, '§10.1A ends the card with a chevron into the editor');
+          assert.equal(card.clickable, true, 'and it is a real control, reachable by keyboard');
+          assert.equal(card.cursor, 'pointer');
         }
 
-        // Leave the fixture page as this milestone really ships, so nothing later reads
-        // a "Verified ✓" this subtest put there.
+        // Leave the fixture page as the idle screen, so nothing later reads a
+        // "Verified ✓" this subtest put there.
         const after = await renderPick(panel, {});
-        assert.equal(after.bodyText.includes(S.chips.verified), false);
+        assert.equal(after.cards, 0);
+        await honesty(panel, 0, 'the Pick tab after the fixture is cleared');
       });
 
       await check('all four status chips meet WCAG 2.2 AA in both themes (§16 M7)', async () => {
