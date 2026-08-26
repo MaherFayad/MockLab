@@ -14,22 +14,26 @@
  *   `guards.strings.test.js`   §17.6 — copy kept outside `strings.js`
  *   `guards.lines.test.js`     §17.10 — the line budget and README's record of it
  * What stays here is §17.4 (the verified state, which is what M4 is about to write for
- * the first time) and the two one-line MV3 rules, §17.1 and §17.2's ban on imports and
- * hashes in the MAIN world. Shared file lists and `stripComments` live in
- * `testlib/audit.js`, which the §17.10 audit counts like any other file.
+ * the first time), the two one-line MV3 rules — §17.1 and §17.2's ban on imports and
+ * hashes in the MAIN world — and, added after M4, §17.7's design tokens, which until
+ * then was the one auditable §17 rule with no guard at all. Shared file lists and
+ * `stripComments` live in `testlib/audit.js`, which the §17.10 audit counts like any
+ * other file.
  *
  * Scope, deliberately different per rule:
  *   §17.1 / §17.2  extension source only — they are about MV3 and the MAIN world.
  *   §17.4          shipping source in BOTH workspaces. `test/` is excluded on purpose:
  *                  `changes.test.js` plants a verified Binding to prove the M2 engine
  *                  never downgrades one — the opposite of a violation.
+ *   §17.7          the extension's `src/` in EVERY format, `.css` and `.html` included.
+ *                  Not the companion's demo, not `test/` — see the note above the rule.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { SRC, FILES, SOURCE_FILES, read, rel, stripComments } from '../testlib/audit.js';
+import { ROOT, SRC, FILES, SOURCE_FILES, sourceFiles, read, rel, stripComments } from '../testlib/audit.js';
 
 /** §17.4's single exception: the probe's CONFIRMED state, and nowhere else. */
 const PROBE_JS = 'extension/src/background/probe.js';
@@ -251,4 +255,201 @@ test('§17.1 no response body is ever modified through webRequest or DNR', () =>
   for (const file of FILES) {
     assert.doesNotMatch(read(file), forbidden, `${rel(file)} — MV3 cannot`);
   }
+});
+
+/* ══════════════════════ §17.7 — the design tokens, and the five hex literals ═══════
+ *
+ * "Use the design tokens; never hardcode a color hex outside `panel.css` `:root`
+ * blocks." Every other rule in §17 that can be audited from source is audited; this one
+ * was not, and it is the rule whose violations are cheapest to add and hardest to see —
+ * one `#0066FF` in a component recipe looks right on screen and silently forks the
+ * accent colour, so the day §9.1's token changes, one control does not follow.
+ *
+ * It holds today: `panel.css` carries every colour inside a `:root` block, and the only
+ * hex outside one is the five literals in `content/picker.js` and `background/badge.js`,
+ * both recorded (README Deviations 21 and 35) and both structurally unavoidable — a
+ * content script cannot reach the panel's stylesheet, and Chrome's badge API takes a
+ * literal, not a CSS variable. Nothing stopped a sixth.
+ *
+ * ── Why a brace-range parse and not a line grep ────────────────────────────────────
+ * `panel.css` has FOUR `:root` blocks: §9.1's light token block, its
+ * `@media (prefers-color-scheme: dark)` twin, and the additive extension-token pair
+ * below them (Deviations 50 and 51). Their values sit on their own lines, so "the hex
+ * and `:root` on one line" permits none of them. The other line-based reading — "any
+ * line after a `:root` line" — permits everything from the last token block to the end
+ * of the file, which is every component recipe in §9.2 and precisely where a stray hex
+ * would go. Neither is a boundary; the block is. So the file is parsed: a hex is
+ * permitted exactly when the INNERMOST unclosed brace at its position was opened by a
+ * `:root` selector. That reads the dark blocks correctly for free, because only the
+ * innermost selector is consulted and `@media` is simply the block around it.
+ *
+ * The parse is checked rather than trusted: braces must balance, and the ranges it finds
+ * must contain a floor of real tokens. An audit that reports "no violations" because it
+ * parsed nothing is the failure mode this whole file exists to prevent.
+ *
+ * ── Scope ──────────────────────────────────────────────────────────────────────────
+ * The extension's own `src/`, in every format, which is where MockLab's UI is. NOT the
+ * companion: `companion/src/demo/` is §14's acceptance harness — a fake airline site
+ * with its own visual identity that must never load `panel.css`, and whose colours are
+ * the thing the probe is pointed AT. Auditing it would be auditing the fixture.
+ * NOT `test/`, where a browser suite states expected colours to assert them.
+ *
+ * KNOWN BOUNDARY 1: HEX only, as §17.7 says. `rgb()`, `hsl()`, `color-mix()` and the
+ * named colours are hardcoded colour too, and one of them is deliberate — `picker.js`
+ * carries `rgba(0,102,255,.08)` because §6.1 dictates that exact fill verbatim. A guard
+ * that flagged it would be one people learn to route around, which is worse than no
+ * guard. Stated here rather than chosen quietly.
+ *
+ * KNOWN BOUNDARY 2: comments are stripped first, everywhere. A hex in prose is
+ * documentation, not a hardcode, and `panel.css` quotes `#4A90FF` and `#F28B82` inside
+ * the notes that record their measured contrast — the row that explains a colour is the
+ * last place this should fire.
+ *
+ * KNOWN BOUNDARY 3: a CSS id selector spelled in hex digits (`#fff`, `#ace`, `#dedede`)
+ * is indistinguishable from a colour to any static reader. None exists today. The
+ * failure direction is a false POSITIVE — the audit names a line and a human renames the
+ * id or records it — never a silent pass, so it is left un-special-cased.
+ *
+ * KNOWN BOUNDARY 4: a colour ASSEMBLED at run time ('#' + value), or arriving in a
+ * message, is invisible here. §17.6's copy audit has the identical boundary for the same
+ * reason, and the answer is the same: this is a source audit, and the browser suites are
+ * what read the pixels.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/** The panel's stylesheet: the one file where a hex may be written at all freely. */
+const PANEL_CSS = path.join(SRC, 'panel', 'panel.css');
+
+/**
+ * The two files §17.7 is knowingly broken in, with the EXACT hex each may carry. An
+ * exact set in both directions: dropping one fails, and so does a sixth appearing in a
+ * file already on the list — which is the direction a table of exempt FILES would miss.
+ */
+const RECORDED_HEX = {
+  'extension/src/content/picker.js': ['#0066FF', '#4A90FF', '#FFFFFF'],
+  'extension/src/background/badge.js': ['#0066FF', '#FFFFFF']
+};
+
+/** A colour hex: 3, 4, 6 or 8 digits, not part of a longer word (`#__mocklab…`). */
+const HEX = /#[0-9a-fA-F]{3,8}\b(?![\w-])/g;
+
+/** Every `/* … *\/` span blanked, newlines kept so reported line numbers stay true. */
+function stripBlockComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, (span) => span.replace(/[^\n]/g, ' '));
+}
+
+/** The same for `//` to end of line, for the JS files. `https://` is left alone. */
+const stripLineComments = (text) => text.replace(/(^|[^:"'`\\])\/\/[^\n]*/g, (m, lead) => lead + ' ');
+
+/**
+ * The character ranges of every `:root { … }` block, by brace depth. `selector` is the
+ * text since the previous brace, so the `:root` nested inside `@media (…)` is read from
+ * its own opener and the `@media` is simply the block around it.
+ */
+function rootRanges(css) {
+  const ranges = [];
+  const stack = [];
+  let selectorStart = 0;
+  for (let i = 0; i < css.length; i += 1) {
+    if (css[i] === '{') {
+      stack.push({ selector: css.slice(selectorStart, i).trim(), open: i });
+      selectorStart = i + 1;
+    } else if (css[i] === '}') {
+      const block = stack.pop();
+      assert.ok(block, `unbalanced } at index ${i} — this parse decides what §17.7 permits`);
+      if (/(^|[,\s])::?root$/.test(block.selector)) ranges.push([block.open, i]);
+      selectorStart = i + 1;
+    }
+  }
+  assert.equal(stack.length, 0, 'panel.css braces must balance for the :root parse to mean anything');
+  return ranges;
+}
+
+/** Every hex in `text` that no range covers, as `line: #HEX`. */
+function hexOutside(text, ranges) {
+  const found = [];
+  for (const match of text.matchAll(HEX)) {
+    if (ranges.some(([from, to]) => match.index > from && match.index < to)) continue;
+    found.push(`${text.slice(0, match.index).split('\n').length}: ${match[0]}`);
+  }
+  return found;
+}
+
+test('§17.7 panel.css keeps every colour inside a :root block', () => {
+  const css = stripBlockComments(read(PANEL_CSS));
+  const ranges = rootRanges(css);
+
+  // The floors. A parse that found no blocks would permit nothing and report every hex,
+  // which is loud; a parse that found ONE huge block would permit everything and report
+  // none, which is silent. Only the second can pass, so it is the one measured.
+  assert.ok(ranges.length >= 4, `only ${ranges.length} :root blocks parsed — §9.1's two and the extension pair are all there`);
+  const inside = ranges.reduce(
+    (n, [from, to]) => n + [...css.slice(from, to).matchAll(HEX)].length,
+    0
+  );
+  assert.ok(inside >= 30, `only ${inside} hex values found inside :root — the parse has stopped reading the token blocks`);
+
+  assert.deepEqual(
+    hexOutside(css, ranges),
+    [],
+    'a colour written into a component recipe silently forks §9.1: the day the token ' +
+      'changes, this one control does not follow. Add a token in the :root block above ' +
+      'and reference it with var().'
+  );
+});
+
+test('§17.7 no source file outside panel.css hardcodes a colour', () => {
+  const offenders = {};
+  for (const file of sourceFiles(SRC)) {
+    if (file === PANEL_CSS) continue;
+    const text = stripLineComments(stripBlockComments(read(file)));
+    const found = [...text.matchAll(HEX)].map((m) => m[0]);
+    if (found.length) offenders[rel(file)] = found.sort();
+  }
+  assert.deepEqual(
+    offenders,
+    RECORDED_HEX,
+    'these are the only files §17.7 is knowingly broken in, and these the only values ' +
+      'they may carry (README Deviations 21 and 35). A new hex belongs in panel.css\'s ' +
+      ':root as a token — unless it truly cannot reach a stylesheet, in which case record ' +
+      'the deviation and add it above.'
+  );
+});
+
+test('§17.7 each recorded exception says at its own definition why it is one', () => {
+  // The table above is the machine's record; this is the human's. A hex exempted in a
+  // list somewhere else is a hex nobody reading the file knows is exempt.
+  for (const relative of Object.keys(RECORDED_HEX)) {
+    const text = read(path.join(ROOT, relative));
+    assert.match(text, /§17\.7/, `${relative} must cite §17.7 beside the literals it hardcodes`);
+  }
+});
+
+test('§17.7 the :root parse is a range, not a line — both line-based readings fail it', () => {
+  // The two ways a grep gets this wrong, on a miniature of panel.css's real shape.
+  const css = [
+    ':root {',
+    '  --accent: #0066FF;',
+    '}',
+    '@media (prefers-color-scheme: dark) {',
+    '  :root {',
+    '    --accent: #4A90FF;',
+    '  }',
+    '}',
+    '.pill {',
+    '  color: #BADA55;',
+    '}'
+  ].join('\n');
+  const ranges = rootRanges(css);
+  assert.equal(ranges.length, 2, 'the top-level block and the one nested inside @media');
+  assert.deepEqual(
+    hexOutside(css, ranges),
+    ['10: #BADA55'],
+    'only the one in the component recipe — "same line as :root" would report all three, ' +
+      'and "any line after a :root line" would report none'
+  );
+
+  // And the self-check: a file whose braces do not balance must fail loudly, never
+  // silently produce ranges that permit the wrong half of the file.
+  assert.throws(() => rootRanges(':root { --a: #fff;'), /braces must balance/);
+  assert.throws(() => rootRanges('}'), /unbalanced/);
 });

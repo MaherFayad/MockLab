@@ -13,6 +13,56 @@
  * them out of `pickApi.js` for the same reason: it is payload vocabulary, so the panel
  * should not import a service-worker module to read a word off the wire.
  *
+ * M4's probe types arrived the same way, staged in `background/probeMessages.js`, and
+ * were folded in the same way: values byte-for-byte, that file gone. One difference,
+ * stated rather than left to be noticed. The pick merge dissolved `PICK_MSG` INTO `MSG`
+ * and renamed every call site; this one keeps `PROBE_MSG`, `PROBE_PORT_MSG`,
+ * `PROBE_PHASE`, `PROBE_STATE`, `PROBE_STEP` and `PROBE_FAIL` as the names they already
+ * were, so the merge is a move and the only edit anywhere else is a module specifier.
+ * The rename is a four-module change in files another agent owns and is editing now —
+ * doing it in the same commit would make "no behaviour change, byte-compared" a claim
+ * nobody could check. It is still owed; §17.8 is satisfied either way, because §17.8
+ * asks for one home for a message type and there is one again.
+ *
+ * What the separate names must NOT cost is guard coverage, and it does not: the §17.2
+ * mirror audit in `test/guards.contract.test.js` no longer walks `PORT_MSG` by name. It
+ * collects every `port:`-prefixed value this module exports, whatever object holds it,
+ * so a probe port type is inside the guard for the same reason a pick one is. See the
+ * note there — while these three sat in another module they were outside it, which is
+ * exactly how the broken `port:picked` mirror passed twelve guards at M3.
+ *
+ * M5's eight preset/highlight types arrived the same way a third time, staged in
+ * `panel/requestedMessages.js`, and are folded in below under `MSG` — values compared
+ * byte-for-byte against that file's proposals, so no wire value moved and no panel call
+ * site changed. That staging file is NOT deleted here the way M3's and M4's were: it
+ * lives under `src/panel/`, which this agent may not write, and its `M5_MSG` now simply
+ * forwards what `MSG` defines (`MSG.X || 'msg:…'` resolves to `MSG.X`) while
+ * `stillRequested()` returns nothing. Its author deletes it and re-points the imports.
+ *
+ * ── What pins a `msg:` value, now that the eight below make thirty-two ───────────
+ * Nothing did, and that was the real gap. A `page:`/`port:` value is pinned because two
+ * content scripts spell it by hand and the mirror audit compares them; both ends of a
+ * `msg:` value import THIS file, so changing one here changes both at once and no test
+ * anywhere would notice. `guards.contract.test.js` now pins them three ways that need no
+ * table named: every wire value must equal its own prefix plus its key in lowerCamel, so
+ * the value is derivable from the name and a mutation of either fails; no two may be
+ * equal, because a collision silently re-routes one type's messages to another's
+ * handler; and every `msg:`/`port:`/`page:` literal in shipping code outside this file
+ * must be one of these values, which is §17.8's "no magic strings" made checkable in the
+ * direction that matters as M6 adds fifteen more.
+ *
+ * The derivation rule has EXACTLY THREE exceptions today and they are not a boundary —
+ * they are the rename owed above, written down where a test reads it. `PROBE_PORT_MSG`'s
+ * `SNAPSHOT`/`FINGERPRINTS`/`RESULT` carry `probe` in the value but not in the key,
+ * because the table name carried it instead. Dissolving them into `PORT_MSG` as
+ * `PROBE_SNAPSHOT`/`PROBE_FINGERPRINTS`/`PROBE_RESULT` makes all three derive and empties
+ * that exemption list. `PROBE_MSG`'s four already derive, so dissolving it into `MSG` is
+ * a pure rename of the table reference. Neither is done here: between them the call sites
+ * are `background.js`, `probeLink.js`, `agent.js`, `panel/probe.js` and four suites —
+ * two of which this agent may not write and two of which another agent was editing
+ * minutes before this commit. Doing it now would mean nobody could check "no behaviour
+ * change, byte-compared", which is the claim that makes a merge safe.
+ *
  * ── The one place §17.8 cannot reach ────────────────────────────────────────────
  * `src/content/interceptor.js` runs in the MAIN world and `src/content/agent.js` runs
  * as a classic (non-module) content script. Neither has a module graph, so neither can
@@ -245,6 +295,37 @@ export const PORT_MSG = {
   PICKED: 'port:picked'
 };
 
+/* ─────────────────────── M4 — the probe's half of the same Port (PLAN.md §7, §7.3) ── */
+
+export const PROBE_PORT_MSG = {
+  /**
+   * SW -> agent. "Tell me what the page looks like once it has settled."
+   * `{requestId, fingerprint, page:boolean}` — `fingerprint` is §6.2's, re-resolved in
+   * the page after the reload; `page:false` skips §7.6's whole-page sample when only
+   * the element and its region are needed.
+   *
+   * Sent immediately after a new document says HELLO, so the agent starts watching for
+   * §7.3's settle conditions from document_start rather than from whenever the worker
+   * happened to ask.
+   */
+  SNAPSHOT: 'port:probeSnapshot',
+
+  /**
+   * SW -> agent. `{requestId, keys:string[]}` — §6.2 fingerprints for nodes the worker
+   * has just decided are interesting (§7.6's inverse discovery). A second round trip on
+   * the SAME page load, because fingerprinting 3000 sampled nodes to use four of them
+   * would cost a `querySelectorAll` per node for nothing.
+   */
+  FINGERPRINTS: 'port:probeFingerprints',
+
+  /**
+   * agent -> SW. The answer to either request above, correlated by `requestId`:
+   * `{requestId, ok, settled?, element?, region?, page?, fingerprints?, reason?}`.
+   * One reply type, because the worker awaits one promise per request id either way.
+   */
+  RESULT: 'port:probeResult'
+};
+
 /* ───────────────────────────────────────── panel / MCP <-> service worker, one-shot */
 
 export const MSG = {
@@ -446,7 +527,145 @@ export const MSG = {
    * `SOURCES_CHANGED` and `CHANGES_CHANGED`: the panel re-reads `GET_PICK`, so the
    * event cannot go stale.
    */
-  PICK_CHANGED: 'msg:pickChanged'
+  PICK_CHANGED: 'msg:pickChanged',
+
+  /* ═════════════════ M5 — Scenarios (§10.4) and highlighting (§10.3) ══════════════
+   *
+   * Five of these seven preset types are §12.4's tool names spelled as messages — #10
+   * `list_presets`, #11 `apply_preset`, #12 `save_preset`, #13 `delete_preset` — so the
+   * panel and an MCP agent reach ONE handler per action rather than two that drift
+   * (§1.6 parity). The other two exist because §10.4 gives the human two actions §12.4
+   * has no tool for: Rename is `UPDATE_PRESET`, and Import is `IMPORT_PRESET`, which
+   * also serves Duplicate — a duplicate is an import of a preset already in hand.
+   *
+   * `origin` is accepted beside `tabId` everywhere a preset is read or written, because
+   * the Scenarios tab lists a site other than the one in the tab (§10.4).
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Panel -> SW. `{tabId?|origin}` -> `{ok:true, origin, presets:Preset[]}`.
+   * The MCP `list_presets` tool (§12.4 #10) reads the same handler.
+   */
+  LIST_PRESETS: 'msg:listPresets',
+
+  /**
+   * Panel -> SW. §10.4's "New scenario from current changes", and §12.4 #12.
+   * `{tabId?|origin, name, emoji?}` -> `{ok:true, preset:Preset}`
+   *
+   * Snapshots the origin's currently ENABLED, non-probe Changes as EMBEDDED COPIES, not
+   * references (§4) — a Scenario has to still mean what it meant when it was saved, so
+   * later edits to those Changes must not reach back into it. `probe:true` scaffolding
+   * is never included: it is MockLab's own temporary machinery (§7.1), not the user's.
+   */
+  SAVE_PRESET: 'msg:savePreset',
+
+  /**
+   * Panel -> SW. §10.4's Rename, which §12.4 has no tool for.
+   * `{tabId?|origin, presetId, name?, emoji?}`
+   *   -> `{ok:true, preset:Preset}` | `{ok:false, reason:"no-such-preset"}`
+   *
+   * Renaming only. It deliberately cannot edit `changes`: re-snapshotting under an
+   * existing name would silently change what an already-saved Scenario does, which is
+   * the §1.1 lie in Scenario form. Saving again is `SAVE_PRESET`.
+   */
+  UPDATE_PRESET: 'msg:updatePreset',
+
+  /** Panel -> SW. §10.4's ⋯ menu, and §12.4 #13. `{tabId?|origin, presetId}` -> `{ok:true, deleted:number}` */
+  DELETE_PRESET: 'msg:deletePreset',
+
+  /**
+   * Panel -> SW. §10.4's Apply, and the MCP `apply_preset` tool (§12.4 #11).
+   * `{tabId, presetId, refresh?:true}`
+   *   -> `{ok:true, applied:number, unapplied:number, refreshed:boolean}`
+   *
+   * `unapplied` is the honest half and the panel must show it: a Change whose source
+   * this origin has never seen cannot be compiled into the in-page match list, exactly
+   * as `ChangeSummary.applies` reports for a single Change. Toasting a clean "applied"
+   * over a half-changed page is §1.1's lie with a nicer noise. It is also what §10.4's
+   * `scenarios.stale` copy is rendered from — a Scenario saved before the site changed.
+   *
+   * `refresh` defaults to true and the answer says `refreshed` — what happened, not what
+   * was asked for — matching every other mutation above and §12.4's rule.
+   */
+  APPLY_PRESET: 'msg:applyPreset',
+
+  /**
+   * Panel -> SW. §10.4's Import (and Duplicate). `{tabId?|origin, preset}`
+   *   -> `{ok:true, preset:Preset}`
+   *
+   * `preset` is a §4 Preset THE PANEL HAS ALREADY VALIDATED (`panel/scenarioFile.js`),
+   * because a corrupt file must produce §10.4's friendly error beside the file picker,
+   * where the person is, rather than a worker rejection they cannot see. The worker
+   * still gives it a fresh `id` and its own `origin`: an imported file must never be
+   * able to overwrite a Scenario already on this machine by carrying its id.
+   */
+  IMPORT_PRESET: 'msg:importPreset',
+
+  /**
+   * SW -> panel broadcast. `{origin}` — a Scenario was saved, renamed, imported,
+   * deleted or applied anywhere, including by an MCP agent (§1.6). Data-free by the same
+   * reasoning as `SOURCES_CHANGED`, `CHANGES_CHANGED` and `PICK_CHANGED`: the panel
+   * re-reads `LIST_PRESETS`, so the event can never go stale.
+   */
+  PRESETS_CHANGED: 'msg:presetsChanged',
+
+  /**
+   * Panel -> SW. §10.3's overlays, and §12.4 #9 verbatim including its answer shape.
+   * `{tabId, sigId, path}` -> `{ok:true, elements:number, verified:boolean}`
+   *
+   * `verified` is which overlay §10.3 draws, and it is a claim about PROOF: true only
+   * when a Binding for this exact (sigId, path) is `verified`, which only the §7 probe
+   * may write (§0.2, §17.4). False means the dashed amber "best guess" outline and
+   * §11's `sources.guessHighlight` tooltip — never the solid accent one.
+   *
+   * `elements` is how many overlays were ACTUALLY drawn, not how many were asked for,
+   * so the panel can tell "shown" from "there was nothing left to show" — a verified
+   * Binding whose elements are all gone after a redesign returns 0, and saying "shown"
+   * then would be a claim about a page MockLab could not find (§1.1).
+   */
+  HIGHLIGHT: 'msg:highlight'
+};
+
+/* ═══════════════════════ M4 — the probe (§7, §10.1C/D) ══════════════════════════ */
+
+export const PROBE_MSG = {
+  /**
+   * Panel -> SW. §10.1C's "Find the real source". `{tabId?}` ->
+   * `{ok:true, tabId}` | `{ok:false, reason}` where reason is a `PROBE_FAIL` value.
+   * The probe then runs on its own; the panel follows it through `GET_PROBE`.
+   */
+  START_PROBE: 'msg:startProbe',
+
+  /**
+   * Panel -> SW. §11's `probe.cancel` ("Stop checking"). `{tabId?}` -> `{ok:true}`.
+   * CLEANUP always runs: every `probe:true` Change is deleted and the page is put back
+   * (PLAN.md §7.1, §17.5).
+   */
+  CANCEL_PROBE: 'msg:cancelProbe',
+
+  /**
+   * Panel -> SW. The whole progress card and, when it is over, §10.1 State D:
+   * `{tabId?}` -> `{ok:true, tabId, origin, state, step, testing, reloads:{done,expected},
+   *                 startedAt, result}`
+   *
+   * `state` is a `PROBE_STATE`, `step` a `PROBE_STEP` (which is the key of the §11
+   * `probe.step.*` sentence to render), `testing` the number of possibilities in the
+   * batch currently on the page (§11's `probe.step.testing(n)`), and `reloads` the
+   * counter behind `probe.reloads(i, n)` — `done` is what has actually happened,
+   * `expected` an estimate, which is why §11 phrases it "refresh 4 of ~8".
+   *
+   * `result` is null until the run ends, then either
+   *   `{ok:true, binding, elements, affected, notRefetched}` or
+   *   `{ok:false, reason}` with a `PROBE_FAIL` value naming the §11 sentence to show.
+   */
+  GET_PROBE: 'msg:getProbe',
+
+  /**
+   * SW -> panel broadcast. `{tabId, state}` — data-free beyond the state, by the same
+   * reasoning as `SOURCES_CHANGED`, `CHANGES_CHANGED` and `PICK_CHANGED`: the panel
+   * re-reads `GET_PROBE`, so the event can never go stale.
+   */
+  PROBE_CHANGED: 'msg:probeChanged'
 };
 
 /**
@@ -460,6 +679,75 @@ export const MSG = {
  * currently doing. Nothing here ever becomes the other.
  */
 export const PHASE = { IDLE: 'idle', PICKING: 'picking', PICKED: 'picked' };
+
+/**
+ * The four things the PANEL has to draw: nothing, a progress card, a result, a failure.
+ * Coarser than `PROBE_STATE` on purpose — §10.1 has four screens, and a panel that
+ * switched on nine states would have to be edited every time §7.1 grew one.
+ *
+ * `GET_PROBE` answers with both: `phase` for the screen, `state` for the detail.
+ */
+export const PROBE_PHASE = { IDLE: 'idle', RUNNING: 'running', DONE: 'done', FAILED: 'failed' };
+
+/**
+ * PLAN.md §7.1's state machine, named. This is what the probe is DOING; it is not a
+ * link state. §17.4's three words (`verified` / `candidate` / `stale`) describe what
+ * MockLab has PROVED about a field, and nothing here ever becomes one of them.
+ */
+export const PROBE_STATE = {
+  IDLE: 'idle',
+  CONTROL_A: 'controlA',
+  CONTROL_B: 'controlB',
+  TESTING: 'testing',
+  VERIFY_ON: 'verifyOn',
+  VERIFY_OFF: 'verifyOff',
+  CONFIRMED: 'confirmed',
+  CLEANUP: 'cleanup',
+  DONE: 'done'
+};
+
+/**
+ * The four sentences §11 gives the progress card, as keys of `S.probe.step`. The panel
+ * renders `S.probe.step[step]`; `testing` is the one that takes the batch size.
+ */
+export const PROBE_STEP = {
+  CONTROL: 'control',
+  TESTING: 'testing',
+  CONFIRMING: 'confirming',
+  CLEANUP: 'cleanup'
+};
+
+/**
+ * Why a probe ended without proving anything. The FIRST FIVE are keys of `S.probe` in
+ * `strings.js` — §11 wrote the honest sentence for each, and the panel renders it by
+ * name rather than by a code the worker invented.
+ *
+ * The REST have no `S.probe.*` sentence, because §11 wrote copy for a probe that ran and
+ * found nothing, not for one that never started or one that broke. `NO_CANDIDATES` is
+ * `pick.noCandidates`; the next four are conditions the panel already draws elsewhere —
+ * nothing was picked (§10.1A), the tab has no page agent (the same `no-content-script`
+ * `START_PICK` already answers with), the user's own Stop button, and a second START
+ * arriving while a run is live.
+ */
+export const PROBE_FAIL = {
+  TOO_NOISY: 'tooNoisy',
+  NONE_CONFIRMED: 'noneConfirmed',
+  ELEMENT_LOST: 'elementLost',
+  NOT_REFETCHED: 'notRefetched',
+  TIMEOUT: 'timeout',
+  NO_CANDIDATES: 'noCandidates',
+  NO_PICK: 'no-pick',
+  NO_CONTENT_SCRIPT: 'no-content-script',
+  CANCELLED: 'cancelled',
+  BUSY: 'busy',
+  /**
+   * Not a fact about the page: MockLab itself threw. Kept apart from `TIMEOUT` and
+   * `NONE_CONFIRMED` because reporting a defect of ours as a finding about the site is
+   * the same class of lie as a false "Verified ✓" — the panel's sentence for it is
+   * §11's `errors.pageBroke`, and the detail goes to the console.
+   */
+  INTERNAL: 'internal'
+};
 
 /**
  * @typedef {Object} SourceSummary

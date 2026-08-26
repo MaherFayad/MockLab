@@ -45,10 +45,21 @@ jobs:
     # unit test, both §17.4 guard tests and the entire e2e suite green. Only subtest 4
     # of this file fails. Never drop it from this job.
     #
-    # probe.browser.test.js guards M4, and it is the one suite that can catch the whole
-    # product lying. Deleting §7.2's two noise checks makes MockLab report the demo's
-    # rotating tip box as VERIFIED — a false "Verified ✓" on an element that changes by
-    # itself — with every unit test in the repository still green.
+    # panel.scenarios.browser.test.js guards §10.4, §10.3 and §1.1's stale state. It was
+    # written in M5 and was NOT in this loop when M5 finished — caught before the commit,
+    # but that is the third time on this build a suite has existed without CI invoking it.
+    # Whoever adds the eighth suite: add it here in the same change.
+    #
+    # probe.browser.test.js guards M4. Deleting §7.2's two noise checks makes MockLab
+    # report the demo's rotating tip box as VERIFIED — a false "Verified ✓" on an element
+    # that changes by itself. probe.test.js catches that against a fake page; THIS suite
+    # is what proves it against a real one.
+    #
+    # This comment first claimed the mutation left "every unit test in the repository
+    # still green". That was false: probe.test.js fails it under all four readings of
+    # "the two noise checks". The guard is stronger than the claim was — and the claim
+    # was untrue in the file whose comment six lines down explains why a false statement
+    # here is worse than no statement.
     #
     # This comment deliberately carries no test totals. It used to say "all 142 unit
     # tests"; the suite grew to 146 and the number rotted in place, asserting something
@@ -82,7 +93,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in e2e panel panel.probe picker pickerdom probe; do
+          for suite in e2e panel panel.probe panel.scenarios picker pickerdom probe; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"

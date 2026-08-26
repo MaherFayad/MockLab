@@ -5,16 +5,45 @@
  * OWNER: interceptor-engineer. Split out of `guards.test.js` before M4, with the
  * ISOLATED-world contract audit and the §17.6 string audit (README Deviation 43). This
  * is the theme that separates most cleanly: every constant, parser and boundary note
- * below is read by these eight tests and by nothing else, so the split moved the whole
- * apparatus in one piece and left no regex behind its qualification.
+ * below is read by these eleven tests and by nothing else, so the split moved the whole
+ * apparatus in one piece and left no regex behind its qualification. ("eight" here was
+ * stale from the day of the split — there were already more; a claim about this file,
+ * in this file, that nothing read.)
  *
- * Scope: every .js file in both workspaces, tests and test helpers included.
+ * Scope: every SOURCE file in both workspaces, in every format `SOURCE_EXTENSIONS`
+ * names — not only `.js` — tests and test helpers included. See the note below it.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-import { EXTENSION, SRC, README_PATH, ALL_FILES, read, rel } from '../testlib/audit.js';
+import { EXTENSION, SRC, README_PATH, ALL_FILES, SOURCE_EXTENSIONS, read, rel } from '../testlib/audit.js';
+
+/* ══════════════ The formats this file can read, and why it is not just `.js` ═══════
+ *
+ * Every pattern below used to end in a literal `\.js`, so a README row about any other
+ * kind of source file was unreachable from both directions at once: `recordedLineCounts`
+ * could not parse it, and `unreadableCounts` — which fails a count it cannot parse —
+ * could not see it either, because it locates figures by their distance from a path it
+ * also could not match. A `.css` row was therefore neither checked nor flagged. It was
+ * simply not there, which is the one outcome this whole file exists to prevent, and it
+ * is why `panel.css` reached 542 lines unrecorded: recording it correctly was impossible.
+ *
+ * The set of formats is NOT restated here. It is `SOURCE_EXTENSIONS` in `testlib/audit.js`
+ * — the same list `ALL_FILES` is built from — so the files the budget check walks and the
+ * paths the README parser can read are the same set by construction. They must be: a path
+ * this file can read for a file the budget never walks would fail the "names exactly one
+ * file" assertion, and a file the budget walks whose path this file cannot read is the
+ * `panel.css` hole all over again.
+ *
+ * Longest extension first, so `.json` is not shadowed by `.js`. The trailing backtick
+ * already forces that on any correct engine; the sort makes it true of the pattern rather
+ * than of the backtracking.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const SOURCE_PATH =
+  '`([\\w./-]+(?:' +
+  [...SOURCE_EXTENSIONS].sort((a, b) => b.length - a.length).map((ext) => ext.replace('.', '\\.')).join('|') +
+  '))`';
 
 /** What `wc -l` counts: newline-terminated lines, so a trailing newline is not a line. */
 function lineCount(text) {
@@ -60,10 +89,10 @@ function deviationsTable() {
  * in any OTHER shape. They must be the same pattern: if they drifted, the audit would
  * bless a phrasing the parser skips, which is the exact hole it exists to close.
  */
-const readableCount = () => /`([\w./-]+\.js)`\s+is\s+(?:itself\s+|now\s+)?(\d+)\s+lines/g;
+const readableCount = () => new RegExp(SOURCE_PATH + '\\s+is\\s+(?:itself\\s+|now\\s+)?(\\d+)\\s+lines', 'g');
 
 /** The shape every message below asks for, written once. */
-const READABLE_SHAPE = '"`path/to/file.js` is N lines" (also "is now N lines", "is itself N lines")';
+const READABLE_SHAPE = '"`path/to/file.ext` is N lines" (also "is now N lines", "is itself N lines")';
 
 /**
  * Line counts the Deviations table states, keyed by the path it names — which may be a
@@ -137,7 +166,8 @@ test('§17.10 every line count README states is the file\'s real one', () => {
  *   (a) a copula puts it after a subject — "is now 640 lines", "are roughly 300 lines
  *       each" — in which case the subject has to be a backticked path or this file
  *       cannot know WHICH file is described even once it can read the number; or
- *   (b) it sits within NEAR characters of a backticked `*.js` path, which is what both
+ *   (b) it sits within NEAR characters of a backticked source path — any format
+ *       `SOURCE_EXTENSIONS` names, not only `.js` — which is what both
  *       historical defects looked like: 16 and 21 characters away.
  * and it is not
  *   (c) §17.10's own cap restated as the rule it is, or
@@ -176,7 +206,7 @@ test('§17.10 every line count README states is the file\'s real one', () => {
  * "`guards.contract.test.js` 329, … `extension/testlib/audit.js` (111)", and QA rewrote
  * all four figures to 999/888/777/666 with the whole suite green. Nothing here detects a
  * number being WRONG; only the SHAPE is, and these four had no shape to check. So (e): a
- * bare number in APPOSITION to a backticked `*.js` path — separated from it by
+ * bare number in APPOSITION to a backticked source path — separated from it by
  * punctuation and nothing else — is a claim about that file, word or no word.
  *
  * KNOWN BOUNDARY 4: apposition is read in ONE direction, path then number. "329 `x.js`"
@@ -230,7 +260,7 @@ const APPOSITION_GAP = '[ \\t(\\[*,:=~\u2248\u2013\u2014-]{0,6}';
  * BOUNDARY 5. A factory, like `readableCount()`, because a `g` regex carries state.
  */
 const pathThenNumber = () =>
-  new RegExp('`([\\w./-]+\\.js)`' + APPOSITION_GAP + '(\\d+)(?!\\.?\\d)(?!\\s*[A-Za-z])', 'g');
+  new RegExp(SOURCE_PATH + APPOSITION_GAP + '(\\d+)(?!\\.?\\d)(?!\\s*[A-Za-z])', 'g');
 
 /**
  * Every line-count-shaped claim in one line of the table that `recordedLineCounts()`
@@ -239,7 +269,11 @@ const pathThenNumber = () =>
 function unreadableCounts(line, label) {
   const readable = [...line.matchAll(readableCount())].map((m) => [m.index, m.index + m[0].length]);
   const quoted = [...line.matchAll(/["“][^"”]*["”]/g)].map((m) => [m.index, m.index + m[0].length]);
-  const paths = [...line.matchAll(/`[\w./-]+\.js`/g)].map((m) => [m.index, m.index + m[0].length, m[0]]);
+  const paths = [...line.matchAll(new RegExp(SOURCE_PATH, 'g'))].map((m) => [
+    m.index,
+    m.index + m[0].length,
+    m[0]
+  ]);
   const found = [];
 
   for (const figure of line.matchAll(LINE_FIGURE)) {

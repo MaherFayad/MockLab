@@ -446,3 +446,88 @@ test('the depth probe agrees with what enumeration actually dropped', () => {
     assert.equal(bounded, !reachedTheBottom, `depth ${depth}: bounded=${bounded}, found=${reachedTheBottom}`);
   }
 });
+
+/* ══════════════════ §6.3 against the body the page actually rendered from ═════════ */
+
+/**
+ * QA's M4 journey, exactly: set `$.status` to "DELAYED" from the tree, watch the demo
+ * pill render "Delayed", then ask MockLab which field did it.
+ *
+ * The capture is what the SERVER sent, so the un-mocked demo body has no "Delayed"
+ * anywhere in it — and searching that alone produced ZERO candidates, which the panel
+ * reported as §11's `pick.noCandidates`: "MockLab couldn't find this text in any data
+ * the page loaded." The data was right there. `source.changes` is what closes it; see
+ * `effectiveBody.js`. Removing that argument fails this test with an empty list, which
+ * is the mutation that proves the assertion bites.
+ */
+test('§6.3 a field the person has already changed is found from the text it renders', () => {
+  const mocked = demoSources();
+  mocked[0].changes = [{ path: '$.status', value: 'DELAYED' }];
+  const pill = { ...PILL, text: 'Delayed' };
+
+  const before = findCandidates(pill, demoSources()).candidates;
+  assert.deepEqual(before, [], 'the captured body alone really does contain no "Delayed"');
+
+  const { candidates, searched } = findCandidates(pill, mocked);
+  const hit = find(candidates, 'trip', '$.status');
+  assert.ok(hit, `\$.status must be offered — got ${JSON.stringify(pathsOf(candidates))}`);
+  assert.equal(hit.score, SCORE.fullExact, 'the pill text IS the value at that field');
+  assert.equal(hit.value, 'DELAYED', 'and the value shown is the one the page received');
+  assert.equal(hit.realValue, 'ON_TIME', 'with the captured value beside it, not instead of it');
+  assert.equal(hit.mocked, true);
+  assert.equal(searched.complete, true, 'nothing about this search was bounded');
+});
+
+test('§6.3 the captured value stays searchable beside the changed one', () => {
+  // A Change enabled a moment ago has not reached the site until the next refresh, and
+  // `interceptor.js` can report a `changeDropped` response it never rewrote — in both,
+  // the page really did render the CAPTURED value. So both are searched.
+  const mocked = demoSources();
+  mocked[0].changes = [{ path: '$.status', value: 'DELAYED' }];
+
+  const stillReal = findCandidates(PILL, mocked).candidates;
+  assert.ok(find(stillReal, 'trip', '$.status'), '"On time" still reaches $.status');
+  assert.equal(find(stillReal, 'trip', '$.status').mocked, true, 'and says a Change is in force');
+});
+
+test('§6.3 a Change on a path the body does not have contributes nothing', () => {
+  // `setByPath` "creates nothing" (§5.4), so such a Change never reached the page either
+  // — offering a field that exists in no response would be an invented candidate. A null
+  // is dropped for §7.4's reason, the same one the captured walk drops nulls for.
+  const sources = demoSources();
+  sources[0].changes = [
+    { path: '$.nowhere', value: 'Delayed' },
+    { path: '$.status', value: null }
+  ];
+  const { candidates } = findCandidates({ ...PILL, text: 'Delayed' }, sources);
+  assert.deepEqual(candidates, [], 'no path, no leaf — and §7.4 never offers a null');
+});
+
+test('§6.3 a Change that puts a scalar where a container was is a leaf, because the page saw one', () => {
+  // `$.flight` holds an object in the capture and a string on the page. The leaf the
+  // person is looking at is the string; refusing it because the CAPTURE has a container
+  // there would be the same "search the wrong document" mistake in miniature.
+  const sources = demoSources();
+  sources[0].changes = [{ path: '$.flight', value: 'Delayed' }];
+  const hit = find(findCandidates({ ...PILL, text: 'Delayed' }, sources).candidates, 'trip', '$.flight');
+  assert.ok(hit);
+  assert.equal(hit.value, 'Delayed');
+  assert.deepEqual(hit.realValue, demo('trip.json').flight);
+});
+
+test('§6.3 the sibling-key heuristic reads the changed body too', () => {
+  // The gate is "this response demonstrably renders part of this element". With a Change
+  // in force, the only thing that can demonstrate it is the changed value.
+  const sources = [{
+    sigId: 'shop',
+    name: 'Shop',
+    ts: 1,
+    body: { item: { label: 'Zapatos', availability: 'AGOTADO' } },
+    changes: [{ path: '$.item.label', value: 'Botas' }]
+  }];
+  const { candidates } = findCandidates({ tag: 'span', text: 'Botas', attrs: {} }, sources);
+  const enumField = find(candidates, 'shop', '$.item.availability');
+  assert.ok(enumField, 'the status-ish sibling is offered');
+  assert.equal(enumField.via, 'sibling-key');
+  assert.equal(enumField.mocked, undefined, 'and it carries no Change of its own');
+});

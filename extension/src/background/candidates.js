@@ -26,7 +26,7 @@
  * a comment asking the next person to keep two functions in step is not a guarantee.
  */
 
-import { enumeratePaths, parsePath } from '../shared/jsonpath.js';
+import { enumeratePaths, parsePath, getByPath } from '../shared/jsonpath.js';
 
 /** §6.3: "Output: top 12 candidates". */
 export const MAX_CANDIDATES = 12;
@@ -106,6 +106,9 @@ const ATTR_NEEDLES = ['aria-label', 'aria-valuetext', 'alt', 'title', 'placehold
  * @property {string} [name]   friendly source name (§10.2), passed through untouched
  * @property {any}    body     parsed response body
  * @property {number} [ts]     capture timestamp — the recency tiebreak in §6.3
+ * @property {import('./effectiveBody.js').Overlay[]} [changes] the enabled Changes in
+ *   force on this signature — the page rendered from the body WITH these applied, so the
+ *   search must see them. `effectiveBody.js` has the why.
  */
 
 /**
@@ -117,6 +120,9 @@ const ATTR_NEEDLES = ['aria-label', 'aria-valuetext', 'alt', 'title', 'placehold
  * @property {number} score
  * @property {string} via      the rule that produced the WINNING score
  * @property {string[]} rules  every rule that produced a hit for this field, sorted
+ * @property {boolean} [mocked]    a Change is in force here, so `value` is what the page
+ *   received and not what the site sent; `realValue` is the captured one
+ * @property {any}     [realValue]
  */
 
 /**
@@ -189,6 +195,8 @@ export function needlesFrom(snapshot) {
  * @property {string} key
  * @property {string} lower
  * @property {number|null} num
+ * @property {boolean} [mocked] a Change's value, not the captured one; `real` is under it
+ * @property {any} [real]
  */
 
 /** @param {string} path @returns {string} */
@@ -234,7 +242,7 @@ function droppedByDepth(node, remaining, seen) {
  *   the tab-wide budget runs down
  * @returns {{leaves:Leaf[], bounded:boolean}}
  */
-export function leavesOf(body, limit = MAX_PATHS) {
+export function leavesOf(body, limit = MAX_PATHS, changes = null) {
   if (!body || typeof body !== 'object' || body.__unparsed === true) {
     return { leaves: [], bounded: false };
   }
@@ -244,18 +252,52 @@ export function leavesOf(body, limit = MAX_PATHS) {
     // findByValue skips null leaves; so does this, and for the same reason — §7.4
     // forbids probing a null-valued candidate, so listing one wastes a probe slot.
     if (entry.value === null) continue;
-    const text = String(entry.value).trim();
-    const numeric = typeof entry.value === 'boolean' ? NaN : Number(text.replace(/[\s,]/g, ''));
-    out.push({
-      path: entry.path,
-      value: entry.value,
-      key: lastKeyOf(entry.path),
-      lower: text.toLowerCase(),
-      num: Number.isFinite(numeric) ? numeric : null
-    });
+    out.push(normalise(entry.path, entry.value));
   }
   const bounded = out.length >= limit || droppedByDepth(body, MAX_DEPTH, new Set());
+  for (const leaf of overlayLeaves(body, changes)) out.push(leaf);
   return { leaves: out, bounded };
+}
+
+/** One leaf, pre-normalised so a needle scan is string comparisons and nothing else. */
+function normalise(path, value, extra) {
+  const text = String(value).trim();
+  const numeric = typeof value === 'boolean' ? NaN : Number(text.replace(/[\s,]/g, ''));
+  const num = Number.isFinite(numeric) ? numeric : null;
+  return { path, value, key: lastKeyOf(path), lower: text.toLowerCase(), num, ...(extra || {}) };
+}
+
+/**
+ * The leaves a Change put on the page, added BESIDE the captured ones rather than in
+ * place of them (`effectiveBody.js` explains why the search must see them at all).
+ *
+ * Both, and not a rewritten body, because MockLab cannot know which of the two documents
+ * the page in front of the person was built from: a Change enabled a moment ago has not
+ * reached the site yet, and `interceptor.js` can report a `changeDropped` response it
+ * never managed to rewrite (§5.1) — in both, the page really did render the captured
+ * value. The union costs one extra leaf per Change and is right in every case; picking
+ * one document is right in most and silently wrong in the rest, which is the failure
+ * this file exists to avoid. A Change whose path is absent from the body contributes
+ * nothing: `setByPath` "creates nothing" (§5.4), so the page never saw it either.
+ *
+ * @param {any} body @param {import('./effectiveBody.js').Overlay[]|null} changes
+ * @returns {Leaf[]}
+ */
+function overlayLeaves(body, changes) {
+  if (!Array.isArray(changes) || !changes.length) return [];
+  /** @type {Map<string, Leaf>} */
+  const byPath = new Map();
+  for (const change of changes) {
+    if (!change || typeof change.path !== 'string') continue;
+    const value = change.value;
+    // The captured walk's own two exclusions: a null leaf is not a candidate (§7.4), a
+    // container is not a leaf. Then: §5.3 applies a signature's Changes in order.
+    if (value === null || value === undefined || typeof value === 'object') continue;
+    const real = getByPath(body, change.path);
+    if (real === undefined || String(real) === String(value)) continue;
+    byPath.set(change.path, normalise(change.path, value, { mocked: true, real }));
+  }
+  return [...byPath.values()];
 }
 
 /**
@@ -275,17 +317,19 @@ export function scanLeaves(leaves, needle) {
   const needleIsNum = Number.isFinite(needleNum);
 
   const hits = [];
+  const hit = (leaf, kind) =>
+    ({ path: leaf.path, value: leaf.value, kind, ...(leaf.mocked ? { mocked: true, real: leaf.real } : {}) });
   for (const leaf of leaves) {
     if (leaf.lower === lower) {
-      hits.push({ path: leaf.path, value: leaf.value, kind: 'exact' });
+      hits.push(hit(leaf, 'exact'));
       continue;
     }
     if (needleIsNum && leaf.num !== null && leaf.num === needleNum) {
-      hits.push({ path: leaf.path, value: leaf.value, kind: 'numeric' });
+      hits.push(hit(leaf, 'numeric'));
       continue;
     }
     if (leaf.lower.length && lower.length && leaf.lower.includes(lower)) {
-      hits.push({ path: leaf.path, value: leaf.value, kind: 'substring' });
+      hits.push(hit(leaf, 'substring'));
     }
   }
   return hits;
@@ -337,6 +381,7 @@ function record(byField, source, hit) {
       ...(source.name ? { sourceName: source.name } : {}),
       path: hit.path,
       value: hit.value,
+      ...(hit.mocked ? { mocked: true, realValue: hit.real } : {}),
       score: hit.score,
       via: hit.via,
       rules: [hit.via],
@@ -345,9 +390,15 @@ function record(byField, source, hit) {
     return;
   }
   if (!existing.rules.includes(hit.via)) existing.rules.push(hit.via);
+  // A field with a Change in force reports the value the PAGE has, whichever of its two
+  // leaves scored higher; the captured one travels beside it rather than in place of it.
+  if (hit.mocked && !existing.mocked) {
+    Object.assign(existing, { mocked: true, realValue: hit.real, value: hit.value });
+  }
   if (hit.score > existing.score) {
     existing.score = hit.score;
     existing.via = hit.via;
+    if (!existing.mocked) existing.value = hit.value;
   }
 }
 
@@ -382,6 +433,13 @@ function record(byField, source, hit) {
  * with no hit at all contributes no sibling keys, so an unrelated source cannot leak in.
  * Recorded in README Deviations.
  *
+ * ── The body this searches ────────────────────────────────────────────────────────
+ * `source.changes` carries the Changes in force on that signature, searched beside the
+ * captured values. Without it, an element the person had just changed — the whole point
+ * of the product — matched NOTHING and the panel answered §11's `pick.noCandidates`
+ * about data the page was rendering at that moment. `effectiveBody.js` holds the
+ * reasoning and its shared root with the CONTROL_A divergence in `probe.js`.
+ *
  * `searched` is the honesty half of the answer: `{sources, bounded, complete}`. `bounded`
  * counts responses whose enumeration hit MAX_DEPTH or MAX_PATHS, and `complete` is false
  * whenever one did. An empty `candidates` with `complete:false` means "MockLab did not
@@ -402,7 +460,7 @@ export function findCandidates(snapshot, sources) {
 
   let budget = MAX_TOTAL_PATHS;
   for (const source of list) {
-    const { leaves, bounded } = leavesOf(source.body, Math.min(MAX_PATHS, budget));
+    const { leaves, bounded } = leavesOf(source.body, Math.min(MAX_PATHS, budget), source.changes);
     budget -= leaves.length;
     if (bounded) {
       searched.bounded += 1;
@@ -414,7 +472,7 @@ export function findCandidates(snapshot, sources) {
     for (const needle of needles) {
       for (const hit of scanLeaves(leaves, needle.value)) {
         related = true;
-        record(byField, source, { path: hit.path, value: hit.value, ...scoreOf(needle, hit.kind) });
+        record(byField, source, { ...hit, ...scoreOf(needle, hit.kind) });
       }
     }
 
@@ -425,6 +483,7 @@ export function findCandidates(snapshot, sources) {
       record(byField, source, {
         path: leaf.path,
         value: leaf.value,
+        ...(leaf.mocked ? { mocked: true, real: leaf.real } : {}),
         score: SCORE.siblingKey,
         via: 'sibling-key'
       });
@@ -452,8 +511,8 @@ export function searchValue(needle, sources) {
 
   for (const source of Array.isArray(sources) ? sources : []) {
     if (!source || typeof source.sigId !== 'string') continue;
-    for (const hit of scanLeaves(leavesOf(source.body).leaves, one.value)) {
-      record(byField, source, { path: hit.path, value: hit.value, ...scoreOf(one, hit.kind) });
+    for (const hit of scanLeaves(leavesOf(source.body, MAX_PATHS, source.changes).leaves, one.value)) {
+      record(byField, source, { ...hit, ...scoreOf(one, hit.kind) });
     }
   }
   return rank(byField);

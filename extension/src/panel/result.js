@@ -24,20 +24,28 @@ import { MSG } from '../background/messages.js';
 import { el, ICON, spinner, withTip } from './dom.js';
 import { formatValue, draftFor, valueKind, coerceValue, fieldLabel } from './sources.js';
 import { EMPTY_PROBE, closeResult, linkChip, proved } from './probe.js';
+import { canHighlight, shownLinkState, showOnPage } from './links.js';
 
 /** §10.1D. The success card, the field it names, and the value editor under it. */
 export function renderResult(root, ctx) {
   const probe = ctx.state.probe || EMPTY_PROBE;
   const binding = probe.binding;
   if (!binding) return;
-  const isProved = proved(binding);
+  // §1.1's three states, at the moment of drawing. `proved()` is what the STORE says —
+  // an `=== 'verified'` comparison and nothing looser — and `shownLinkState()` is what
+  // MockLab can still stand behind on THIS page load. It only ever downgrades (see
+  // `links.js`), so the success card can never celebrate something `proved()` would not,
+  // and a Link whose source has stopped loading, or whose elements a highlight could no
+  // longer find, gets §10.6's Stale chip and the neutral heading instead of "Found it".
+  const shown = shownLinkState(binding, ctx);
+  const isProved = proved(binding) && shown === 'verified';
   // The working draft is STATE, not a per-render value: the picker re-renders the card
   // on every choice, so a draft created here and thrown away would reset the person's
   // selection on the very click that made it. Seeded once, then reused.
   if (!probe.draft) probe.draft = draftFrom(binding, probe.real);
   const draft = probe.draft;
 
-  const card = el('section', { class: 'result', dataset: { linkState: String(binding.state || '') } });
+  const card = el('section', { class: 'result', dataset: { linkState: String(shown || '') } });
 
   const back = el('button', { type: 'button', class: 'icon-btn', 'aria-label': S.editor.cancel }, ICON.back());
   back.addEventListener('click', () => closeResult(ctx));
@@ -47,7 +55,7 @@ export function renderResult(root, ctx) {
       { class: 'result__head' },
       back,
       el('h2', { text: isProved ? S.probe.found : S.editor.title }),
-      linkChip(binding.state)
+      linkChip(shown)
     )
   );
 
@@ -74,13 +82,18 @@ export function renderResult(root, ctx) {
   if (draft.error) group.append(el('p', { class: 'editor__error', text: draft.error }));
   card.append(group);
 
-  if (!isProved) card.append(el('p', { class: 'editor__note' }, ICON.warn(), el('span', { text: S.editor.unverified })));
+  // Two different things a person is owed, and they are not interchangeable. A Link that
+  // was never proved gets §11's `editor.unverified` ("MockLab hasn't proven which
+  // elements it affects"); a Link that WAS proved and can no longer be stood behind gets
+  // the sentence for that, which says what happened and what to do about it.
+  if (shown === 'stale') card.append(el('p', { class: 'editor__note' }, ICON.warn(), el('span', { text: S.highlight.stale })));
+  else if (!isProved) card.append(el('p', { class: 'editor__note' }, ICON.warn(), el('span', { text: S.editor.unverified })));
   // §7.2's obstacle, carried through from the run: the request behind this field did not
   // come back on a reload, so the site will see the new value the next time it asks for
   // it. Saying nothing here and then refreshing to an unchanged page is the §1.1 failure.
   if (probe.notRefetched) card.append(el('p', { class: 'editor__note' }, ICON.warn(), el('span', { text: S.probe.notRefetched })));
 
-  card.append(affectedNote(binding, isProved, probe.affected));
+  card.append(affectedNote(binding, probe.affected, ctx));
 
   const apply = el('button', { type: 'button', class: 'btn btn--primary' });
   if (draft.busy) apply.append(spinner('ml-result-spin'));
@@ -99,25 +112,32 @@ export function renderResult(root, ctx) {
 }
 
 /**
- * §10.1D's "This change affects {k} places on the page — [Show me]".
+ * §10.1D's "This change affects {k} places on the page — [Show me]", and §10.3's overlays
+ * behind it.
  *
  * The count comes from the Binding's own proven `elements` (§7.6 fills it during
  * VERIFY_ON), falling back to the run's own tally of the same thing; either way it is
- * only shown for a Binding that was proved. An unproven Link has
- * no such list, and "affects 0 places" would read as a measurement rather than as the
- * absence of one. "Show me" needs §10.3's on-page overlays, which are §16 M5 — shown
- * disabled with its reason rather than hidden, so the row still describes itself.
+ * only shown for a Binding the store PROVED. An unproven Link has no such list, and
+ * "affects 0 places" would read as a measurement rather than as the absence of one.
+ *
+ * The row stays on a Link that has since gone Stale, deliberately: the count is a real
+ * measurement of a real experiment, the note above it already says MockLab can no longer
+ * stand behind it, and pressing "Show me" is exactly how a person finds out which of the
+ * two is true today. A highlight that draws nothing answers that question out loud
+ * (`links.js`), which is more than hiding the button would.
  */
-function affectedNote(binding, isProved, reported) {
+function affectedNote(binding, reported, ctx) {
   const proven = Array.isArray(binding.elements) ? binding.elements.length : 0;
   const places = proven || Number(reported) || 0;
-  if (!isProved || places < 1) return el('span', { class: 'hidden' });
-  const show = el('button', { type: 'button', class: 'btn btn--ghost', disabled: true, text: S.probe.showMe });
+  if (!proved(binding) || places < 1) return el('span', { class: 'hidden' });
+  const ready = canHighlight(ctx);
+  const show = el('button', { type: 'button', class: 'btn btn--ghost', disabled: !ready, text: S.probe.showMe });
+  if (ready) show.addEventListener('click', () => void showOnPage(ctx, binding));
   return el(
     'div',
     { class: 'result__affected' },
     el('span', { class: 'result__affected-text', text: S.probe.affected(places) }),
-    withTip(show, [S.notYet], { up: true, end: true })
+    ready ? show : withTip(show, [S.notYet], { up: true, end: true })
   );
 }
 

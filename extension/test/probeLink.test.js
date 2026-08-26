@@ -4,12 +4,22 @@
  *
  * OWNER: probe-engineer.
  *
- * These are the states no demo fixture can reach. The demo settles in under a second,
- * always re-resolves its own pill, and never loses its content script — so every path
- * below is unreachable on the acceptance harness, and unreachable in the browser suite
- * with it. A page that hangs, an agent evicted with the service worker, a tab the user
- * navigates away from mid-run: all of them are ordinary on real sites, and each one has
- * an honest sentence in §11 waiting for it.
+ * Most of what this file reaches, no demo fixture can: the demo settles in under a
+ * second, always re-resolves its own pill, and never loses its content script. A page
+ * that hangs, an agent evicted with the service worker, a tab the user navigates away
+ * from mid-run are all ordinary on real sites and each has an honest §11 sentence
+ * waiting for it.
+ *
+ * The COMPLETE set is not stated here in prose, and the earlier attempt at one is why:
+ * a list written by hand names the cases its author remembered. `probe.test.js`'s test 0
+ * classifies every `PROBE_FAIL` value into three named groups and fails the build on any
+ * value that is in none of them, or in more than one, or that neither this file nor that
+ * one asserts about by name. It counts the assertions in BOTH files, so moving a check
+ * between them is free and deleting the last one anywhere is not. (Measured, not
+ * assumed: deleting this file's TIMEOUT assertion does NOT fail that test today, because
+ * `probe.test.js` asserts the same value from the other side. Every value is currently
+ * named in both, which makes the cross-file half a guard against a future where one of
+ * them is the only home — not a live check on this file.)
  *
  * `PROBE_LIMITS` is a plain object, so the timeouts are lowered here rather than waited
  * out. That is a deliberate seam: a 15-second wait asserted 15 seconds at a time is a
@@ -19,7 +29,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createProbeLink, probeFailure, PROBE_LIMITS } from '../src/background/probeLink.js';
-import { PROBE_PORT_MSG, PROBE_FAIL } from '../src/background/probeMessages.js';
+import { PROBE_PORT_MSG, PROBE_FAIL } from '../src/background/messages.js';
 
 const TAB = 3;
 const FINGERPRINT = { css: '#status-pill', textAnchor: 'On time', attrAnchors: [], treePath: [1, 0] };
@@ -177,4 +187,46 @@ test('10 a failure carries the §11 sentence, and an ordinary error does not pre
   assert.equal(probeFailure(PROBE_FAIL.TIMEOUT).probeDetail, undefined);
   assert.equal(new Error('a bug of ours').probeReason, undefined,
     'which is how execute() tells a defect from a fact about the page');
+});
+
+test('11 an element that VANISHED does not report the confidence of one that was found', async () => {
+  // `!answer.element` and `confidence < 0.8` shared one sentence, so an element that was
+  // gone said "element re-resolved at confidence 1" — the opposite of what happened.
+  // §11 shows `probe.elementLost` either way and this string is Advanced-mode detail
+  // only, but detail that describes the OTHER outcome is worse than none: it is the line
+  // whoever debugs a real site will believe. Merge the two conditions back together and
+  // the first assertion below fails on the word "re-resolved".
+  const say = async (payload) => {
+    const port = fakePort();
+    const link = createProbeLink({ portsFor: () => new Set([port]), reload: async () => true });
+    const waiting = link.reloadAndSnapshot(TAB, FINGERPRINT, {});
+    link.onNewDocument(TAB);
+    link.onProbeResult(TAB, { requestId: port.sent[0].payload.requestId, ok: true, settled: true, ...payload });
+    return waiting.then(() => null, (error) => error);
+  };
+
+  const gone = await say({ element: null, confidence: 1 });
+  assert.equal(gone.probeReason, PROBE_FAIL.ELEMENT_LOST);
+  assert.equal(gone.probeDetail, 'the element was not on the page after the reload');
+  assert.ok(!/re-resolved/.test(gone.probeDetail), 'it was not re-resolved at all');
+
+  const weak = await say({ element: { text: 'On time' }, confidence: 0.5 });
+  assert.equal(weak.probeReason, PROBE_FAIL.ELEMENT_LOST);
+  assert.equal(weak.probeDetail, 'element re-resolved at confidence 0.5',
+    'and the low-confidence case keeps the sentence that is true of IT');
+});
+
+test('12 §6.2 an answer that never said how sure it was is refused, not accepted', async () => {
+  // `Number(undefined)` is NaN and every comparison with NaN is false, so the original
+  // `confidence < MIN_CONFIDENCE` ACCEPTED an answer carrying no confidence at all —
+  // §6.2's floor silently absent, on the one check that stops the probe diffing the
+  // wrong element (§17.12). Written as `!(x >= floor)` so the missing case fails.
+  const port = fakePort();
+  const link = createProbeLink({ portsFor: () => new Set([port]), reload: async () => true });
+  const waiting = link.reloadAndSnapshot(TAB, FINGERPRINT, {});
+  link.onNewDocument(TAB);
+  link.onProbeResult(TAB, {
+    requestId: port.sent[0].payload.requestId, ok: true, settled: true, element: { text: 'On time' }
+  });
+  await assert.rejects(waiting, (error) => error.probeReason === PROBE_FAIL.ELEMENT_LOST);
 });

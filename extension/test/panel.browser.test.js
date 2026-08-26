@@ -417,6 +417,17 @@ if (!chromium) {
         const labels = await row.locator('button[aria-label]').evaluateAll((n) => n.map((b) => b.getAttribute('aria-label')));
         assert.ok(labels.includes(S.sources.changeValue), 'the ✏️ action must be present');
         assert.ok(labels.includes(S.sources.showOnPage), 'the ◎ action must be present');
+        // §10.3 landed at M5, so the ◎ is a control now rather than a placeholder — and
+        // §10.2 requires it to say which KIND of highlight it will draw. Nothing here has
+        // been probed, so what the page would do is a value search: a guess, and labelled
+        // as one rather than offered as a proof.
+        const show = row.locator(`button[aria-label="${S.sources.showOnPage}"]`);
+        assert.equal(await show.isDisabled(), false, 'the ◎ action is live at M5');
+        const tips = await row.locator('.tip__bubble').allInnerTexts();
+        assert.ok(
+          tips.some((tip) => tip.includes(S.sources.guessHighlight)),
+          `§10.2: an unproven field must say its highlight is a best guess. Tooltips: ${JSON.stringify(tips)}`
+        );
       });
 
       await check('the editor says Possible, never Verified (§1.1, §10.6, §17.4)', async () => {

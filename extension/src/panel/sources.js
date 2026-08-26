@@ -11,6 +11,7 @@ import { S } from './strings.js';
 import { MSG } from '../background/messages.js';
 import { el, clear, ICON, spinner, withTip } from './dom.js';
 import { joinPath, parsePath } from '../shared/jsonpath.js';
+import { canHighlight, shownLinkState, showOnPage } from './links.js';
 
 /** §10.2: "max initial depth 2" — the root and one level of containers start open. */
 const INITIAL_OPEN_DEPTH = 1;
@@ -332,11 +333,30 @@ function rowActions({ key, value, path, change, source, ctx }) {
   });
   actions.append(withTip(edit, [S.sources.changeValue], { up: true }));
 
-  // ◎ "Show on page" needs the on-page overlay engine, which is §10.3 / M5 work. It is
-  // shown disabled rather than hidden so the row's vocabulary matches §10.2, and it says
-  // why instead of doing nothing quietly.
-  const show = el('button', { type: 'button', class: 'icon-btn', disabled: true, 'aria-label': S.sources.showOnPage }, ICON.target());
-  actions.append(withTip(show, [S.sources.showOnPage, S.notYet], { up: true }));
+  /* ◎ "Show on page" (§10.2 / §10.3). Two different promises behind one control, and
+   * the tooltip is where they are told apart:
+   *
+   *   • a Link this field has been PROVED to drive, which MockLab can still stand behind
+   *     today, gets the plain label — the overlays will be solid and about elements an
+   *     experiment established;
+   *   • anything else gets §11's `guessHighlight` beside it, because what the page will
+   *     draw is a value search over the rendered document: dashed, and honestly a guess.
+   *     That covers a field with no Link at all AND one whose proof has gone stale, which
+   *     is the case a person would otherwise be most confidently misled by.
+   *
+   * `shownLinkState` decides, and it only ever downgrades (`links.js`), so this row can
+   * never promise a proof the store did not record. */
+  const link = (ctx.state.bindings || []).find((b) => b && b.sigId === source.sigId && b.path === path);
+  const provenHere = link ? shownLinkState(link, ctx) === 'verified' : false;
+  const ready = canHighlight(ctx);
+  const show = el('button', { type: 'button', class: 'icon-btn', disabled: !ready, 'aria-label': S.sources.showOnPage }, ICON.target());
+  if (ready) show.addEventListener('click', () => void showOnPage(ctx, { sigId: source.sigId, path }));
+  const lines = !ready
+    ? [S.sources.showOnPage, S.notYet]
+    : provenHere
+      ? [S.sources.showOnPage]
+      : [S.sources.showOnPage, S.sources.guessHighlight];
+  actions.append(withTip(show, lines, { up: true }));
 
   if (change) {
     const remove = el('button', { type: 'button', class: 'icon-btn icon-btn--danger', 'aria-label': S.sources.removeChange }, ICON.trash());

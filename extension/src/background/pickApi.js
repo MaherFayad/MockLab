@@ -16,6 +16,7 @@
 
 import { MSG, PORT_MSG, PHASE } from './messages.js';
 import { findCandidates } from './candidates.js';
+import { overlaysFor } from './effectiveBody.js';
 import { friendlyName } from './signatures.js';
 
 /** Every message type this module answers. background.js routes on this set. */
@@ -40,8 +41,15 @@ export function createPickApi(deps) {
    * Everything this tab has captured, newest first, in the shape §6.3 searches.
    * Re-read on every pick rather than cached: a pick is one user click, and a stale
    * source list would answer with a field the page is no longer loading.
+   *
+   * `changes` is the other half of "what the page loaded". A capture is the body the
+   * SERVER sent (§5.1.2); if a Change is enabled on that signature, the site rendered
+   * from a different document, and searching only the capture cannot find the text on
+   * screen. See `effectiveBody.js`.
+   *
+   * @param {number} tabId @param {Map<string, any[]>} overlays by sigId
    */
-  function capturedSources(tabId) {
+  function capturedSources(tabId, overlays) {
     const record = deps.tabRecord(tabId);
     if (!record) return [];
     return [...record.sources.values()]
@@ -50,7 +58,8 @@ export function createPickApi(deps) {
         sigId: captured.sigId,
         name: friendlyName(captured.signature),
         body: captured.body,
-        ts: captured.ts
+        ts: captured.ts,
+        changes: overlays.get(captured.sigId) || null
       }));
   }
 
@@ -141,12 +150,33 @@ export function createPickApi(deps) {
   }
 
   /**
-   * The agent answered a PICK_START. Called by background.js from the Port handler.
+   * The agent answered a PICK_START. Called by background.js from the Port handler,
+   * which does not await it — the search now needs one store read (the Changes in force
+   * on this site, §6.3), so the panel sees PICKING for one more poll and then the result.
    *
    * @param {number} tabId
    * @param {{ok?:boolean, reason?:string, fingerprint?:any, snapshot?:any}} payload
    */
   function onPicked(tabId, payload) {
+    void resolvePick(tabId, payload).catch((error) => {
+      console.error('[MockLab] pick failed', error);
+      // The pick has to END. A panel left on §11's `pick.picking` — "Click something on
+      // the page…" — over a pick that already died is worse than an error (§1.1). So
+      // nothing here calls back into whatever just threw: the record is read straight
+      // out of the map, and the broadcast is allowed to fail on its own.
+      const record = byTab.get(tabId);
+      if (record) {
+        record.phase = PHASE.IDLE;
+        record.element = null;
+        record.fingerprint = null;
+        record.candidates = [];
+        record.reason = 'error';
+      }
+      try { deps.notify(tabId, PHASE.IDLE); } catch { /* no panel, or a panel that threw */ }
+    });
+  }
+
+  async function resolvePick(tabId, payload) {
     const record = recordFor(tabId);
     record.origin = originOf(tabId) || record.origin;
 
@@ -161,7 +191,18 @@ export function createPickApi(deps) {
       return;
     }
 
-    const sources = capturedSources(tabId);
+    // KNOWN BOUNDARY, stated rather than pretended away: `ruleStore.read` turns a storage
+    // failure into an empty list, so this cannot reject on one — the pick would then
+    // search the captured bodies alone and call that complete. It is survivable only
+    // because the same failure stops `background.js` compiling a match list at all, so a
+    // page loaded after it is not mocked either. If `overlaysFor` is ever given a
+    // throwing read, `onPicked`'s catch ends the pick honestly instead of answering.
+    const overlays = await overlaysFor(record.origin);
+    // The document may have gone away while that read was in flight; `onNewDocument`
+    // replaces the record wholesale, so identity is the test.
+    if (byTab.get(tabId) !== record) return;
+
+    const sources = capturedSources(tabId, overlays);
     const { candidates, searched } = findCandidates(payload.snapshot, sources);
     record.phase = PHASE.PICKED;
     record.element = payload.snapshot;

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
-import { SRC, EXTENSION_FILES, jsFiles, read, rel, stripComments } from '../testlib/audit.js';
+import { SRC, EXTENSION_FILES, SOURCE_FILES, jsFiles, read, rel, stripComments } from '../testlib/audit.js';
 
 /* ═════════ §17.8's other half: the contract the content scripts share ══════════════
  *
@@ -55,6 +55,42 @@ const CONTENT_SCOPE = EXTENSION_FILES.filter((file) => file !== MESSAGES_JS);
 const wholeName = (value) => new RegExp(`(?<![\\w$])${value.replace(/[$]/g, '\\$&')}(?![\\w$])`);
 
 /**
+ * Every string `messages.js` exports, whatever holds it: a top-level string export, or a
+ * value of an exported object. One level deep, which is every shape that file uses.
+ *
+ * WHY NOT `Object.values(PORT_MSG)`, which is what this audit walked until now: naming
+ * the TABLE is what decides the coverage, so a wire value declared in any other table is
+ * outside the guard until somebody remembers to add it. That is not hypothetical twice
+ * over. At M3 the pick types sat in `background/pickMessages.js`, and breaking
+ * `agent.js`'s mirror of `port:picked` — which kills pick mode end to end — passed all
+ * twelve guards. At M4 the probe's three port types sat in `background/probeMessages.js`
+ * and had the identical exposure: with `port:probeResult` mutated in `agent.js`, all 27
+ * guard subtests were green. Folding both files into `messages.js` does not by itself
+ * close that, because `PROBE_PORT_MSG` is still a table this list did not name.
+ *
+ * The PREFIX is the real contract and it is a convention the whole codebase already
+ * keeps: `page:` is MAIN <-> ISOLATED, `port:` is agent <-> service worker, `msg:` is
+ * panel/MCP <-> service worker. So the audit asks the question by wire — every `page:`
+ * value must be spelled in `interceptor.js` AND `agent.js`, every `port:` value in
+ * `agent.js` — and a message type added to any table, in any future file, is covered on
+ * the day it is written rather than the day someone extends this line.
+ */
+function exportedStrings(module) {
+  const values = [];
+  for (const entry of Object.values(module)) {
+    if (typeof entry === 'string') values.push(entry);
+    else if (entry && typeof entry === 'object') {
+      for (const value of Object.values(entry)) if (typeof value === 'string') values.push(value);
+    }
+  }
+  return values;
+}
+
+/** The distinct wire values on one side of the postMessage/Port boundary, sorted. */
+const wireValues = (module, prefix) =>
+  [...new Set(exportedStrings(module).filter((value) => value.startsWith(prefix)))].sort();
+
+/**
  * Every file that mirrors each `CONTENT_GLOBALS` entry, as an EXACT set. A file that
  * drops the literal fails; so does a NEW file that starts using one without being
  * recorded here. The second direction is the point: a fifth reader would otherwise
@@ -83,21 +119,25 @@ test('§17.2 vs §17.8 the content scripts mirror messages.js exactly', async ()
   // and agent.js is a classic script), so both duplicate a handful of literals. That
   // duplication is only safe while it is checked: a silent drift here kills the whole
   // MAIN-world patch while the page keeps working, so nothing else would fail loudly.
-  const { MOCKLAB_TAG, TOKEN_ATTRIBUTE, PORT_NAME, PAGE, PORT_MSG, CONTENT_GLOBALS } = await import(
-    '../src/background/messages.js'
-  );
+  const messages = await import('../src/background/messages.js');
+  const { MOCKLAB_TAG, TOKEN_ATTRIBUTE, PORT_NAME, CONTENT_GLOBALS } = messages;
   const interceptor = fs.readFileSync(path.join(SRC, 'content/interceptor.js'), 'utf8');
   const agent = fs.readFileSync(path.join(SRC, 'content/agent.js'), 'utf8');
 
   const literal = (value) => new RegExp(`(['"])${value.replace(/[$]/g, '\\$&')}\\1`);
 
-  for (const value of [MOCKLAB_TAG, TOKEN_ATTRIBUTE, ...Object.values(PAGE)]) {
+  // Floors, so this cannot pass by collecting nothing — the failure mode every audit in
+  // this file exists to prevent. They are today's counts (4 `page:`; 7 `PORT_MSG` plus
+  // the probe's 3), and message types are only ever added.
+  const pageValues = wireValues(messages, 'page:');
+  const portValues = wireValues(messages, 'port:');
+  assert.ok(pageValues.length >= 4, `only ${pageValues.length} page: values found — the collector has stopped seeing tables`);
+  assert.ok(portValues.length >= 10, `only ${portValues.length} port: values found — the collector has stopped seeing tables`);
+
+  for (const value of [MOCKLAB_TAG, TOKEN_ATTRIBUTE, ...pageValues]) {
     assert.match(interceptor, literal(value), `interceptor.js mirrors ${value}`);
   }
-  for (const value of [
-    MOCKLAB_TAG, TOKEN_ATTRIBUTE, PORT_NAME,
-    ...Object.values(PAGE), ...Object.values(PORT_MSG)
-  ]) {
+  for (const value of [MOCKLAB_TAG, TOKEN_ATTRIBUTE, PORT_NAME, ...pageValues, ...portValues]) {
     assert.match(agent, literal(value), `agent.js mirrors ${value}`);
   }
 
@@ -120,6 +160,233 @@ test('§17.2 vs §17.8 the content scripts mirror messages.js exactly', async ()
         'try/catch, so a miss is silent (§17.2).'
     );
   }
+});
+
+test('§17.2 the mirror audit reads wire values by prefix, not by table name', () => {
+  // The regression this closes: walking `Object.values(PORT_MSG)` covered exactly the
+  // table it named. A SECOND table of `port:` types was invisible — which is what
+  // `pickMessages.js` was at M3 and `probeMessages.js` at M4, and what `PROBE_PORT_MSG`
+  // still is now that both have merged into `messages.js` under their own names.
+  const fixture = {
+    PORT_NAME: 'mocklab',
+    PAGE: { HELLO: 'page:hello' },
+    PORT_MSG: { HELLO: 'port:hello' },
+    SOME_OTHER_PORT_TABLE: { RESULT: 'port:invented' },
+    MSG: { GET: 'msg:get' },
+    PHASE: { IDLE: 'idle' },
+    notATable: 7
+  };
+  assert.deepEqual(
+    wireValues(fixture, 'port:'),
+    ['port:hello', 'port:invented'],
+    'a port type in a table this file never names is still collected'
+  );
+  assert.deepEqual(wireValues(fixture, 'page:'), ['page:hello']);
+  assert.deepEqual(wireValues(fixture, 'msg:'), ['msg:get'], 'and the third prefix is separable');
+});
+
+/* ═════════ §17.8: what pins a wire VALUE, as opposed to a wire NAME ════════════════
+ *
+ * The audit above pins `page:` and `port:` values because two content scripts spell them
+ * BY HAND — they have no module graph, so the literal in `agent.js` and the literal in
+ * `messages.js` are two copies and the audit compares them.
+ *
+ * `msg:` has no such copy. The panel and the service worker both IMPORT this file, so
+ * changing `MSG.GET_PROBE` from `msg:getProbe` to anything at all changes both ends in
+ * the same instant and every suite in this repository stays green. Twenty-four of these
+ * existed when that was noticed; M5's eight land below it and §12.4's fifteen MCP tools
+ * come next, so the surface only grows. It was reported at M4 as "pinned by nothing
+ * static" and deferred; this is it closed, and the reason it is cheap to close is the
+ * prefix collector above — the same three lines that made table names stop mattering.
+ *
+ * Three properties, none of which names a table, so a type added to any future one is
+ * covered on the day it is written:
+ *
+ *   1. DERIVABLE. A value is its own prefix plus its key in lowerCamel — `LIST_PRESETS`
+ *      is `msg:listPresets`. That is not a style rule invented here; it is how all 46
+ *      values were already spelled, which is why `panel/requestedMessages.js` could
+ *      propose eight of them from the key alone and land byte-identical. Made an
+ *      assertion, it pins the value to the name in both directions: rename the key or
+ *      retype the string and this fails.
+ *   2. DISTINCT. Two types sharing one value is the silent one. Both `switch` arms are
+ *      live code, one is unreachable, and the caller gets a plausible answer from the
+ *      wrong handler. Nothing else in the tree would notice.
+ *   3. MIRRORED ONE WAY ONLY. Every wire-shaped literal in shipping source outside this
+ *      file must be a value `messages.js` exports. That is §17.8's "no magic strings"
+ *      asked in the direction that catches an invented one — which is how M5's eight
+ *      spent a milestone living as fallback literals in a panel file.
+ *
+ * KNOWN BOUNDARY, stated rather than pretended away: none of this proves a `msg:` value
+ * is ROUTED. A type both ends import and nobody handles resolves to no answer, and
+ * `panel.js`'s `send()` turns that into `{ok:false}` — which is a thing the panel is
+ * built to render honestly (see `requestedMessages.js`), not a thing this file can see.
+ * What is checked here is that the constant is unambiguous, derivable and unique; that a
+ * worker understands it is proved by the suites that call the handler.
+ * ══════════════════════════════════════════════════════════════════════════════════ */
+
+/** `SNAKE_CASE` -> `lowerCamel`, the spelling every constant in `messages.js` uses. */
+const lowerCamel = (key) => key.toLowerCase().replace(/_([a-z0-9])/g, (_, char) => char.toUpperCase());
+
+/**
+ * Every `[table, key, value]` in `module` whose value is shaped like a wire type. One
+ * level deep, matching `exportedStrings` above — and the test below asserts the two
+ * collectors see the SAME set, so a wire type exported at the top level (where it would
+ * have no key to derive from) fails rather than slipping past this one silently.
+ */
+function wireEntries(module) {
+  const entries = [];
+  for (const [table, holder] of Object.entries(module)) {
+    if (!holder || typeof holder !== 'object') continue;
+    for (const [key, value] of Object.entries(holder)) {
+      if (typeof value === 'string' && /^[a-z]+:/.test(value)) entries.push([table, key, value]);
+    }
+  }
+  return entries;
+}
+
+/** The three boundaries §2 draws, and the only prefixes a wire value may carry. */
+const PREFIXES = ['msg:', 'page:', 'port:'];
+
+/**
+ * The values that do NOT derive from their key — an exact set, so a fourth cannot be
+ * added without writing it here.
+ *
+ * These three are not a boundary. They are the rename `messages.js`'s header records as
+ * owed: `PROBE_PORT_MSG.SNAPSHOT` carries `probe` in the value because the TABLE NAME
+ * carried it, and dissolving that table into `PORT_MSG` as `PROBE_SNAPSHOT` makes it
+ * derive and empties this list. Keeping the list here rather than only in a header
+ * comment means the debt is measured on every `node --test`: finish the rename and this
+ * array must go to `[]` in the same commit, or the test says so.
+ */
+const DERIVATION_EXEMPT = ['port:probeFingerprints', 'port:probeResult', 'port:probeSnapshot'];
+
+test('§17.8 every message type\'s wire value is derivable from the name it is exported under', async () => {
+  const messages = await import('../src/background/messages.js');
+  const entries = wireEntries(messages);
+
+  // Floors first, so this cannot pass by collecting nothing — the failure mode every
+  // audit in this file exists to prevent. Today's counts; message types are only added.
+  assert.ok(entries.length >= 46, `only ${entries.length} wire values found — the collector has stopped seeing tables`);
+  const byPrefix = (prefix) => entries.filter(([, , value]) => value.startsWith(prefix));
+  assert.ok(byPrefix('msg:').length >= 32, `only ${byPrefix('msg:').length} msg: values — M5's eight are meant to be in here`);
+
+  // The two collectors must agree, or a wire type exported at the top level would be
+  // inside the mirror audit and outside this one.
+  assert.deepEqual(
+    [...new Set(entries.map(([, , value]) => value))].sort(),
+    [...new Set(PREFIXES.flatMap((prefix) => wireValues(messages, prefix)))].sort(),
+    'a wire value is exported that is not inside a table — it has no key to derive from. ' +
+      'Put it in one of the message tables.'
+  );
+
+  // Only the three prefixes §2 draws, and one table may not straddle two of them: the
+  // prefix is what decides which dispatcher ever sees the message, so a `port:` value
+  // sitting in `MSG` is a handler that is never reached.
+  assert.deepEqual(
+    [...new Set(entries.map(([, , value]) => value.slice(0, value.indexOf(':') + 1)))].sort(),
+    PREFIXES,
+    'the wire prefixes in use are exactly the three transports §2 describes'
+  );
+  const straddling = [...new Set(entries.map(([table]) => table))].filter(
+    (table) =>
+      new Set(
+        entries.filter(([owner]) => owner === table).map(([, , value]) => value.slice(0, value.indexOf(':') + 1))
+      ).size > 1
+  );
+  assert.deepEqual(straddling, [], 'these tables mix transports; one table, one prefix');
+
+  const wrong = entries
+    .filter(([, key, value]) => value !== value.slice(0, value.indexOf(':') + 1) + lowerCamel(key))
+    .map(([, , value]) => value)
+    .sort();
+  assert.deepEqual(
+    wrong,
+    DERIVATION_EXEMPT,
+    'a wire value must be its prefix plus its key in lowerCamel, so the string is pinned ' +
+      'to the name. Both ends import this file, so nothing else would catch a change to it.'
+  );
+
+  const values = entries.map(([, , value]) => value);
+  const collisions = [...new Set(values.filter((value, index) => values.indexOf(value) !== index))];
+  assert.deepEqual(
+    collisions,
+    [],
+    'two message types share one wire value: one of the two handlers is unreachable and ' +
+      'the caller gets a plausible answer from the wrong one'
+  );
+});
+
+/** Every wire-shaped string literal in comment-free `code`, in all three quotes. */
+function wireLiterals(code) {
+  const pattern = new RegExp(`(['"\`])((?:${PREFIXES.map((p) => p.slice(0, -1)).join('|')}):[^'"\`\\n]*)\\1`, 'g');
+  return [...code.matchAll(pattern)].map((match) => match[2]);
+}
+
+test('§17.8 every wire literal in shipping code is one messages.js exports', async () => {
+  const messages = await import('../src/background/messages.js');
+  const known = new Set(wireEntries(messages).map(([, , value]) => value));
+
+  // Shipping source in BOTH workspaces, minus the file that declares them. `test/` is
+  // excluded on purpose: the fixtures above deliberately invent `port:invented` to prove
+  // the collector reads tables it has never heard of, and a fixture is not a magic string.
+  const invented = [];
+  const mirrors = new Map();
+  for (const file of SOURCE_FILES) {
+    if (file === MESSAGES_JS) continue;
+    for (const value of wireLiterals(stripComments(read(file)))) {
+      if (known.has(value)) mirrors.set(rel(file), (mirrors.get(rel(file)) || 0) + 1);
+      else invented.push(`${rel(file)}: ${JSON.stringify(value)}`);
+    }
+  }
+  assert.deepEqual(
+    invented,
+    [],
+    'a wire value written by hand that messages.js does not export. Either import the ' +
+      'constant (§17.8), or — if this file cannot import, like the content scripts — add ' +
+      'the value to messages.js so the mirror audit above starts checking it.'
+  );
+
+  // And the audit must be LOOKING at something: the two content scripts mirror by
+  // necessity, and `panel/requestedMessages.js` mirrors M5's eight as dead fallbacks
+  // until its author deletes it. Zero here means the scan stopped reading files.
+  assert.ok(mirrors.size >= 2, `only ${mirrors.size} files mirror a wire value — the scan found nothing to check`);
+});
+
+test('§17.8 the value pin can tell a conforming table from a mutated one', async () => {
+  // A guard that cannot fail is decoration. Each fixture below breaks one property and
+  // must be visible to the same collector the test above uses.
+  const good = { MSG: { LIST_PRESETS: 'msg:listPresets' }, PORT_MSG: { SOFT_NAV: 'port:softNav' } };
+  const derives = ([, key, value]) => value === value.slice(0, value.indexOf(':') + 1) + lowerCamel(key);
+  assert.ok(wireEntries(good).every(derives), 'lowerCamel handles a multi-word key and a single-word one');
+
+  const retyped = { MSG: { LIST_PRESETS: 'msg:listPreset' } };
+  assert.deepEqual(wireEntries(retyped).filter((entry) => !derives(entry)).map(([, , v]) => v), ['msg:listPreset']);
+
+  const renamed = { MSG: { PRESET_LIST: 'msg:listPresets' } };
+  assert.deepEqual(wireEntries(renamed).filter((entry) => !derives(entry)).map(([, , v]) => v), ['msg:listPresets']);
+
+  // A value carrying its table's name, which is exactly the shape of the three exempted
+  // above — the pin must see it, or the owed rename would never be measured.
+  const tableNamed = { PROBE_PORT_MSG: { RESULT: 'port:probeResult' } };
+  assert.deepEqual(wireEntries(tableNamed).filter((entry) => !derives(entry)).map(([, , v]) => v), ['port:probeResult']);
+
+  // Nothing without a colon is a wire value. `PROBE_FAIL.NO_PICK` is `no-pick` and the
+  // `CONTENT_GLOBALS` entries are `__mocklab…` names; neither is addressed to a
+  // transport, so neither may be dragged into a rule about transports. The globals are
+  // read out of the module rather than spelled here — this file keeps no copy of those
+  // four names (see the header), and writing one cost two failures in the audits below
+  // before it cost anything else.
+  const { CONTENT_GLOBALS } = await import('../src/background/messages.js');
+  assert.deepEqual(
+    wireEntries({ PROBE_FAIL: { NO_PICK: 'no-pick', TIMEOUT: 'timeout' }, CONTENT_GLOBALS }),
+    []
+  );
+
+  // And the literal scanner reads all three quotes, ignoring anything else in the line.
+  assert.deepEqual(
+    wireLiterals(`const A = 'page:hello'; const B = "port:picked"; const C = \`msg:highlight\`; const D = 'idle';`),
+    ['page:hello', 'port:picked', 'msg:highlight']
+  );
 });
 
 /**

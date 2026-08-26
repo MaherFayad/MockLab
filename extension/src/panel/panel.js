@@ -14,6 +14,8 @@ import { el, clear, ICON, withTip } from './dom.js';
 import { renderSources } from './sources.js';
 import { renderPickTab, pickingChrome, cancelPick, loadPick } from './pick.js';
 import { EMPTY_PROBE, VIEW, readProbe } from './probe.js';
+import { EMPTY_SCENARIOS, loadScenarios, renderScenariosTab } from './scenarios.js';
+import { forgetLostLinks } from './links.js';
 
 const TOAST_MS = 3200;
 
@@ -46,6 +48,16 @@ const state = {
   bindings: [],
   /** §10.1's progress card, State D and the failure cards — see probe.js. */
   probe: { ...EMPTY_PROBE },
+  /** §10.4 — see scenarios.js. `ready` stays null until the worker answers. */
+  scenarios: { ...EMPTY_SCENARIOS },
+  /**
+   * §1.1's third link state, observed rather than stored — see links.js. `lostLinks`
+   * holds the Links whose elements a §10.3 highlight could not find ON THIS PAGE LOAD,
+   * and is emptied whenever the tab loads a new document; `canHighlight` goes false only
+   * if the worker does not answer a highlight at all.
+   */
+  lostLinks: new Set(),
+  canHighlight: true,
   settings: { advancedMode: false, paranoid: false },
   query: '',
   open: null,
@@ -61,7 +73,7 @@ const dom = {
   sitebar: document.getElementById('sitebar'),
   pickPanel: document.getElementById('panel-pick'),
   sourceList: document.getElementById('source-list'),
-  scenarioActions: document.getElementById('scenario-actions'),
+  scenarioBody: document.getElementById('scenario-body'),
   settingsRows: document.getElementById('settings-rows'),
   settingsCompanion: document.getElementById('settings-companion'),
   settingsDanger: document.getElementById('settings-danger'),
@@ -192,12 +204,9 @@ async function resetSite() {
 
 /* ─────────────────────────────────────────────────────── tabs: pick & scenarios */
 
-/** §10.4. CRUD is §16 M5; the idle copy is real today. */
+/** §10.4 — the whole tab lives in scenarios.js. */
 function renderScenarios() {
-  clear(dom.scenarioActions);
-  const make = el('button', { type: 'button', class: 'btn btn--primary', disabled: true, text: S.scenarios.new });
-  const bring = el('button', { type: 'button', class: 'btn btn--secondary', disabled: true, text: S.scenarios.import });
-  dom.scenarioActions.append(make, bring, el('p', { class: 'help', text: S.notYet }));
+  renderScenariosTab(dom.scenarioBody, ctx);
 }
 
 /* ───────────────────────────────────────────────────────────── settings — §10.5 */
@@ -383,6 +392,8 @@ async function refresh() {
       state.open = null;
       state.editing = null;
       state.body = undefined;
+      // A different site's Links were never the ones a highlight failed to find here.
+      forgetLostLinks(ctx);
     }
     state.tabId = site.tabId;
     state.origin = site.origin;
@@ -396,6 +407,7 @@ async function refresh() {
   if (list.ok) state.sources = list.sources || [];
   const links = await send(MSG.GET_BINDINGS, { tabId: state.tabId });
   state.bindings = links.ok ? links.bindings || [] : [];
+  await loadScenarios(ctx);
   await loadPick(ctx);
   await readProbe(ctx);
   render();
@@ -414,6 +426,9 @@ function wireEvents() {
     // typeless message look like that broadcast.
     const matches = (constant) => typeof constant === 'string' && type === constant;
     if (matches(MSG.SOURCES_CHANGED) || matches(MSG.CHANGES_CHANGED)) void refresh();
+    // §10.4's store, changed anywhere — this panel, another window's, or an agent over
+    // MCP (§1.6). Data-free like the others; the panel re-reads.
+    else if (matches(MSG.PRESETS_CHANGED)) void refresh();
     // Pick mode can also be entered or cancelled from somewhere that is not this panel
     // — the page's own Escape key, or an agent over MCP (§1.6) — so the tab follows the
     // worker rather than only its own clicks. The same is true of a probe (§12.4 #5).
@@ -422,7 +437,11 @@ function wireEvents() {
   });
   chrome.tabs.onActivated.addListener(() => void refresh());
   chrome.tabs.onUpdated.addListener((tabId, info) => {
-    if (tabId === state.tabId && (info.status === 'complete' || info.url)) void refresh();
+    if (tabId !== state.tabId) return;
+    // A new document makes every "these elements could not be found" observation obsolete:
+    // it was about a page that no longer exists (§1.1 — a Stale chip has to be about now).
+    if (info.status === 'loading' || info.url) forgetLostLinks(ctx);
+    if (info.status === 'complete' || info.url) void refresh();
   });
   dom.search.addEventListener('input', () => {
     state.query = dom.search.value;

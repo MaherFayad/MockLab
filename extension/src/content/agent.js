@@ -57,8 +57,8 @@
     PICK_CANCEL: 'port:pickCancel',
     PICKED: 'port:picked'
   };
-  // M4 probe (PLAN.md §7). Mirrored from background/probeMessages.js, which is where
-  // these three live until they can be folded into messages.js beside PORT_MSG.
+  // M4 probe (PLAN.md §7). Mirrored from messages.js like the block above, where these
+  // three now live beside PORT_MSG — same mirroring rule, same commit discipline.
   var PROBE_PORT_MSG = {                          // PROBE_PORT_MSG
     SNAPSHOT: 'port:probeSnapshot',
     FINGERPRINTS: 'port:probeFingerprints',

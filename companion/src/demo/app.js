@@ -5,8 +5,10 @@
  * deliberately built so that the rendered UI can NOT be derived from the data by
  * string matching alone:
  *
- *   - status  -> pill text AND colour AND a banner   (enum -> presentation mapping,
- *                                                     one field, three visible effects)
+ *   - status  -> pill text AND colour, a status dot's colour, and a banner
+ *                                                    (enum -> presentation mapping, one
+ *                                                     field, four visible effects, one
+ *                                                     of them with no text at all)
  *   - price.total -> three money rows                (fare and taxes are computed here,
  *                                                     so only the total matches verbatim)
  *   - departsAt/arrivesAt -> "12:40"                 (formatted from ISO, derived)
@@ -59,11 +61,14 @@
 
   function renderStatus(status) {
     var pill = $('status-pill');
+    var dot = $('status-dot');
     var banner = $('alert-banner');
     var view = STATUS_PRESENTATION[status] || { label: String(status), cls: '', banner: null };
 
     pill.textContent = view.label;
     pill.className = view.cls;
+    // The same field again, as colour with no text (see index.html).
+    if (dot) dot.className = view.cls;
 
     if (view.banner) {
       banner.textContent = view.banner;

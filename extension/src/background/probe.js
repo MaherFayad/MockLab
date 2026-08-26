@@ -11,33 +11,32 @@
  * without the evidence §7 requires ends in an honest failure instead.
  *
  * The evidence CONFIRMED requires, in order, none of it skippable:
- *   1. two control runs, and the picked element identical in both — if it is not, the
- *      element changes on its own and nothing can be proved about it (§7.2, `tooNoisy`);
- *   2. a noise mask built from those two runs, so no later difference is credited to
- *      MockLab when the page produces it unprompted;
- *   3. bisection down to a single field, where a batch may only ever DISCARD or NARROW —
- *      a batch can never confirm (§7.5);
+ *   1. two control runs, the picked element identical in both — if it is not, the element
+ *      changes on its own and nothing can be proved about it (§7.2, `tooNoisy`);
+ *   2. a noise mask from those two runs, so no later difference is credited to MockLab
+ *      when the page produces it unprompted;
+ *   3. bisection to a single field, where a batch may only DISCARD or NARROW (§7.5);
  *   4. VERIFY_ON: that field mutated, alone, on a fresh load, with a value DIFFERENT
  *      from the one bisection used where the domain allows it — the element must change;
- *   5. VERIFY_OFF: the field put back, the element equal to the control snapshot again.
- *      A change that does not undo is not a proof, it is a coincidence with a page.
+ *   5. VERIFY_OFF: the field put back, the element equal to the control snapshot again —
+ *      a change that does not undo is a coincidence with a page, not a proof.
  *
  * §17.5 is the other hard rule: every Change written here carries `probe:true`, and
  * CLEANUP deletes every one however the run ends — success, failure, cancel or exception.
  * `background.js` sweeps them again at module top level on every service-worker start,
- * which is what covers a crash mid-probe.
+ * covering a crash mid-probe.
  */
 
-import { PROBE_MSG, PROBE_PORT_MSG, PROBE_PHASE, PROBE_STATE, PROBE_STEP, PROBE_FAIL } from './probeMessages.js';
+import { PROBE_MSG, PROBE_PORT_MSG, PROBE_PHASE, PROBE_STATE, PROBE_STEP, PROBE_FAIL } from './messages.js';
 import { createProbeLink, probeFailure, PROBE_LIMITS } from './probeLink.js';
 import { expectedReloads } from './probeValues.js';
 import { clearProbeChanges, applyProbeChanges } from './probeChanges.js';
-import { queueFor, affectedKeys } from './probeQueue.js';
+import { queueFor, discoverElements } from './probeQueue.js';
 import { buildNoiseMask, snapshotsEqual, diffSnapshots } from '../shared/diff.js';
 import { getBindings, setBindings, getSettings } from './ruleStore.js';
 
 /** Re-exported so `background.js` reaches the whole probe through ONE import. */
-export { PROBE_MSG, PROBE_PORT_MSG } from './probeMessages.js';
+export { PROBE_MSG, PROBE_PORT_MSG } from './messages.js';
 export { sweepProbeChanges } from './probeChanges.js';
 
 /** Every message type this module answers. background.js routes on this set. */
@@ -65,7 +64,7 @@ export function createProbeApi(deps) {
     run.state = state;
     if (step !== undefined) run.step = step;
     // A broadcast that throws must never take CLEANUP with it: that would leave probe
-    // scaffolding on a real site, which is the one thing §17.5 does not allow.
+    // scaffolding on a real site, the one thing §17.5 does not allow.
     try { deps.notify(run.tabId, state); } catch { /* no panel, or a panel that threw */ }
   }
 
@@ -99,9 +98,9 @@ export function createProbeApi(deps) {
 
   /**
    * §7.2's region and §7.6's page sample, as one keyed set. Both the mask and inverse
-   * discovery read it: masking more can only make the probe more cautious, and the
-   * region is what carries an affected element with no text of its own. What keeps the
-   * region's ancestors out of "affects {k} places" is `affectedKeys`, not this.
+   * discovery read it: masking more can only make the probe more cautious, and the region
+   * carries an affected element with no text of its own. What keeps the region's ancestors
+   * out of "affects {k} places" is `affectedKeys`, not this.
    */
   const nodesOf = (answer) => [...(answer.region || []), ...(answer.page || [])];
 
@@ -158,14 +157,13 @@ export function createProbeApi(deps) {
    *
    * §7.5 asks for the MINIMAL driving set, so a working pair is not returned until both
    * halves have been shown not to work alone: bisection discards halves wholesale, so a
-   * field in a discarded half may never have been tried by itself, and a pair whose
-   * first member does all the work would put "Verified ✓" on a field that drives nothing
-   * (§17.12). Two extra reloads, once, on the rare run that gets this far.
-   *
-   * Honest note: while `search` is correct this cannot fire — a field that drives the
-   * element alone is found alone. It is here so the ANSWER does not depend on that; only
-   * the two defects together (a bisection narrowing into the wrong half AND this check
-   * removed) produce a spurious verified pair.
+   * field in a discarded half may never have been tried by itself, and a pair whose first
+   * member does all the work would put "Verified ✓" on a field that drives nothing
+   * (§17.12). Two extra reloads, once, on the rare run that gets this far. Honest note:
+   * while `search` is correct this cannot fire — a field that drives the element alone is
+   * found alone. It is here so the ANSWER does not depend on that; only the two defects
+   * together (a bisection narrowing into the wrong half AND this check removed) produce a
+   * spurious verified pair.
    */
   async function searchPairs(run, batch) {
     let spent = 0;
@@ -187,9 +185,9 @@ export function createProbeApi(deps) {
    * §7.1's VERIFY_ON / VERIFY_OFF, the only path to CONFIRMED.
    *
    * VERIFY_ON mutates the driver(s) alone, with a value different from the bisection's
-   * where §7.4 has one, and takes the whole-page sample §7.6 needs. VERIFY_OFF reverts
-   * and requires the element to be EQUAL to the control snapshot again: "it changed" is
-   * a fact about one load, "it changed and changed back" is a fact about the field.
+   * where §7.4 has one, and takes the whole-page sample §7.6 needs. VERIFY_OFF reverts and
+   * requires the element to be EQUAL to the control snapshot again: "it changed" is a fact
+   * about one load, "it changed and changed back" is a fact about the field.
    */
   async function verify(run, drivers) {
     let first = null;
@@ -214,6 +212,9 @@ export function createProbeApi(deps) {
           diffSnapshots(run.control.element, off.element).join(', ')}`);
       }
     }
+    // The linearization point for "Stop checking": everything §7.1 asks for has now
+    // happened on the real page, and a cancel after this instant is refused. See `cancel`.
+    run.proved = true;
     return { ok: true, on: first };
   }
 
@@ -231,6 +232,14 @@ export function createProbeApi(deps) {
    * is not a conflict either: probe Changes are appended after it and the in-page
    * matcher applies a signature's Changes in order, so the probe value is what the site
    * sees, and VERIFY_OFF returns the page to the control state. Recorded in README.
+   *
+   * THE COST, unrecorded until QA found it downstream: this is what makes "the body the
+   * page rendered from" a different document from "the body MockLab captured", always, not
+   * only inside a probe. §6.3's search matched an element against captures alone and told
+   * the person their data was absent; §7.4 could write the value already on screen.
+   * `effectiveBody.js` is the one answer to "what did the page render from", asked by
+   * `queueFor` and `pickApi`. A divergence must be carried by everything depending on what
+   * it changed, or it is a bug with a note attached.
    */
   async function protocol(run) {
     setState(run, PROBE_STATE.CONTROL_A, PROBE_STEP.CONTROL);
@@ -274,27 +283,17 @@ export function createProbeApi(deps) {
     if (!outcome.ok || !drivers) throw probeFailure(PROBE_FAIL.NONE_CONFIRMED);
 
     setState(run, PROBE_STATE.CONFIRMED, PROBE_STEP.CONFIRMING);
-    const elements = await discoverElements(run, outcome.on);
+    const elements = await discoverElements({
+      controlNodes: nodesOf(run.control),
+      mutatedNodes: nodesOf(outcome.on),
+      mask: run.mask,
+      elementKey: outcome.on.elementKey,
+      fingerprint: run.fingerprint,
+      fingerprints: (keys) => link.fingerprints(run.tabId, keys)
+    });
     const bindings = [];
     for (const driver of drivers) bindings.push(await persist(run, driver, elements));
     return { ok: true, bindings, affected: elements.length, notRefetched: run.notRefetched };
-  }
-
-  /**
-   * §7.6, for free: every non-masked node that moved while the field was mutated — what
-   * makes ONE probe answer "which elements does this field drive" rather than "does it
-   * drive the one you clicked". It finds the demo's cancellation banner, which has no
-   * text in either control run, so it is not masked and it APPEARS.
-   */
-  async function discoverElements(run, on) {
-    const ordered = affectedKeys(nodesOf(run.control), nodesOf(on), run.mask, on.elementKey);
-    const answer = await link.fingerprints(run.tabId, ordered);
-    const byKey = new Map((answer.fingerprints || []).map((entry) => [entry.key, entry.fingerprint]));
-    const elements = ordered.map((key) => byKey.get(key)).filter(Boolean);
-    // VERIFY_ON proved the picked element itself; if the page would not fingerprint it,
-    // the one taken at pick time still describes it.
-    if (!elements.length && run.fingerprint) return [run.fingerprint];
-    return elements;
   }
 
   /**
@@ -404,6 +403,7 @@ export function createProbeApi(deps) {
       expected: expectedReloads(exhaustive ? 64 : candidates.length, settings.paranoid === true),
       startedAt: Date.now(),
       cancelled: false,
+      proved: false,
       applied: [],
       notRefetched: [],
       lastChanged: null,
@@ -415,13 +415,19 @@ export function createProbeApi(deps) {
   }
 
   /**
-   * §11's "Stop checking". The run unwinds at its next guard, CLEANUP deletes every
-   * probe Change, and the page goes back to the site's real data — §16 M4's third DoD
-   * line is that a cancel leaves ZERO probe changes in storage.
+   * §11's "Stop checking". The run unwinds at its next guard, CLEANUP deletes every probe
+   * Change, and the page goes back to the site's real data — §16 M4's third DoD line is
+   * that a cancel leaves ZERO probe changes in storage. A cancel that arrives AFTER
+   * `verify` set `proved` is refused, and says so: racing it was wrong in both directions
+   * at once. `link.abort` killed §7.6's fingerprint round trip, so `elements[]` fell back
+   * to the picked element and "affects 1 place" understated a proof that had found three
+   * — while the run still persisted a verified Binding the panel had already reported as
+   * stopped. A Link in Sources that the screen called cancelled is §17.12's quietest lie.
    */
   function cancel(tabId) {
     const run = runs.get(tabId);
     if (!run || run.state === PROBE_STATE.DONE) return { ok: true, tabId, cancelled: false };
+    if (run.proved) return { ok: true, tabId, cancelled: false };
     run.cancelled = true;
     // Flagging it is not enough: a probe that has just reloaded is inside a 15 s wait,
     // and "Stop checking" has to stop it now.

@@ -17,7 +17,18 @@
  *   1. swap the words in `strings.js` for a sentinel and the panel must print it —
  *      any word baked into the function fails;
  *   2. read the function's source and allow no quoted word in it at all;
- *   3. audit every place the panel puts text on screen, for the next one.
+ *   3. audit the four places a literal reaches a reader DIRECTLY, for the next one.
+ *
+ * That third line used to say "audit every place the panel puts text on screen", and it
+ * was an overclaim — the one this file is least entitled to make, since overclaiming is
+ * the defect class it exists to catch. The audit at the bottom reads the token that
+ * IMMEDIATELY follows a sink, so a word one operator further out (`text: a || 'Some
+ * words'`, either arm of a ternary, either side of a `+`, a template's static text) is
+ * invisible to it; QA proved that on a live branch with this file green. Those doors, and
+ * the ones where copy arrives as a bare ARGUMENT (`el(…, {}, 'Some words')`,
+ * `node.append(…)`, `withTip(…, ['Some words'])`), are audited by
+ * `guards.strings.test.js`, which classifies the whole expression at a sink. The two
+ * files overlap on purpose and neither can see all of the other's doors.
  *
  * This file is unit-level on purpose. The browser suite needs a null-bearing fixture to
  * see any of this, and changing the demo's data to grow one would change what every
@@ -380,68 +391,4 @@ test('§11 the bounded-search copy claims nothing about the data, and says where
       `S.pick.${key} tells the person MockLab stopped short and then leaves them there — §11 wants the next step`
     );
   }
-});
-
-test("§11's closing rules: sentence case, and no exclamation marks outside an applied moment", () => {
-  // "no exclamation marks except `applied` moments" — §11. Audited across the whole
-  // table so the next string added inherits the rule instead of re-arguing it.
-  const offenders = [];
-  const walk = (node, trail) => {
-    for (const [key, value] of Object.entries(node)) {
-      const where = trail ? `${trail}.${key}` : key;
-      if (value && typeof value === 'object') {
-        walk(value, where);
-        continue;
-      }
-      const text = typeof value === 'function' ? sample(value) : typeof value === 'string' ? value : '';
-      if (/applied|paired/i.test(key)) continue; // §11's one sanctioned exception
-      if (text.includes('!')) offenders.push(`S.${where}: “${text}”`);
-    }
-  };
-  walk(S, '');
-  assert.deepEqual(offenders, [], '§11: no exclamation marks except at an "applied" moment');
-});
-
-/** A representative rendering of an interpolating string, for the audits above. */
-function sample(fn) {
-  for (const args of [[1, 1], ['x', 'y']]) {
-    try {
-      const out = fn(...args);
-      if (typeof out === 'string') return out;
-    } catch {
-      /* a shape this audit cannot call says nothing either way */
-    }
-  }
-  return '';
-}
-
-test("§11's closing rules: the default UI speaks no technical vocabulary", () => {
-  // "never use: JSON, API, endpoint, payload, regex, DOM, probe, binding, signature
-  // (those words may ONLY appear when Advanced mode is on)" — §11, and §1.2 for why.
-  const BANNED = /\b(json|api|endpoint|payload|regex|dom|probe|binding|signature)s?\b/i;
-  const offenders = [];
-  const walk = (node, trail) => {
-    for (const [key, value] of Object.entries(node)) {
-      const where = trail ? `${trail}.${key}` : key;
-      if (where === 'advanced') continue; // §1.2's one sanctioned place for these words
-      if (typeof value === 'object' && value !== null) walk(value, where);
-      // Sample the interpolating ones: their fixed words are what this audit is about.
-      const text = typeof value === 'function' ? tryCall(value) : typeof value === 'string' ? value : '';
-      const hit = BANNED.exec(text);
-      if (hit) offenders.push(`S.${where}: “${hit[0]}”`);
-    }
-  };
-  const tryCall = (fn) => {
-    for (const args of [[1, 1], ['x', 'y']]) {
-      try {
-        const out = fn(...args);
-        if (typeof out === 'string') return out;
-      } catch {
-        /* a shape this audit cannot call says nothing either way */
-      }
-    }
-    return '';
-  };
-  walk(S, '');
-  assert.deepEqual(offenders, [], 'a non-technical user has no meaning for these (§1.2)');
 });

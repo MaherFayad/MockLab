@@ -156,7 +156,82 @@ export const S = {
     applied: (name) => `“${name}” applied.`,
     stale: 'This site seems to have changed since this was saved. Some changes may not apply.',
     namePrompt: 'Name this scenario',
-    deleteConfirm: (name) => `Delete “${name}”?`
+    deleteConfirm: (name) => `Delete “${name}”?`,
+    // + not in §11 — §10.4 spells the card and its ⋯ menu out in prose but the copy table
+    // has no keys for them. The wording below is §10.4's own.
+    count: (n) => `${n} change${n === 1 ? '' : 's'}`,
+    more: 'More actions',
+    /* + not in §11 — §4 gives a Scenario an `emoji`, "user-picked, default 🎬", and §10.4
+     * draws it on the card. A glyph IS a string a person reads, so it lives here and not
+     * inline in a render (§17.6) — and a locale is entitled to change it: 🎬 reads as
+     * "take" to some audiences and as nothing at all to others.
+     *
+     * A palette and not a full emoji keyboard: §10.4 asks for one picked symbol beside a
+     * name, and the eight below are the states this product is used to stage — a take, a
+     * problem, a failure, an experiment, money, waiting, refusal, success. */
+    defaultSymbol: '🎬',
+    symbols: ['🎬', '🚩', '💥', '🧪', '💸', '🕒', '🚫', '✅'],
+    /* + not in §11 — the fallback stem for an exported file whose scenario name survives
+     * nothing a filesystem accepts (a name written entirely in punctuation). It reaches a
+     * person in the download dialog, so §17.6 applies to it. */
+    untitledFile: 'scenario',
+    rename: 'Rename',
+    duplicate: 'Duplicate',
+    exportFile: 'Export file',
+    delete: 'Delete',
+    save: 'Save',
+    symbol: 'Pick a symbol',
+    // + not in §11 — §10.4: "New scenario from current changes" is disabled when there are
+    // none. A disabled control with no reason beside it is the thing §1.1 is about, and
+    // this one names the step that makes it work.
+    nothingToSave: 'Turn on at least one change first, then save those changes as a scenario.',
+    // + not in §11 — the name box, empty. Says what to do, blames nobody.
+    nameEmpty: 'Type a name for this scenario.',
+    // + not in §11 — §10.4's Duplicate. A copy that reuses the name is two cards a person
+    // cannot tell apart, which §1.1 forbids as plainly as a wrong chip does.
+    copyOf: (name) => `${name} copy`,
+    imported: (name) => `“${name}” is ready to use.`,
+    // + not in §11 — the whole point of §10.4's "Apply" is that the site then renders it.
+    // A scenario whose changes could not all be applied must say so rather than toast a
+    // clean "applied" over a page that only half-changed (§1.1).
+    appliedPartly: (name, n) =>
+      `“${name}” applied, except ${n} change${n === 1 ? '' : 's'} the page has not asked for yet. Those will show up the next time the site loads that data.`,
+
+    /* + not in §11 — IMPORT.
+     *
+     * A file chooser is the one place a person hands MockLab something MockLab did not
+     * make, so every one of these sentences is about a FILE and none of them is about
+     * the person. §1.2 rules out showing what actually went wrong — a parser message, a
+     * line number, the text of the file — and §11 asks for the next step instead, so each
+     * one names a different next step because each is a different situation. They are
+     * separate keys and not one "that didn't work" for the same reason §10.6 keeps four
+     * chips instead of one: a person who picked a screenshot, a person who picked a
+     * scenario from another site, and a person whose file is damaged need to do three
+     * different things next.
+     */
+    importUnreadable: "MockLab couldn't open that file. Choose it again, or pick a different one.",
+    importNotScenario: 'That file is not a MockLab scenario. Choose one you saved here with Export file.',
+    importEmpty: 'That scenario has no changes saved in it, so there is nothing to bring in.',
+    importTooBig: 'That file is far too large to be a scenario. Choose one you saved here with Export file.',
+    importOtherSite: (host) => `That scenario was saved on ${host}. Open ${host} in this tab to use it.`
+  },
+  /* + not in §11 — §10.3's on-page highlights, from the panel's side.
+   *
+   * §11 wrote `probe.showMe` and `sources.showOnPage` (the two controls) and
+   * `sources.guessHighlight` (the unproven kind), and stopped there — it has no sentence
+   * for a highlight that lit nothing up. That is not a rare case: it is what a person
+   * sees whenever a proven Link's elements are no longer on the page, which is exactly
+   * §1.1's third state arriving in front of them. Flashing nothing and saying nothing
+   * would read as a broken button.
+   */
+  highlight: {
+    none: "MockLab couldn't find those places on the page. Refresh the page and try again.",
+    // + not in §11 — the sentence for a Link MockLab DID prove and can no longer stand
+    // behind. §1.1: "was verified, but the site changed and it no longer matches". It
+    // says what is true (it was proved, the data has not appeared) and never claims the
+    // stronger thing (that the site definitely changed), because a page that simply has
+    // not loaded yet looks identical from here.
+    stale: "MockLab proved this before, but the data behind it hasn't loaded on this page — so it may not work any more. Refresh the page to check."
   },
   chips: { verified: 'Verified ✓', candidate: 'Possible', stale: 'Stale', changed: 'Changed' },
   deep: {

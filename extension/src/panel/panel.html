@@ -57,11 +57,12 @@
         <div class="stack" id="source-list"></div>
       </section>
 
-      <!-- §10.4 — CRUD lands at M5; the idle state is real copy today. -->
+      <!-- §10.4 — which of this tab's states shows depends on what the store holds and
+           on whether the worker answers at all, so everything under the heading is
+           rendered by scenarios.js. -->
       <section class="panel hidden" id="panel-scenarios" role="tabpanel" aria-labelledby="tab-scenarios">
         <h2 data-s="scenarios.title"></h2>
-        <div class="stack" id="scenario-actions"></div>
-        <p class="empty" data-s="scenarios.empty"></p>
+        <div class="stack" id="scenario-body"></div>
       </section>
 
       <!-- §10.5 -->

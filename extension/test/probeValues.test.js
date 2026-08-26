@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { probeValueFor, expectedReloads } from '../src/background/probeValues.js';
-import { buildQueue, affectedKeys, allFields } from '../src/background/probeQueue.js';
+import { buildQueue, affectedKeys, allFields, isAncestorOf } from '../src/background/probeQueue.js';
 
 /* ───────────────────────────────────────────────────────── §7.4 probe values */
 
@@ -170,6 +170,59 @@ test('14 a Binding\'s observed values reach §7.4, without duplicates or the cur
   assert.deepEqual(queue[0].observed, ['CANCELLED']);
 });
 
+test('14b the queue carries BOTH the captured value and the one the page has now', () => {
+  // The person set `$.status` to DELAYED from the tree; the site still serves ON_TIME.
+  // §7.4's replacement has to move away from what is ON SCREEN, or the probe writes the
+  // value the Change is already holding, the element does not move, and the run reports
+  // `noneConfirmed` about the field that drives it. §4's `observedValues` are "distinct
+  // REAL values", so the captured one has to survive alongside it.
+  const sources = new Map([['trip', captured({ status: 'ON_TIME', gate: 'A17' })]]);
+  const overlays = new Map([['trip', [{ path: '$.status', value: 'DELAYED' }]]]);
+  const { queue } = buildQueue({
+    candidates: [
+      { sigId: 'trip', path: '$.status', value: 'DELAYED', realValue: 'ON_TIME' },
+      { sigId: 'trip', path: '$.gate', value: 'A17' }
+    ],
+    sources,
+    bindings: [],
+    overlays,
+    nameFor
+  });
+  const status = queue.find((item) => item.path === '$.status');
+  assert.equal(status.real, 'ON_TIME', 'what the site served');
+  assert.equal(status.effective, 'DELAYED', 'what the page rendered from');
+  assert.deepEqual(status.observed, ['ON_TIME'], 'and the captured value is a §7.4 candidate value');
+  assert.equal(probeValueFor(status.effective, { observedValues: status.observed }), 'ON_TIME',
+    '§7.4 moves away from the screen, to a value the site is known to render');
+
+  const gate = queue.find((item) => item.path === '$.gate');
+  assert.equal(gate.effective, 'A17', 'a field with no Change on it is unchanged in both');
+  assert.equal(gate.real, 'A17');
+});
+
+test('14c the last Change on a path wins it, and §7.4\'s null rule reads the page too', () => {
+  const sources = new Map([['trip', captured({ status: 'ON_TIME', gate: 'A17' })]]);
+  const { queue, nullValued } = buildQueue({
+    candidates: [
+      { sigId: 'trip', path: '$.status', value: 'x' },
+      { sigId: 'trip', path: '$.gate', value: 'A17' }
+    ],
+    sources,
+    bindings: [],
+    // §5.3: a signature's Changes apply in order, so the body ends up with the last.
+    overlays: new Map([['trip', [
+      { path: '$.status', value: 'DELAYED' },
+      { path: '$.status', value: 'CANCELLED' },
+      // A field the page is currently rendering as empty is the site's empty state, and
+      // §7.4 refuses to probe one for exactly the reason it refuses a captured null.
+      { path: '$.gate', value: null }
+    ]]]),
+    nameFor
+  });
+  assert.deepEqual(queue.map((item) => item.effective), ['CANCELLED']);
+  assert.deepEqual(nullValued.map((item) => item.path), ['$.gate']);
+});
+
 test('15 "check all fields" enumerates every leaf of every captured response', () => {
   const sources = new Map([
     ['trip', captured({ status: 'ON_TIME', price: { total: 450, taxRate: null } })],
@@ -186,14 +239,31 @@ test('15 "check all fields" enumerates every leaf of every captured response', (
 
 test('16 the picked element leads the affected list, whatever the key order says', () => {
   const control = [
-    { key: 'z-pill', snapshot: { text: 'On time' } },
-    { key: 'a-banner', snapshot: { text: '' } }
+    { key: 'div@1.9', snapshot: { text: 'On time' } },
+    { key: 'div@1.0', snapshot: { text: '' } }
   ];
   const mutated = [
-    { key: 'z-pill', snapshot: { text: 'Cancelled' } },
-    { key: 'a-banner', snapshot: { text: 'Your flight was cancelled' } }
+    { key: 'div@1.9', snapshot: { text: 'Cancelled' } },
+    { key: 'div@1.0', snapshot: { text: 'Your flight was cancelled' } }
   ];
-  assert.deepEqual(affectedKeys(control, mutated, new Set(), 'z-pill'), ['z-pill', 'a-banner']);
-  assert.deepEqual(affectedKeys(control, mutated, new Set(['a-banner']), 'z-pill'), ['z-pill']);
+  assert.deepEqual(affectedKeys(control, mutated, new Set(), 'div@1.9'), ['div@1.9', 'div@1.0']);
+  assert.deepEqual(affectedKeys(control, mutated, new Set(['div@1.0']), 'div@1.9'), ['div@1.9']);
   assert.deepEqual(affectedKeys(control, control, new Set(), null), [], 'nothing moved, nothing claimed');
+});
+
+test('17 a box that merely CONTAINS the picked element is not a place the field affects', () => {
+  // §11 promises "This change affects {k} places on the page". Every wrapper around a
+  // pill changes when the pill does, because `innerText` is inherited downward — so the
+  // honest count excludes them, and the excluded set is decided by the node keys' own
+  // tree paths rather than by hoping the sample never contains an ancestor.
+  const moved = (key, text) => ({ key, snapshot: { text } });
+  const control = [moved('body@1', 'Skyline On time SAR 450'), moved('div@1.0', 'On time'), moved('span@1.0.0', '')];
+  const mutated = [moved('body@1', 'Skyline Cancelled SAR 450'), moved('div@1.0', 'Cancelled'), moved('span@1.0.0', 'x')];
+  assert.deepEqual(affectedKeys(control, mutated, new Set(), 'div@1.0'), ['div@1.0', 'span@1.0.0'],
+    'the wrapper is dropped; the child that changed is kept');
+  assert.equal(isAncestorOf('body@1', 'div@1.0'), true);
+  assert.equal(isAncestorOf('div@1.0', 'div@1.0'), false, 'a node is not its own ancestor');
+  assert.equal(isAncestorOf('div@1.0', 'div@1.01'), false, 'and a shared prefix is not containment');
+  assert.equal(isAncestorOf('html@', 'div@1.0'), true, 'the root contains everything but itself');
+  assert.equal(isAncestorOf('pill', 'banner'), false, 'a key with no path decides nothing');
 });

@@ -37,6 +37,7 @@ import { MSG, PHASE } from '../background/messages.js';
 import { el, clear, ICON } from './dom.js';
 import { formatValue, fieldLabel } from './sources.js';
 import { VIEW, EMPTY_PROBE, canProbe, linkChip, openLink, renderFailure, renderProgress, startProbe } from './probe.js';
+import { shownLinkState } from './links.js';
 import { renderResult } from './result.js';
 
 /** §10.1C — "max 12 rows". */
@@ -335,14 +336,19 @@ function recentLinks(ctx) {
 function recentCard(link, ctx) {
   const where = (link.elements && link.elements[0] && link.elements[0].textAnchor) || '';
   const values = Array.isArray(link.observedValues) ? link.observedValues : [];
+  // The LIST is the Links MockLab proved (the filter above). The CHIP is what it can
+  // still stand behind on this page load — §1.1's third state, worked out at the moment
+  // of drawing because nothing is running at the moment it becomes true. Downgrade only,
+  // so this can never turn a Possible link into a proved one (`links.js`).
+  const shown = shownLinkState(link, ctx);
   const card = el(
     'button',
-    { type: 'button', class: 'card card--link', dataset: { linkState: String(link.state || '') } },
+    { type: 'button', class: 'card card--link', dataset: { linkState: String(shown || '') } },
     el(
       'div',
       { class: 'card__title' },
       el('span', { class: 'truncate', text: where ? S.glyph.quote(where) : sourceName(ctx, link.sigId) }),
-      linkChip(link.state),
+      linkChip(shown),
       el('span', { class: 'card__chevron' }, ICON.chevron())
     ),
     el(

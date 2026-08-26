@@ -28,11 +28,11 @@
  *
  * ── Where this tab's message types live ─────────────────────────────────────────
  * A probe runs in the service worker (§7), so every word on these screens comes off a
- * wire. The four message types and three payload vocabularies are `probe-engineer`'s,
- * staged in `background/probeMessages.js` exactly as M3's pick types were staged in
- * `background/pickMessages.js` while `messages.js` had another owner — and they fold
- * into `messages.js` the same way. Nothing here invents a value; §17.8 holds through
- * `PROBE_MSG`, `PROBE_PHASE`, `PROBE_STEP` and `PROBE_FAIL`.
+ * wire. The four message types and three payload vocabularies were staged in
+ * `background/probeMessages.js` while `messages.js` had another owner, as M3's pick types
+ * were. That merge has landed: both come from `messages.js` now, so §17.8's one-home rule
+ * holds without an asterisk and the only edit here was a module specifier. Nothing in
+ * this file invents a value; §17.8 holds through `PROBE_MSG` and the three vocabularies.
  *
  * The read is a NAMESPACE import on purpose. `import { PROBE_PHASE }` of an export that
  * is not there is a link-time error that kills the WHOLE panel — every tab, not just
@@ -44,7 +44,7 @@
  * the contract rather than against the day it was written.
  */
 import { S } from './strings.js';
-import * as PROBE from '../background/probeMessages.js';
+import * as PROBE from '../background/messages.js';
 import { el, ICON, spinner, withTip } from './dom.js';
 
 /** What the Pick tab is showing. Panel-local: none of this goes on a wire. */

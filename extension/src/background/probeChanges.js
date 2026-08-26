@@ -54,8 +54,15 @@ export async function clearProbeChanges(origin) {
  * Each item's `probeValue` is remembered on it, which is what lets VERIFY_ON ask §7.4
  * for a DIFFERENT value from the one bisection used.
  *
+ * §7.4 is asked to move away from `effective` — the value the page is rendering right
+ * now, which is one of the person's Changes when they have one on this field and the
+ * captured value otherwise (`effectiveBody.js`). Moving away from `real` instead would
+ * let the probe write the value a Change is already holding: nothing on screen would
+ * move, and the run would report `noneConfirmed` about the field that drives it.
+ * `originalValue` stays `real`, because that is what the site itself last served.
+ *
  * @param {string} origin
- * @param {{sigId:string, path:string, real:any, observed:string[], probeValue:any}[]} batch
+ * @param {{sigId:string, path:string, real:any, effective?:any, observed:string[], probeValue:any}[]} batch
  * @param {boolean} [avoidPrevious] pass the last probe value to §7.4 as the one to avoid
  * @returns {Promise<string[]>} the ids written
  */
@@ -63,7 +70,7 @@ export async function applyProbeChanges(origin, batch, avoidPrevious) {
   await clearProbeChanges(origin);
   const ids = [];
   for (const item of batch) {
-    const value = probeValueFor(item.real, {
+    const value = probeValueFor(item.effective === undefined ? item.real : item.effective, {
       observedValues: item.observed,
       avoid: avoidPrevious ? item.probeValue : undefined
     });

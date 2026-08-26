@@ -15,7 +15,7 @@
  * would be manufactured (§17.12).
  */
 
-import { PROBE_PORT_MSG, PROBE_FAIL } from './probeMessages.js';
+import { PROBE_PORT_MSG, PROBE_FAIL } from './messages.js';
 
 /** PLAN.md §7.1's timeouts and §6.2's confidence floor, in one place. */
 export const PROBE_LIMITS = {
@@ -128,7 +128,18 @@ export function createProbeLink(deps) {
     if (!answer || answer.ok !== true) {
       throw probeFailure(PROBE_FAIL.ELEMENT_LOST, (answer && answer.reason) || 'the page did not answer');
     }
-    if (!answer.element || Number(answer.confidence) < PROBE_LIMITS.MIN_CONFIDENCE) {
+    // Two different things, and they had one sentence between them: an element that is
+    // GONE reported "re-resolved at confidence 1", which is the opposite of what
+    // happened. Advanced-mode detail only (§11 shows `probe.elementLost` either way), but
+    // detail that describes the other outcome is worse than none — it is the line someone
+    // debugging a real site will believe.
+    if (!answer.element) {
+      throw probeFailure(PROBE_FAIL.ELEMENT_LOST, 'the element was not on the page after the reload');
+    }
+    // Written as "not >= " so a missing confidence fails. `Number(undefined)` is NaN and
+    // every comparison with NaN is false, so `< MIN_CONFIDENCE` would have ACCEPTED an
+    // answer that never said how sure it was — §6.2's floor, silently absent.
+    if (!(Number(answer.confidence) >= PROBE_LIMITS.MIN_CONFIDENCE)) {
       throw probeFailure(PROBE_FAIL.ELEMENT_LOST, `element re-resolved at confidence ${answer.confidence}`);
     }
     return answer;

@@ -13,6 +13,7 @@
 import { getByPath, enumeratePaths } from '../shared/jsonpath.js';
 import { changedNodes } from '../shared/diff.js';
 import { getBindings } from './ruleStore.js';
+import { overlaysFor, effectiveValue } from './effectiveBody.js';
 import { friendlyName } from './signatures.js';
 
 /**
@@ -32,12 +33,27 @@ import { friendlyName } from './signatures.js';
  * (§4's `observedValues`, which §7.4 asks for by name). An invented constant is the
  * last resort, not the first.
  *
- * @param {{candidates:any[], sources:Map<string,any>, bindings:any[], nameFor:(captured:any)=>string}} input
+ * ── `real` and `effective`, and why a queue item carries both ─────────────────────
+ * A capture is what the SERVER sent. With one of the person's Changes enabled on that
+ * field, the page — including both control runs, which this probe deliberately takes
+ * with those Changes still on (see `probe.js`) — rendered from something else.
+ *
+ * §7.4's replacement has to differ from what is ON SCREEN, so it is computed from
+ * `effective`. Computed from `real` instead, a probe could write the exact value the
+ * Change is already holding: the element would not move, and the run would report
+ * `noneConfirmed` about the field that drives it. `real` still travels beside it,
+ * because §4's `observedValues` are "distinct REAL values ever seen at this path" and a
+ * value the person typed is not one of those — it is offered to §7.4 as a value the
+ * site is known to render, which is a different claim.
+ *
+ * @param {{candidates:any[], sources:Map<string,any>, bindings:any[],
+ *   overlays?:Map<string,any[]>, nameFor:(captured:any)=>string}} input
  * @returns {{queue:any[], notRefetched:{sigId:string, path:string}[], nullValued:{sigId:string, path:string}[]}}
  */
 export function buildQueue(input) {
   const sources = input.sources || new Map();
   const bindings = input.bindings || [];
+  const overlays = input.overlays || new Map();
   const queue = [];
   const notRefetched = [];
   const nullValued = [];
@@ -50,21 +66,25 @@ export function buildQueue(input) {
       continue;
     }
     const real = getByPath(captured.body, candidate.path);
-    if (real === undefined || real === null) {
+    const effective = effectiveValue(overlays.get(candidate.sigId), candidate.path, real);
+    // §7.4's null rule applies to both: a captured null says the site has no value here,
+    // and an effective null means the page is rendering its empty state right now.
+    if (real === undefined || real === null || effective === undefined || effective === null) {
       nullValued.push(where);
       continue;
     }
     const binding = bindings.find((b) => b && b.sigId === candidate.sigId && b.path === candidate.path);
     const observed = [];
-    for (const value of [candidate.value, ...((binding && binding.observedValues) || [])]) {
+    for (const value of [real, candidate.value, candidate.realValue, ...((binding && binding.observedValues) || [])]) {
       if (value === null || value === undefined || typeof value === 'object') continue;
-      if (String(value) !== String(real) && !observed.includes(String(value))) observed.push(String(value));
+      if (String(value) !== String(effective) && !observed.includes(String(value))) observed.push(String(value));
     }
     queue.push({
       sigId: candidate.sigId,
       path: candidate.path,
       sourceName: candidate.sourceName || input.nameFor(captured),
       real,
+      effective,
       observed,
       probeValue: undefined
     });
@@ -97,6 +117,31 @@ export function affectedKeys(controlNodes, mutatedNodes, mask, elementKey) {
   const { keys } = changedNodes(controlNodes, mutatedNodes, mask);
   const kept = keys.filter((key) => key !== elementKey && !isAncestorOf(key, elementKey));
   return [elementKey, ...kept].filter(Boolean);
+}
+
+/**
+ * §7.6, for free: every non-masked node that moved while the field was mutated — what
+ * makes ONE probe answer "which elements does this field drive" rather than "does it
+ * drive the one you clicked". It finds the demo's cancellation banner, which has no text
+ * in either control run, so it is not masked and it APPEARS.
+ *
+ * The page is asked for §6.2 fingerprints of exactly those nodes. If it will not answer,
+ * VERIFY_ON already proved the PICKED element, so the fingerprint taken at pick time
+ * still describes it — a Binding with one element, never an empty one, and never a
+ * missing proof. Lives here rather than in `probe.js` so that fallback is testable with
+ * no page, no reload and no state machine.
+ *
+ * @param {{controlNodes:any[], mutatedNodes:any[], mask:Set<string>, elementKey:string|null,
+ *   fingerprint:any, fingerprints:(keys:string[])=>Promise<any>}} input
+ * @returns {Promise<any[]>}
+ */
+export async function discoverElements(input) {
+  const ordered = affectedKeys(input.controlNodes, input.mutatedNodes, input.mask, input.elementKey);
+  const answer = await input.fingerprints(ordered);
+  const byKey = new Map(((answer && answer.fingerprints) || []).map((entry) => [entry.key, entry.fingerprint]));
+  const elements = ordered.map((key) => byKey.get(key)).filter(Boolean);
+  if (!elements.length && input.fingerprint) return [input.fingerprint];
+  return elements;
 }
 
 /** The index path out of a node key (`div@1.0.2`), or null when it carries none. */
@@ -157,6 +202,8 @@ export async function queueFor(input) {
     candidates: input.exhaustive ? allFields({ sources }) : input.candidates,
     sources,
     bindings: await getBindings(input.origin),
+    // What the control runs will actually render from (`effectiveBody.js`).
+    overlays: await overlaysFor(input.origin),
     nameFor: (captured) => friendlyName(captured.signature)
   });
   input.onNotRefetched(notRefetched);

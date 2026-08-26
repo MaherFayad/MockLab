@@ -19,6 +19,11 @@
  *      its text gives an honest `tooNoisy`, not a false positive;
  *   3. cancelling mid-probe leaves the site clean: 0 probe changes in storage.
  *
+ * And one journey that is not in the DoD but is the one M4 is FOR, added after QA
+ * reproduced it broken: change a value from the tree, watch the page change, then ask
+ * MockLab to prove which field did it. Everything about that journey happens on a page
+ * rendered from a body no capture holds, which is the seam `effectiveBody.js` exists for.
+ *
  * Skips (never fails) when Playwright or a Chromium build is unavailable, and skips as
  * REPORTED checks: `stage()` and `check()` keep this suite's contribution to `# tests`
  * constant whether it passes, skips or breaks.
@@ -29,8 +34,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { MSG } from '../src/background/messages.js';
-import { PROBE_MSG, PROBE_PHASE, PROBE_FAIL } from '../src/background/probeMessages.js';
+import { MSG, PROBE_MSG, PROBE_PHASE, PROBE_FAIL } from '../src/background/messages.js';
 import { loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
 
 const listen = (server) =>
@@ -201,11 +205,14 @@ if (!chromium) {
         assert.equal(view.binding.state, 'verified');
         assert.equal(view.value, 'ON_TIME', 'and State D shows the REAL value, not a probe value');
 
-        // DoD: "elements[] contains BOTH the pill and the derived banner".
+        // DoD: "elements[] contains BOTH the pill and the derived banner". The demo's
+        // status dot comes with them: it has no text at all, so §7.6's sample cannot see
+        // it and only §7.2's region around the pill can. Nothing else is claimed — not
+        // the boxes that merely contain the pill, and not the tip box the mask removed.
         const found = view.binding.elements.map((fp) => fp.css).sort();
-        assert.deepEqual(found, ['#alert-banner', '#status-pill'],
-          `the pill and the banner it drives, and nothing else — got ${JSON.stringify(found)}`);
-        assert.equal(view.affected, 2);
+        assert.deepEqual(found, ['#alert-banner', '#status-dot', '#status-pill'],
+          `the pill, the banner and the dot it drives, and nothing else — got ${JSON.stringify(found)}`);
+        assert.equal(view.affected, 3);
 
         // DoD: "in ≤ 8 reloads".
         assert.ok(view.reload.index <= 8, `${view.reload.index} reloads, §16 M4 allows 8`);
@@ -215,6 +222,63 @@ if (!chromium) {
         assert.equal(await pillText(page), 'On time', 'and the page is back on the real data');
         assert.deepEqual(pageErrors, [], 'the demo console stays clean through six reloads');
         await page.close();
+      });
+
+      /* ═════════════════ the journey M4 is for: change it, then prove it ══════════ */
+      await check('a value the person already changed is found AND proved', async (tt) => {
+        if (!demoSite) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
+        const page = await ctx.newPage();
+        await page.goto(demoSite.origin + '/demo/?case=probe-changed', { waitUntil: 'load' });
+        const tabId = await tabIdOf(page);
+        // Whatever happens below, this tab's Changes must not survive into the checks
+        // that follow — a failure here that also mocked the site would read as three.
+        try {
+        // Wait for the capture, then do exactly what QA did from the Sources tree.
+        const until = Date.now() + 8000;
+        while (Date.now() < until) {
+          const sources = await send(MSG.LIST_SOURCES, { tabId });
+          if (sources && sources.sources.length >= 2) break;
+          await sleep(50);
+        }
+        const trip = (await send(MSG.LIST_SOURCES, { tabId })).sources.find((s2) => /trip/i.test(s2.url));
+        assert.ok(trip, 'the demo trip source');
+        const set = await send(MSG.SET_VALUE, { tabId, sigId: trip.sigId, path: '$.status', value: 'DELAYED' });
+        assert.equal(set.ok, true);
+        await page.reload({ waitUntil: 'load' });
+        await sleep(500);
+        assert.equal(await pillText(page), 'Delayed', 'the site rendered the new state');
+
+        // §6.3 against the body the page ACTUALLY rendered from. The capture is still
+        // ON_TIME — this used to answer `candidates: []`, which §11 renders as "MockLab
+        // couldn't find this text in any data the page loaded", about data on screen.
+        const picked = await pick(page, '#status-pill');
+        const guess = picked.pick.candidates.find((c) => c.path === '$.status');
+        assert.ok(guess, `\$.status must be offered — got ${
+          JSON.stringify(picked.pick.candidates.map((c) => c.path))}`);
+        assert.equal(picked.pick.searched.complete, true, 'and nothing about the search was bounded');
+
+        // §7.4 against the same body: a probe value equal to the Change already in force
+        // moves nothing, and the run would report `noneConfirmed` about the real driver.
+        assert.deepEqual(await send(PROBE_MSG.START_PROBE, { tabId: picked.tabId }), { ok: true, tabId: picked.tabId });
+        const view = await awaitProbe(picked.tabId);
+        assert.equal(view.phase, PROBE_PHASE.DONE, `probe failed: ${view.failure} ${view.detail || ''}`);
+        assert.equal(view.binding.path, '$.status');
+        assert.equal(view.binding.state, 'verified');
+        assert.equal(view.value, 'ON_TIME', '§10.1D still names the value the SITE serves');
+
+        // §7.1 CLEANUP, with the person's own Change left exactly where they put it.
+        assert.deepEqual(await probeChanges(), [], '0 probe changes in storage');
+        const mine = (await storedChanges()).filter((c) => c.path === '$.status' && !c.probe);
+        assert.equal(mine.length, 1, "the person's Change survived the probe");
+        assert.equal(mine[0].value, 'DELAYED');
+        await page.reload({ waitUntil: 'load' });
+        await sleep(500);
+        assert.equal(await pillText(page), 'Delayed', 'and the page is back where they left it');
+
+        } finally {
+          await send(MSG.RESET_SITE, { tabId }).catch(() => {});
+          await page.close().catch(() => {});
+        }
       });
 
       /* ═════════════════════════════ §16 M4 DoD 2 — the rotating tip box ══════════ */

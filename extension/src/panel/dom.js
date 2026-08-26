@@ -82,7 +82,11 @@ export const ICON = {
   back: () => svgIcon(['M20 12H5', 'M10.5 6.5 4.5 12l6 5.5'], 16),
   check: () => svgIcon('M5 12.5 10 17.5 19 7', 15),
   globe: () => svgIcon(['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M3.4 9.5h17.2', 'M3.4 14.5h17.2', 'M12 3c-4.5 5.2-4.5 12.8 0 18 4.5-5.2 4.5-12.8 0-18z'], 14),
-  warn: () => svgIcon(['M12 3.8 21 19.5H3z', 'M12 10v4.2', 'M12 17.1h.01'], 15)
+  warn: () => svgIcon(['M12 3.8 21 19.5H3z', 'M12 10v4.2', 'M12 17.1h.01'], 15),
+  // horizontal ellipsis — §10.4's ⋯ menu. Three dots as three zero-length round-capped
+  // strokes, so they scale with the icon set's own stroke width instead of being circles
+  // that need their own radius.
+  more: () => svgIcon(['M6 12h.01', 'M12 12h.01', 'M18 12h.01'], 16)
 };
 
 /**

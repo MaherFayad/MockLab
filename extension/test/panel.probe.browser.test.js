@@ -407,6 +407,10 @@ if (!chromium) {
         assert.equal(seen.real, S.editor.original('ON_TIME'), '§11 editor.original shows what is really there');
         assert.equal(seen.affected, S.probe.affected(2), '§10.1D: how many places this change reaches');
         assert.ok(seen.rootText.includes(S.probe.showMe), '§11 probe.showMe is offered');
+        assert.ok(
+          seen.buttons.some((button) => button.text === S.probe.showMe && !button.disabled),
+          '§10.3 — "Show me" is live at M5; a disabled one was M4 saying the overlays did not exist yet'
+        );
         assert.ok(seen.buttons.some((b) => b.text === S.editor.apply && !b.disabled), '§11 editor.apply is the primary action');
         assert.deepEqual(seen.notes, [], 'a proved link has nothing to disclaim');
 
@@ -431,6 +435,87 @@ if (!chromium) {
         assert.deepEqual(withPath.advanced, [S.glyph.joinLabel(S.advanced.path, '$.status')], '§10.1D: Advanced shows the raw path');
 
         await honesty(panel, 1, 'State D on a proved link');
+      });
+
+      await check('§1.1 a proved Link whose source stopped loading is Stale, not "Found it"', async () => {
+        // The state no demo fixture can reach. §14's demo always serves both its sources,
+        // so every fixture in this repository draws a proved Link with its data present —
+        // and a mutation that deleted the whole stale downgrade from State D was SILENT
+        // across all four panel suites until this check existed. It is reached the way a
+        // real site reaches it: the page loads, and the request behind the field does not.
+        const state = { captured: true, sources: [{ sigId: 'sig-other', name: 'Something else' }] };
+        const gone = await renderProbe(panel, {
+          ...state,
+          probe: { view: 'result', binding: link('verified'), real: 'ON_TIME' }
+        });
+        assert.equal(gone.cardState, 'stale', 'the card carries the state it was drawn from');
+        assert.deepEqual(gone.chips.map((chip) => chip.text), [S.chips.stale, 'status']);
+        assert.equal(gone.headings.includes(S.probe.found), false, `"${S.probe.found}" is a claim MockLab can no longer stand behind`);
+        assert.ok(gone.headings.includes(S.editor.title), 'the editor still opens — the Change still applies (§10.2)');
+        assert.deepEqual(gone.notes, [S.highlight.stale], "§11's sentence for a proof that has gone stale");
+        assert.equal(gone.affected, S.probe.affected(2), 'the count was a real measurement of a real experiment, and stays');
+        await honesty(panel, 0, 'a proved link whose source stopped loading');
+
+        // The other direction, ONE source apart: the same link, same card, data present.
+        const here = await renderProbe(panel, {
+          captured: true,
+          sources: [{ sigId: 'sig-trip', name: 'Trip' }],
+          probe: { view: 'result', binding: link('verified'), real: 'ON_TIME' }
+        });
+        assert.equal(here.cardState, 'verified');
+        assert.ok(here.headings.includes(S.probe.found));
+        assert.deepEqual(here.notes, []);
+        await honesty(panel, 1, 'the same link with its data present');
+
+        // §10.1A's Recent links list draws the same downgrade, from the same function.
+        const recent = await renderProbe(panel, { ...state, bindings: [link('verified')], probe: null });
+        assert.deepEqual(recent.chips.map((chip) => chip.text), [S.chips.stale]);
+        assert.deepEqual(recent.cards.map((card) => card.linkState), ['stale']);
+        await honesty(panel, 0, "§10.1A's Recent links after the source stopped loading");
+      });
+
+      await check('§10.3 "Show me" asks the page for this exact field, and nothing else', async () => {
+        // `panel.links.test.js` proves what `showOnPage` does with each of the three
+        // answers it can get. What only a browser can prove is the WIRING: that the
+        // button §10.1D draws is connected to it, and carries the link it sits under —
+        // a "Show me" that highlights a different field is a lie told in overlays.
+        const asked = await panel.evaluate(
+          async ([binding]) => {
+            const { renderResult } = await import('/src/panel/result.js');
+            const root = document.getElementById('panel-pick');
+            const sent = [];
+            const ctx = {
+              state: {
+                tabId: 7,
+                sources: [{ sigId: 'sig-trip', name: 'Trip' }],
+                settings: { advancedMode: false },
+                bindings: [],
+                lostLinks: new Set(),
+                canHighlight: true,
+                probe: { view: 'result', binding, real: 'ON_TIME', affected: 0, draft: null }
+              },
+              send: async (type, payload) => {
+                sent.push({ type, payload });
+                return { ok: true, elements: 2, verified: true };
+              },
+              toast: () => {},
+              refresh: async () => {},
+              rerender: () => {}
+            };
+            root.replaceChildren();
+            renderResult(root, ctx);
+            const button = [...root.querySelectorAll('.result__affected button')][0];
+            button.click();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return { sent, disabled: button.disabled };
+          },
+          [link('verified')]
+        );
+        assert.equal(asked.disabled, false);
+        assert.equal(asked.sent.length, 1, 'one press, one request');
+        assert.deepEqual(asked.sent[0].payload, { tabId: 7, sigId: 'sig-trip', path: '$.status' });
+        assert.equal(typeof asked.sent[0].type, 'string');
+        assert.ok(asked.sent[0].type.length > 0, '§17.8 — a declared constant, not `undefined`');
       });
 
       await check('§17.12 the verified chip may describe ONLY a verified link', async () => {
@@ -462,7 +547,14 @@ if (!chromium) {
           assert.equal(seen.cardState, state);
           assert.equal(seen.headings.includes(S.probe.found), false, `"${S.probe.found}" is a claim only a probe may make`);
           assert.ok(seen.headings.includes(S.editor.title), 'the editor still opens — a Change applies either way (§10.2)');
-          assert.deepEqual(seen.notes, [S.editor.unverified], '§11 editor.unverified says plainly what was not established');
+          // Two different facts, two different sentences. A link that was NEVER proved
+          // gets §11's `editor.unverified` ("MockLab hasn't proven which elements it
+          // affects"); a link that WAS proved and can no longer be stood behind gets the
+          // one for that (§1.1's third state). Reusing `unverified` for both would tell a
+          // person their proof never happened, which is a different — and false — thing.
+          const note = state === 'stale' ? S.highlight.stale : S.editor.unverified;
+          assert.deepEqual(seen.notes, [note], `§11's sentence for a ${state} link`);
+          assert.notEqual(S.highlight.stale, S.editor.unverified, 'the two states must not share a sentence');
           assert.equal(seen.affected, null, 'nothing proved which elements it drives, so no count is offered');
           await honesty(panel, 0, `State D on a ${state} link`);
         }

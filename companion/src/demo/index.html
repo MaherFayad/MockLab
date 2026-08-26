@@ -58,6 +58,17 @@
   }
   #status-pill.is-delayed { color: var(--warn-fg); background: var(--warn-bg); }
   #status-pill.is-cancelled { color: var(--bad-fg); background: var(--bad-bg); }
+  /* A status light with NO text of its own: the same field, rendered as colour alone.
+     Real cards do this constantly, and it is the case a probe cannot find by looking
+     for elements with text (PLAN.md §7.6) — only by looking around the picked element
+     (§7.2). Deliberately a SIBLING of the pill, so it sits in that region. */
+  #status-dot {
+    flex: none; align-self: center; inline-size: 0.5rem; block-size: 0.5rem;
+    border-radius: 999px; background: var(--ok-fg);
+    margin-inline-start: auto; margin-inline-end: 0.5rem;
+  }
+  #status-dot.is-delayed { background: var(--warn-fg); }
+  #status-dot.is-cancelled { background: var(--bad-fg); }
   .legs { display: flex; align-items: center; gap: 1rem; margin-block-end: 1.5rem; }
   .leg { flex: 1; }
   .leg__time { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -95,6 +106,7 @@
           <div class="flight-no" id="flight-number">…</div>
           <div class="flight-meta" id="flight-ref">…</div>
         </div>
+        <span id="status-dot" aria-hidden="true"></span>
         <div id="status-pill">…</div>
       </div>
 
