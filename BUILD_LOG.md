@@ -867,6 +867,159 @@ this half's own and are stable are the suite counts above.
 is simulated and only the rendering, the cascade and the geometry are real. That is
 probe-engineer's `probe.browser.test.js`, and the two halves were verified separately.
 
-**Deviations:** 48–53 — see README "Deviations".
+**Deviations:** 48–59 (48–53 at the time; 54–59 were added by probe-engineer's M4 follow-ups in `63ac171`) — see README "Deviations".
 
-**QA verdict:** _pending qa-verifier_
+**QA verdict:** PASS (commit `22b11bf`, after the spinner fix in `6700347`).
+
+---
+
+## A note on what follows
+
+The three entries below — M5, M6 and M7 — were written **retrospectively, at the end of
+M7**, not as each milestone landed. That is a real lapse against this build's own
+process: the log is supposed to be the record kept *while* the work happens, and a record
+assembled afterwards from commit messages knows only what the commit messages chose to
+say.
+
+It is marked rather than smoothed over because this build has already produced three
+figures that were false in the commit that wrote them, and an entry that reads as though
+it were written at the time is the same class of claim. Everything below is either quoted
+from the commit that landed it or re-measured at M7's HEAD; where a figure could only be
+one or the other, which one it is is stated.
+
+---
+
+## M5 — Scenarios, highlight, and the state nobody can write
+
+**Commit `729667a`.** Owners: panel-designer (§10.3, §10.4), with the worker half
+deliberately deferred to M6.
+
+**The milestone's one structural result.** `stale` is computed at draw time and never
+stored. The store holds `verified` and `candidate` only; §1.1's third state becomes true
+while nothing at all is running — a source stops appearing, or a highlight draws nothing
+— so there is no moment at which a writer *could* record it. `panel/links.js`'s
+`shownLinkState()` is downgrade-only: it compares against `'verified'` and otherwise
+returns the stored state untouched, so it cannot produce the word except by demotion.
+This is §17.4's rule applied to the other end — one place may write "verified", and no
+place may write "stale".
+
+**The silent mutation, and why it was silent.** A mutation that celebrated a stale link
+as found failed nothing. Every State-D fixture in the repo used a binding *stored* as
+stale, and the demo site always serves both its sources, so no fixture anywhere could
+produce a verified binding whose source had stopped appearing. The fixture now exists and
+the three downgrade paths each fail two checks under mutation. This is the fourth
+instance of the build's signature failure and the first where the gap was in the
+*fixtures* rather than in an assertion.
+
+**Two defects found by looking.** §9.1's `--danger` on `--bg-danger` measured 4.17:1 in
+the light theme — under AA for the 12px text that sits there, which includes the friendly
+import error this milestone's own DoD asks for. And the Write tool silently injected raw
+control bytes into two files: a NUL inside a template literal, and `\x00\x01PNG` in a
+fixture. `grep` and `rg` classify such a file as binary and skip it, so every hand-run
+audit and every ripgrep-backed search would have silently not read it — the ideal hiding
+place for the next off-§11 literal. Both fixed; the second is locked down by a test.
+
+**Import refuses a Scenario saved on another site** rather than importing it. Its Changes
+are addressed by a source identity derived from the site's address, so on a different
+origin they could never match; importing would produce a card Stale from birth, under a
+sentence that would not be true of anything.
+
+**The third missing suite.** `panel.scenarios.browser.test.js` was written this milestone
+and was **not** in CI's suite loop — caught before the commit, but the third time on this
+build that a suite has existed without CI invoking it. Added, with a note in the workflow
+for whoever writes the eighth.
+
+**Also landed here:** M4's follow-ups — `probe.js`'s unit suite split by seam (happy path
+vs refusals) rather than recorded as an overage, correcting a README row that had argued
+for recording it; the eight M5 message types folded into `messages.js`; §17.7's first
+automated guard, parsing `panel.css` by brace range because a line grep permits every
+§9.2 component recipe; and the line-count audit extended to non-`.js` source, which is
+what finally made `panel.css`'s 599 lines visible at all.
+
+**Evidence (quoted from the commit):** extension 431/431, companion 5/5, 0 skipped. Seven
+browser suites, each run individually — `e2e` 15, `panel` 23, `panel.probe` 17,
+`panel.scenarios` 13, `picker` 8, `pickerdom` 6, `probe` 7 — none skipped.
+
+**Deviations:** 60–66 — see README "Deviations".
+
+**QA verdict:** PASS.
+
+---
+
+## M6 — The companion, and six places an agent cannot do what a person can
+
+**Commits `2e45e2c`, `0ac6e84`, `b1b0bf5`, `d06de80`.** Owner: mcp-engineer, with the
+worker-side wiring mine.
+
+**The DoD ran against the real stack, not a fake.** Real Chromium, a real MCP client, a
+real hub, a real WebSocket and the real unpacked extension: the happy path returns a 36KB
+PNG with a pill reading Cancelled at `rgb(217,48,37)`; killing Chrome mid-call gives a
+clean error in 238ms rather than a 30s timeout; a wrong pairing code is refused with no
+reason given, no token stored, and the real code never echoed even into the companion's
+own log.
+
+**Two defects that only a real socket could produce.** The hub closes a superseded socket
+per §12.2's newest-wins, and the client reconnected instantly — twenty "extension
+connected" lines in twenty seconds while a reload call waited for an answer no socket
+lived long enough to give. And `hub.close()` closed only the live socket, so a superseded
+one that ignored its close frame kept the process alive; found by a mutation that turned a
+three-second failure into a run that never ended.
+
+**A third, found by the wiring itself (`d06de80`).** `pickApi.onPicked` is
+fire-and-forget — it returns before §6.3 has searched anything. `probe_element` awaited
+it, then sent `START_PROBE`, which answered `no-pick` on a page where it had just
+successfully picked the element. Every unit fixture's `onPicked` was synchronous, so
+nothing saw it until real wiring let a real browser run it. Fixed by waiting where the
+panel waits — on `GET_PICK` — and reporting a pick that ended badly with its own reason
+rather than as a timeout.
+
+**One path to a verified link.** `onPicked` routes through the same `pickApi` record a
+human click fills, so `probe_element` and a person clicking cannot end in two different
+places. §17.12 is the rule; this is where it became structural rather than a promise.
+
+**44 mutations, every rule in both directions.** Two are reported rather than hidden: one
+equivalent mutant unreachable by construction, and one that was GREEN because the test
+waited 1.2s against a 2s backoff — the test was wrong, not the code.
+
+**§1.6's parity, and the six holes recorded rather than routed around.** An agent cannot
+stop a probe, rename or import a Scenario, turn a Change off without deleting it, change
+settings that alter how probing behaves, reset everything, or take the "Check all fields"
+option the panel offers after an honest refusal. Three parity holes were closed as
+*arguments* rather than as new tools — `set_value.enabled`, `probe_element.exhaustive`
+and `.paranoid` — because `additionalProperties:false` meant all three were being refused
+before, not ignored. `paranoid` writes the setting §10.5 puts in a checkbox rather than
+being a private per-call flag: a per-call copy would be a second answer to "how careful is
+MockLab being?" that the panel and the agent could read differently.
+
+**Cancellation uses MCP's own signal** rather than a sixteenth tool: `extra.signal` → a
+hub cancel EVENT frame → a per-request `AbortController` → `CANCEL_PROBE`. An event and
+not a req, because a req reusing that id returns as a res with the same id — the frame the
+hub reads as "that call finished".
+
+**A larger hole recorded at `b1b0bf5` and closed at `d06de80`.** Five of the fifteen tools
+had no service-worker handler at all, because M5 shipped Scenarios and highlighting
+panel-first. Nothing pretended otherwise in between — the router returned `undefined` and
+the relay turned that into an honest MCP error carrying §11's "Not ready yet", asserted
+against the real worker. All eight preset and highlight messages are answered by the end
+of the milestone.
+
+**A guard reworded rather than exempted.** The §17.6 audit flagged the companion's
+terminal printing "Set up AI access" — the panel's own button label, in a package that
+cannot import `strings.js`. Not a false positive: a second place to translate and a second
+place to rot, which is M2's 'Data' defect in a terminal.
+
+**Security hardened past §12.3, every step recorded:** a five-attempt limit, because six
+digits on a loopback socket is a five-minute brute force rather than a five-minute window;
+a pairing window that opens on first run rather than on every start; DNS-rebinding checks
+on the MCP endpoint that §12.3 asks for only on the hub. One weakness is implemented as
+specified and flagged instead of quietly changed: the six-digit code is a pure function of
+the token, so it is the same six digits on this machine for ever.
+
+**One defect of mine, found in this window (`0ac6e84`).** `panel.js` tested incoming
+broadcasts against `MSG.PROBE_CHANGED`, which is `undefined` — the constant lives on
+`PROBE_MSG`. The branch never ran, so the panel silently ignored every probe started over
+MCP. A comparison against `undefined` is not a typo the language will report.
+
+**Deviations:** 67–71 — see README "Deviations".
+
+**QA verdict:** PASS.

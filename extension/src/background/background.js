@@ -31,9 +31,15 @@
  * captured request lands in.
  */
 
-import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
+import { PORT_NAME, PORT_MSG, MSG, PAIR_FAIL } from './messages.js';
 import { normalizeRaw, friendlyName, compileMatchList } from './signatures.js';
-import { originOf, rememberSignature, groupChangesBySignature, countActiveChanges } from './ruleStore.js';
+import {
+  originOf,
+  rememberSignature,
+  groupChangesBySignature,
+  countActiveChanges,
+  getSettings
+} from './ruleStore.js';
 import { parsePath, countLeaves, getByPath } from '../shared/jsonpath.js';
 import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
 import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
@@ -597,7 +603,7 @@ function routeMessage(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const answer = routeMessage(message);
+  const answer = handleCompanionMessage(message) || routeMessage(message);
   if (!answer) return false;
   answer
     .then(sendResponse)
@@ -619,9 +625,52 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 const wsClient = createWsClient({
   ...pageAccess,
   dispatch: routeMessage,
-  onPicked: (tabId, picked) => pickApi.onPicked(tabId, picked)
+  onPicked: (tabId, picked) => pickApi.onPicked(tabId, picked),
+  onStatus: () => {
+    // §17.5: a broadcast with no panel open rejects, and that is not an error here.
+    chrome.runtime.sendMessage({ type: MSG.COMPANION_CHANGED }).catch(() => {});
+  }
 });
 void wsClient.start();
+
+/**
+ * §10.5's companion section — and the ONE part of the panel's surface that is
+ * deliberately NOT in `routeMessage`.
+ *
+ * Everything else the panel can ask, an MCP agent can ask too: that identity is §1.6's
+ * parity and `routeMessage` is where it lives. Pairing is the exception, because the
+ * thing on the other end of the socket is what pairing decides to trust. A dispatch
+ * table that included `PAIR_COMPANION` would let an already-connected agent re-run
+ * §12.3's handshake — dropping the socket, submitting a code of its choosing and
+ * overwriting the stored token — which is the browser handing its own access control to
+ * the party the access control exists to check. So this handler is reached from
+ * `chrome.runtime.onMessage` only, where the sender is an extension page.
+ *
+ * `GET_COMPANION` and the broadcast could safely be routed. They are kept here with
+ * `PAIR_COMPANION` because the three are one screen's worth of state, and a rule split
+ * across two tables is a rule someone re-derives wrongly later.
+ */
+function handleCompanionMessage(message) {
+  const type = message && message.type;
+  if (type === MSG.GET_COMPANION) {
+    return getSettings().then((settings) => ({
+      ok: true,
+      connected: wsClient.isConnected(),
+      paired: Boolean(settings.companionToken)
+    }));
+  }
+  if (type === MSG.PAIR_COMPANION) {
+    const code = String((message.payload && message.payload.code) || '');
+    return wsClient.pair(code).then((answer) => {
+      if (answer && answer.ok) return { ok: true };
+      // Two refusals, and no third one invented here: see PAIR_FAIL in messages.js.
+      // `reached` is the extension's own observation that a socket opened, not a fact
+      // the companion disclosed about which of §12.3's four causes fired.
+      return { ok: false, reason: answer && answer.reached ? PAIR_FAIL.REFUSED : PAIR_FAIL.NO_COMPANION };
+    });
+  }
+  return null;
+}
 
 /* ════════════════════════════ M7 — deep mode (PLAN.md §8, §16 M7) ═══════════════ */
 

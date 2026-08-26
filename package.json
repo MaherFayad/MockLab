@@ -9,6 +9,6 @@
   "workspaces": ["extension", "companion"],
   "scripts": {
     "test": "npm test -ws",
-    "zip": "cd extension && zip -r ../mocklab-extension.zip . -x '*.DS_Store'"
+    "zip": "rm -f mocklab-extension.zip && cd extension && zip -qr ../mocklab-extension.zip . -x 'test/*' 'testlib/*' 'package.json' '*.DS_Store' && cd .. && unzip -l mocklab-extension.zip | tail -1"
   }
 }

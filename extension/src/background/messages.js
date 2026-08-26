@@ -619,7 +619,7 @@ export const MSG = {
    * Panel -> SW. §10.4's Import (and Duplicate). `{tabId?|origin, preset}`
    *   -> `{ok:true, preset:Preset}`
    *
-   * `preset` is a §4 Preset the panel has already validated (`panel/scenarioFile.js`),
+   * `preset` is a §4 Preset the panel has already validated (`shared/scenarioFile.js`),
    * because a corrupt file must produce §10.4's friendly error beside the file picker,
    * where the person is, rather than a worker rejection they cannot see. The worker
    * still gives it a fresh `id` and its own `origin`: an imported file must never be
@@ -659,7 +659,75 @@ export const MSG = {
    * Binding whose elements are all gone after a redesign returns 0, and saying "shown"
    * then would be a claim about a page MockLab could not find (§1.1).
    */
-  HIGHLIGHT: 'msg:highlight'
+  HIGHLIGHT: 'msg:highlight',
+
+  /* ═══════════════════ M7 — the companion, from the panel (§10.5, §12.3) ══════════
+   *
+   * §12.3's pairing has worked end to end since M6, but only from a test: there was no
+   * message type for it, so Settings' "Set up AI access" was an inert button. These
+   * three are the whole of that flow, and every one of them answers a question the
+   * panel could not otherwise ask.
+   * ═══════════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Panel -> SW. §10.5's "Set up AI access". `{code:string}` ->
+   * `{ok:true}` | `{ok:false, reason}` where reason is a `PAIR_FAIL` value.
+   *
+   * TWO refusals, and the count is the point. `companion/src/pairing.js` separates four
+   * causes — wrong code, expired window, too many attempts, no window open — and hands
+   * the socket ONE indistinguishable `false` on purpose, printing the detail on the
+   * terminal where the person who started the companion can read it. That decision is
+   * MockLab's whole security boundary and this type does not reopen it: `REFUSED` is
+   * every answer the companion gives, and §11's copy for it points at that terminal
+   * rather than guessing which of the four happened.
+   *
+   * `NO_COMPANION` is not a fifth cause leaking out. It is the case where no socket
+   * ever opened, which the extension learns locally — the companion is not running, or
+   * it is running with no pairing window and refuses the handshake outright. Any local
+   * process that can attempt a pairing at all already observes that difference at the
+   * transport, so naming it here costs nothing and it is the one distinction a person
+   * can act on: both its causes are fixed by starting the companion again, and neither
+   * is fixed by retyping the code.
+   */
+  PAIR_COMPANION: 'msg:pairCompanion',
+
+  /**
+   * Panel -> SW. `{}` -> `{ok:true, connected:boolean, paired:boolean}` — §10.5's
+   * status dot, correct on boot rather than only after the panel's own click.
+   *
+   * The two are separate facts and the dot needs both. `paired` is a token in storage:
+   * this browser has been through §12.3 and will present it. `connected` is a socket
+   * open right now. Paired-but-not-connected is the ordinary state of a machine whose
+   * companion is not running, and it is not an error — saying "not set up" there would
+   * send a person back through a pairing they have already done.
+   */
+  GET_COMPANION: 'msg:getCompanion',
+
+  /**
+   * SW -> panel broadcast. Data-free, by the same reasoning as `SOURCES_CHANGED` and
+   * every other broadcast above: the panel re-reads `GET_COMPANION`, so the event
+   * cannot go stale. Sent when the socket opens, when it closes, and when a pairing
+   * stores a token.
+   *
+   * Without it the dot would follow the panel's own clicks and nothing else — a
+   * companion started, stopped or crashed while Settings is open would leave a
+   * confident wrong colour on the screen, which is §1.1's lie in a smaller place.
+   */
+  COMPANION_CHANGED: 'msg:companionChanged'
+};
+
+/**
+ * Why a pairing did not happen — §11 renders one sentence per value, and there are only
+ * two values because the companion only makes two distinctions available (see
+ * `PAIR_COMPANION` above, and `companion/src/pairing.js`'s "ONE ANSWER FOR EVERY
+ * REFUSAL"). Adding a third here would mean the hub had started leaking which of §12.3's
+ * four causes fired, so this enum staying at two is a guard, not a limitation.
+ */
+export const PAIR_FAIL = {
+  /** No socket opened: the companion is not running, or has no pairing window. */
+  NO_COMPANION: 'no-companion',
+  /** The companion answered no. Which of the four reasons is on its terminal. */
+  REFUSED: 'refused'
 };
 
 /* ═══════════════════════ M4 — the probe (§7, §10.1C/D) ══════════════════════════ */
