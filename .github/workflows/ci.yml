@@ -50,6 +50,14 @@ jobs:
     # but that is the third time on this build a suite has existed without CI invoking it.
     # Whoever adds the eighth suite: add it here in the same change.
     #
+    # mcp.browser.test.js is that eighth suite, added in M6 IN THE SAME CHANGE as the
+    # file. It is the only place all three of §16's M6 acceptance lines are actually
+    # performed: a real MCP client drives a real WebSocket into a real unpacked
+    # extension, the demo's pill goes red because the SITE rendered it, killing the
+    # browser mid-call produces an error in a quarter of a second, and a wrong pairing
+    # code is refused. Removing it from this loop leaves M6 with no end-to-end evidence
+    # at all — every remaining test on both sides of the socket fakes the other side.
+    #
     # probe.browser.test.js guards M4. Deleting §7.2's two noise checks makes MockLab
     # report the demo's rotating tip box as VERIFIED — a false "Verified ✓" on an element
     # that changes by itself. probe.test.js catches that against a fake page; THIS suite
@@ -93,7 +101,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in e2e panel panel.probe panel.scenarios picker pickerdom probe; do
+          for suite in e2e mcp panel panel.probe panel.scenarios picker pickerdom probe; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"

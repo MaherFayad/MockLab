@@ -79,8 +79,18 @@ export function probeMessage(reason) {
  * inner `<span>` of a status pill probes the same element a person's click would select.
  * Without it, `probe_element` and the human picker would disagree about what "that
  * element" means, and §1.6 asks for parity, not for a second behaviour.
+ *
+ * EXPORTED, and not because anything else calls it. `guards.contract.test.js` audits
+ * every call on a content-script contract against the methods that contract really
+ * publishes — and it cannot see this one, because the receiver arrives as an argument
+ * and this file never names the global. That is a real hole: `api.smartTraget(node)`
+ * would return undefined inside the try/catch and `probe_element` would quietly answer
+ * "element-not-found" for every element on every page. So the same audit is done for
+ * this function in `wsClient.test.js`, by reading the method names back out of this
+ * source and checking them against `element.js` — and `mcp.browser.test.js` runs it
+ * against the real contract in a real page.
  */
-function findTargetInPage(globalName, selector, text) {
+export function findTargetInPage(globalName, selector, text) {
   try {
     var api = globalThis[globalName];
     if (!api) return { ok: false, reason: 'no-content-script' };

@@ -307,6 +307,14 @@ test('§12.1 the MCP HTTP endpoint answers a real initialize on loopback, and 40
 
 /* ═══════ the two halves of §12.2's wire, written in two workspaces, are one list ═══ */
 
+test('§12.2 both ends of the socket use the same close codes', async () => {
+  const { CLOSE } = await import('../src/hub.js');
+  const extension = await import('../../extension/src/background/wsClient.js');
+  assert.deepEqual(extension.CLOSE, CLOSE, 'a close code the extension reads differently is a close code that does nothing');
+  assert.equal(extension.SUBPROTOCOL, (await import('../src/hub.js')).SUBPROTOCOL);
+  assert.equal(extension.TOKEN_SUBPROTOCOL_PREFIX, (await import('../src/hub.js')).TOKEN_SUBPROTOCOL_PREFIX);
+});
+
 test('§1.6 the extension implements exactly the fifteen ops the tools send', async () => {
   // Cross-workspace on purpose: the op vocabulary is a CONTRACT between two packages,
   // and a contract nobody compares is two vocabularies. `wsOps.js` builds its table from
@@ -321,4 +329,100 @@ test('§1.6 the extension implements exactly the fifteen ops the tools send', as
     chrome: {}
   });
   assert.deepEqual(Object.keys(ops).sort(), [...TOOL_NAMES].sort());
+});
+
+/* ═════════════════════ §12.1 — the process itself: ports, stdout, pairing ═════════ */
+
+/** Run `body` with a fresh MOCKLAB_HOME, so no test touches the developer's own token. */
+async function withHome(body) {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const previous = process.env.MOCKLAB_HOME;
+  const home = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'mocklab-cli-'));
+  process.env.MOCKLAB_HOME = home;
+  try {
+    return await body(home);
+  } finally {
+    if (previous === undefined) delete process.env.MOCKLAB_HOME;
+    else process.env.MOCKLAB_HOME = previous;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('§12.1 under --stdio the process writes JSON-RPC to stdout and nothing else', async (t) => {
+  // The REAL process, spawned. This cannot be checked in-process: `node --test` writes
+  // its own report to stdout, so a stubbed `process.stdout.write` catches the runner's
+  // traffic and proves nothing about ours. And it has to be checked somewhere — one
+  // `console.log` in this package corrupts the transport for every MCP client, and the
+  // symptom is a client that says MockLab is broken, with no line to point at.
+  const { spawn } = await import('node:child_process');
+  const pathMod = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const entry = pathMod.join(pathMod.dirname(fileURLToPath(import.meta.url)), '../src/index.js');
+
+  await withHome(async (home) => {
+    const child = spawn(process.execPath, [entry, '--stdio'], {
+      env: { ...process.env, MOCKLAB_HOME: home, MOCKLAB_HUB_PORT: '0', MOCKLAB_MCP_PORT: '0' },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    try {
+      child.stdin.write(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } }
+      }) + '\n');
+      const deadline = Date.now() + 15000;
+      while (!out.includes('serverInfo') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      child.kill('SIGTERM');
+    }
+    t.diagnostic(`stderr said: ${err.split('\n')[0]}`);
+    const lines = out.split('\n').filter((line) => line.trim() !== '');
+    assert.ok(lines.length >= 1, `the process answered nothing on stdout (stderr: ${err})`);
+    for (const line of lines) {
+      const parsed = JSON.parse(line);   // throws on a stray log line, which is the point
+      assert.equal(parsed.jsonrpc, '2.0');
+    }
+    assert.match(out, /"serverInfo"/, 'a real MCP initialize was answered');
+    // The human-readable half went somewhere — just not into the protocol.
+    assert.match(err, /MockLab companion/);
+    assert.match(err, /[0-9]{6}/, 'and the first run printed a pairing code (§12.3)');
+  });
+});
+
+test('§12.3 a pairing window opens on the first run and on --pair, not on every start', async () => {
+  await withHome(async () => {
+    const { startCompanion } = await import('../src/index.js');
+    // Every start is closed in a `finally`. A failed assertion that skipped a close
+    // would leave two listening servers behind and `node --test` would hang after
+    // reporting — a red test that looks like a broken harness instead of a finding.
+    const started = [];
+    const start = async (options) => {
+      const running = await startCompanion({ hubPort: 0, mcpPort: 0, ...options });
+      started.push(running);
+      return running;
+    };
+    try {
+      const first = await start({});
+      assert.match(String(first.pairingCode), /^[0-9]{6}$/, 'first run: there is nothing paired yet');
+      assert.equal(first.pairing.isOpen(), true);
+      // Pair for real, the way the extension does, so the companion remembers.
+      assert.ok(first.pairing.submit(first.pairingCode));
+      await first.close();
+
+      const second = await start({});
+      assert.equal(second.pairingCode, null, 'an ordinary start leaves no window for anyone to guess at');
+      assert.equal(second.pairing.isOpen(), false);
+      await second.close();
+
+      const asked = await start({ pair: true });
+      assert.match(String(asked.pairingCode), /^[0-9]{6}$/, '--pair is how a second browser is paired');
+    } finally {
+      for (const running of started) await running.close().catch(() => {});
+    }
+  });
 });

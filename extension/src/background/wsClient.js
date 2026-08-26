@@ -51,13 +51,36 @@ import { createOps, INTERNAL_FAILURE } from './wsOps.js';
 export const HUB_URL = 'ws://127.0.0.1:8517/ext';
 /** §12.2's frame kinds. */
 export const KIND = Object.freeze({ REQ: 'req', RES: 'res', EVENT: 'event' });
-/** The ops that travel in the extension -> hub direction. */
+/**
+ * The ops that travel in the extension -> hub direction.
+ *
+ * `CAPTURED` is §12.2's second event and is NOT SENT by this file — stated here rather
+ * than left to be discovered from a constant that never appears again. Captures live in
+ * the service worker's own per-tab map, which this module cannot observe without the
+ * wiring block named at the top; when that lands, the worker's capture path is where the
+ * throttled 2/s push belongs. Nothing depends on it today: the hub's cache is the STORE
+ * (§12.2's sentence), and every source an agent reads comes from a live `list_sources`.
+ */
 export const HUB_OP = Object.freeze({
   PAIR: 'pair',
   STORE_CHANGED: 'storeChanged',
   CAPTURED: 'captured',
   PROGRESS: 'progress'
 });
+/**
+ * Close codes the hub uses, which this side must act on differently (`hub.js` names the
+ * same two — `mcp.test.js` compares the two tables, because they are one contract).
+ *
+ * 4002 SUPERSEDED is the one that matters. §12.2 says the hub keeps ONE extension
+ * connection and the newest wins, so a second MockLab — another profile, a panel left
+ * open in a second window, a reload that outran its own teardown — will be closed with
+ * it. Reconnecting immediately after that is a LOOP: two clients take the socket from
+ * each other for ever, and while they do, no tool call can survive long enough to be
+ * answered. Found by driving the real thing: a `reload` call timed out at 20 s against a
+ * hub that logged twenty "extension connected" lines in those 20 seconds.
+ */
+export const CLOSE = Object.freeze({ UNAUTHORIZED: 4001, SUPERSEDED: 4002 });
+
 /** The subprotocols of §12.3's handshake — see the header for why the token rides here. */
 export const SUBPROTOCOL = 'mocklab.v1';
 export const TOKEN_SUBPROTOCOL_PREFIX = 'mocklab.token.';
@@ -183,12 +206,15 @@ export function createWsClient(deps) {
       }
       void handleFrame(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (socket === ws) socket = null;
       if (pairWaiter) {
         pairWaiter({ ok: false });
         pairWaiter = null;
       }
+      // Another connection now owns the hub. Do not race it — the 25 s heartbeat tries
+      // again, so if that one goes away this one comes back, without a loop in between.
+      if (event && event.code === CLOSE.SUPERSEDED) return;
       scheduleReconnect();
     };
     ws.onerror = () => {
@@ -259,7 +285,9 @@ export function createWsClient(deps) {
       if (api.alarms) {
         api.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_MINUTES });
         api.alarms.onAlarm.addListener((alarm) => {
-          if (alarm && alarm.name === HEARTBEAT_ALARM && !socket) void open();
+          // `stopped` is checked here too: stop() must mean stopped, or the heartbeat
+          // quietly reopens a connection the caller closed 25 seconds earlier.
+          if (alarm && alarm.name === HEARTBEAT_ALARM && !socket && !stopped) void open();
         });
       }
       await open();

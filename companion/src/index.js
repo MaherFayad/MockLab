@@ -266,15 +266,23 @@ const log = (line) => process.stderr.write(`${line}\n`);
  */
 export async function startCompanion(options = {}) {
   const { token, created, file } = loadOrCreateToken();
-  const pairing = createPairing({ token, onRefusal: (detail) => log(`  ${detail}`) });
+  const pairing = createPairing({
+    token,
+    onRefusal: (detail) => log(`  ${detail}`),
+    onPaired: rememberPaired
+  });
   const hub = createHub({ pairing, log: (line) => log(`  ${line}`) });
 
   const site = createServer();
   hub.attach(site);
   const mcpHttp = createMcpHttpServer({ hub, log: (line) => log(`  ${line}`) });
 
-  const hubPort = options.hubPort === undefined ? HUB_PORT : options.hubPort;
-  const mcpPort = options.mcpPort === undefined ? MCP_HTTP_PORT : options.mcpPort;
+  // §12.1 fixes the two ports, and they are what a user gets. The environment overrides
+  // exist for one reason and are documented as such: a test must be able to start the
+  // whole process — the CLI, not a library call — without colliding with a companion the
+  // developer already has running, and without either of §12.1's numbers being free.
+  const hubPort = options.hubPort === undefined ? Number(process.env.MOCKLAB_HUB_PORT ?? HUB_PORT) : options.hubPort;
+  const mcpPort = options.mcpPort === undefined ? Number(process.env.MOCKLAB_MCP_PORT ?? MCP_HTTP_PORT) : options.mcpPort;
   await listen(site, hubPort, 'the demo site and the extension hub');
   await listen(mcpHttp, mcpPort, 'the MCP HTTP endpoint');
 
@@ -285,26 +293,7 @@ export async function startCompanion(options = {}) {
    * paired never needs one. Reported to the orchestrator; §12.3 does not say either way.
    */
   const wantsPairing = options.pair === true || created || !readPairedBefore();
-  if (wantsPairing) {
-    const { code } = pairing.open();
-    log('');
-    // The panel's own label for this control is NOT quoted here, and that is deliberate
-    // rather than a wording choice. §17.6 keeps every user-visible string in one file,
-    // `extension/src/panel/strings.js`, and this package cannot import it: the companion
-    // is published on its own (`npx mocklab-companion`) and would carry a dangling path.
-    // A copy of the label here would be a second place to translate and a second place to
-    // rot the day the button is renamed — the M2 `'Data'` defect, in a terminal.
-    log('  To let an AI agent use this browser: open MockLab in Chrome, go to its');
-    log('  settings, choose the AI access option, and enter this code within 5 minutes:');
-    log('');
-    log(`        ${code}`);
-    log('');
-    hub.onEvent(() => {
-      if (pairing.pairedAt() && !readPairedBefore()) rememberPaired();
-    });
-  } else {
-    log('  already paired — run `mocklab-companion --pair` to pair another browser');
-  }
+  const code = wantsPairing ? pairing.open().code : null;
 
   let stdioServer = null;
   if (options.stdio) {
@@ -319,6 +308,8 @@ export async function startCompanion(options = {}) {
     mcpHttp,
     stdioServer,
     tokenFile: file,
+    /** §12.3's six digits, or null when no window was opened. Printed by `main`. */
+    pairingCode: code,
     ports: { hub: site.address().port, mcp: mcpHttp.address().port },
     async close() {
       hub.close();
@@ -359,6 +350,22 @@ async function main() {
   log(`  mcp (http)  http://${HOST}:${running.ports.mcp}/mcp`);
   if (options.stdio) log('  mcp (stdio) connected to this process');
   log('');
+  if (running.pairingCode) {
+    // The panel's own label for this control is NOT quoted here, and that is deliberate
+    // rather than a wording choice. §17.6 keeps every user-visible string in one file,
+    // `extension/src/panel/strings.js`, and this package cannot import it: the companion
+    // is published on its own (`npx mocklab-companion`) and would carry a dangling path.
+    // A copy of the label here would be a second place to translate and a second place
+    // to rot the day the button is renamed — the M2 `'Data'` defect, in a terminal.
+    log('  To let an AI agent use this browser: open MockLab in Chrome, go to its');
+    log('  settings, choose the AI access option, and enter this code within 5 minutes:');
+    log('');
+    log(`        ${running.pairingCode}`);
+    log('');
+  } else {
+    log('  already paired — run `mocklab-companion --pair` to pair another browser');
+    log('');
+  }
   log('Open the demo site, then click the MockLab icon in Chrome.');
 
   const stop = () => {

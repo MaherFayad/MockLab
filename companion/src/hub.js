@@ -174,6 +174,16 @@ export function createHub(options) {
   let live = null;
   /** Sockets that have connected but not yet paired — they may send `pair` and nothing else. */
   const pairingSockets = new Set();
+  /**
+   * EVERY socket this hub has accepted and not seen close, authenticated or not.
+   *
+   * `live` is not enough to shut down on: a superseded socket is asked to close, and
+   * "asked" is not "closed" — a client that ignores the close frame, or a defect that
+   * skips the request, leaves a socket nothing is tracking and the process never exits.
+   * Found by mutation: removing the newest-wins close turned a test that should fail in
+   * three seconds into a run that never ended.
+   */
+  const sockets = new Set();
   /** @type {Map<string, {resolve:Function, reject:Function, timer:any, onProgress:Function|null, op:string}>} */
   const pending = new Map();
   /** §12.2's per-origin store cache. */
@@ -320,8 +330,10 @@ export function createHub(options) {
         pairingSockets.add(ws);
       }
 
+      sockets.add(ws);
       ws.on('message', (data) => onFrame(ws, data, authenticated));
       ws.on('close', () => {
+        sockets.delete(ws);
         pairingSockets.delete(ws);
         if (live === ws) {
           live = null;
@@ -398,13 +410,14 @@ export function createHub(options) {
 
     close() {
       rejectAll(DISCONNECTED_MESSAGE, 'disconnected');
-      for (const socket of [...pairingSockets, ...(live ? [live] : [])]) {
+      for (const socket of sockets) {
         try {
-          socket.close();
+          socket.terminate ? socket.terminate() : socket.close();
         } catch {
           /* already gone */
         }
       }
+      sockets.clear();
       pairingSockets.clear();
       live = null;
       wss.close();

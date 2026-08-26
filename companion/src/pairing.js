@@ -133,7 +133,12 @@ function sixDigits(value) {
 /**
  * The pairing window: open it once, spend it once.
  *
- * @param {{token:string, now?:() => number, onRefusal?:(detail:string) => void}} options
+ * @param {{
+ *   token:string,
+ *   now?:() => number,
+ *   onRefusal?:(detail:string) => void,
+ *   onPaired?:() => void
+ * }} options
  */
 export function createPairing(options) {
   const now = options.now || Date.now;
@@ -193,6 +198,10 @@ export function createPairing(options) {
       if (match) {
         window = null;
         pairedAt = now();
+        // Told HERE, at the moment it becomes true. The caller remembers it on disk so
+        // later starts open no window at all; deriving that from a connection event
+        // instead would record it one reconnect late, or never.
+        if (options.onPaired) options.onPaired();
         return token;
       }
       const spent = window.attempts;

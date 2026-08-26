@@ -128,6 +128,10 @@ test('§12.3 two clients racing the same window: the first correct code wins, al
 });
 
 test('the attempt limit closes the window — six digits is not a password', () => {
+  // The limit is asserted to be SMALL before it is used as a loop bound. A test that
+  // simply counted to MAX_ATTEMPTS would loop for ever if somebody raised it to a number
+  // that makes the limit meaningless — the mutation this test exists to catch.
+  assert.ok(MAX_ATTEMPTS >= 3 && MAX_ATTEMPTS <= 10, `${MAX_ATTEMPTS} guesses is not a limit`);
   const pairing = createPairing({ token: 'd'.repeat(64) });
   const { code } = pairing.open();
   const wrong = String((Number(code) + 7) % 1000000).padStart(6, '0');

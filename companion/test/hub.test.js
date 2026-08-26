@@ -85,6 +85,18 @@ function nextFrame(socket, ms = 2000) {
   });
 }
 
+/**
+ * A promise that rejects rather than hanging. Every wait below is bounded: a test that
+ * hangs when the rule it checks is removed reports nothing at all — it just stops the
+ * run, which is how a mutation that should be loud becomes a silence.
+ */
+function within(ms, what, promise) {
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`${what} did not happen within ${ms} ms`)), ms))
+  ]);
+}
+
 /** An extension that answers every request with `answer(frame)`. */
 function answerWith(socket, answer) {
   socket.on('message', (data) => {
@@ -339,8 +351,12 @@ test('§12.2 a silent extension times out with the sentence §12.2 wrote', async
     answerWith(socket, () => undefined);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const err = await rig.hub.request('reload', { tabId: 1 }, { timeoutMs: 60 }).then(() => null, (e) => e);
-    assert.equal(err.code, 'timeout');
+    const err = await within(
+      5000,
+      'the 60 ms timeout',
+      rig.hub.request('reload', { tabId: 1 }, { timeoutMs: 60 })
+    ).then(() => null, (e) => e);
+    assert.equal(err.code, 'timeout', `the call must not be left waiting: ${err && err.message}`);
     assert.equal(err.message, EXTENSION_TIMEOUT_MESSAGE);
     assert.equal(rig.hub.pendingCount(), 0, 'a timed-out call is forgotten, not leaked');
 
@@ -376,14 +392,35 @@ test('§12.2 the hub keeps ONE extension connection: newest wins', async () => {
 
     const second = await connect(rig.url, { origin: EXTENSION_ORIGIN, token: TOKEN });
     answerWith(second.socket, () => ({ ok: true, from: 'second' }));
-    assert.equal(await closed, 4002, 'the older socket is closed, not left half-alive');
+    assert.equal(
+      await within(3000, 'the superseded socket closing', closed),
+      4002,
+      'the older socket is closed, not left half-alive'
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepEqual(await rig.hub.request('list_tabs', {}), { ok: true, from: 'second' });
+    assert.deepEqual(
+      await within(5000, 'an answer from the newest socket', rig.hub.request('list_tabs', {})),
+      { ok: true, from: 'second' }
+    );
+    first.socket.close();
     second.socket.close();
   } finally {
     await rig.close();
   }
+});
+
+test('closing the hub closes every socket it accepted, not only the current one', async () => {
+  const rig = await startHub();
+  const first = await connect(rig.url, { origin: EXTENSION_ORIGIN, token: TOKEN });
+  const second = await connect(rig.url, { origin: EXTENSION_ORIGIN, token: TOKEN });
+  const bothClosed = Promise.all([first, second].map(({ socket }) =>
+    socket.readyState === socket.CLOSED ? null : new Promise((resolve) => socket.on('close', resolve))
+  ));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await rig.close();
+  await within(3000, 'both sockets closing', bothClosed);
+  assert.equal(rig.hub.isConnected(), false);
 });
 
 test('§12.4 #5 progress events reach the call they belong to, and only it', async () => {
