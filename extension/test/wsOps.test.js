@@ -16,7 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createOps, findTargetInPage, PROBE_POLL_MS, BODY_LIMIT_BYTES, probeMessage } from '../src/background/wsOps.js';
-import { MSG, PROBE_MSG, PROBE_PHASE, PROBE_FAIL, CONTENT_GLOBALS } from '../src/background/messages.js';
+import { MSG, PHASE, PROBE_MSG, PROBE_PHASE, PROBE_FAIL, CONTENT_GLOBALS } from '../src/background/messages.js';
 import { S } from '../src/panel/strings.js';
 import { fakeChrome } from '../testlib/fakeChrome.js';
 
@@ -85,8 +85,9 @@ test('§12.4 the extension implements all fifteen ops and nothing else', () => {
 /* ──────────────────────────────────────────────── §1.1 — a half that is not built ── */
 
 test('§1.1 an op whose worker half does not exist says so, in the panel\'s own words', async () => {
-  // The router answers `undefined` for a type nothing handles. Today that is every
-  // preset type and HIGHLIGHT: their panel half shipped at M5, their worker half did not.
+  // The router answers `null` for a type nothing handles — the state every preset type
+  // and HIGHLIGHT were in for one milestone, and the state the next half-landed contract
+  // will be in. The table below is empty on purpose: it IS a worker with no handler.
   const { ops } = opsWith({ table: {} });
   for (const name of ['highlight', 'list_presets', 'apply_preset', 'save_preset', 'delete_preset']) {
     const answer = await ops[name]({ tabId: 1, presetId: 'p', sigId: 's', path: '$.a', name: 'x' });
@@ -199,6 +200,17 @@ test('§12.4 #8 clear_changes with an id deletes one, without an id resets the s
   assert.deepEqual(sent.map((message) => message.type), [MSG.DELETE_CHANGE, MSG.RESET_SITE]);
 });
 
+test('§10.2 a change can be switched off through MCP without being deleted', async () => {
+  // The per-row switch a person has in the tree view. Before this argument existed the
+  // schema REFUSED it, so the only way an agent could stop a change taking effect was to
+  // delete it — losing the value, the note and the id a person could switch back on.
+  const { ops, sent } = opsWith({ table: { [MSG.SET_VALUE]: { ok: true, change: { enabled: false } } } });
+  const answer = await ops.set_value({ tabId: 1, sigId: 's', path: '$.status', value: 'CANCELLED', enabled: false });
+  assert.equal(answer.ok, true);
+  assert.equal(sent[0].payload.enabled, false, 'the flag reaches the handler the panel\'s switch reaches');
+  assert.equal(sent[0].type, MSG.SET_VALUE, 'and it is the same message, not a second one');
+});
+
 test('§12.4 #7 set_value is handed straight to the handler the panel uses', async () => {
   const { ops, sent } = opsWith({ table: { [MSG.SET_VALUE]: (payload) => ({ ok: true, change: { ...payload, linkState: 'candidate' }, refreshed: true }) } });
   const answer = await ops.set_value({ tabId: 1, sigId: 's', path: '$.status', value: 'CANCELLED' });
@@ -249,6 +261,13 @@ test('§12.4 #15 reload reports the settle checks it made, and does not claim th
 
 /* ───────────────────────────────────────────────── §12.4 #5 — the probe ─────────── */
 
+/**
+ * The pick record, filled. Every probe test carries one, because `probe_element` waits
+ * for it: `pickApi.onPicked` returns before it has searched anything, so the agent path
+ * waits where the panel waits (see PICK_WAIT). A fixture without it is a probe that is
+ * still being picked.
+ */
+const PICKED_VIEW = { ok: true, phase: PHASE.PICKED, candidates: [] };
 const RUNNING = { ok: true, phase: PROBE_PHASE.RUNNING, state: 'controlA', step: 'control', testing: 0, reload: { index: 1, estimate: 8 } };
 const TESTING = { ok: true, phase: PROBE_PHASE.RUNNING, state: 'testing', step: 'testing', testing: 6, reload: { index: 3, estimate: 8 } };
 
@@ -263,6 +282,7 @@ test('§12.4 #5 probe_element picks the element in the page, then runs the panel
   const { ops, picks, sent, api } = opsWith({
     picked,
     table: {
+      [MSG.GET_PICK]: PICKED_VIEW,
       [PROBE_MSG.START_PROBE]: { ok: true, tabId: 1 },
       [PROBE_MSG.GET_PROBE]: () => views[Math.min(read++, views.length - 1)]
     }
@@ -272,7 +292,11 @@ test('§12.4 #5 probe_element picks the element in the page, then runs the panel
   const answer = await ops.probe_element({ tabId: 1, text: 'On time' }, (update) => updates.push(update));
 
   assert.deepEqual(picks, [[1, picked]], 'the element goes into the SAME pick record a human click fills');
-  assert.equal(sent[0].type, PROBE_MSG.START_PROBE, 'and the SAME probe runs');
+  assert.deepEqual(
+    sent.map((message) => message.type).slice(0, 2),
+    [MSG.GET_PICK, PROBE_MSG.START_PROBE],
+    'it waits for that record to fill, then the SAME probe runs'
+  );
   assert.equal(answer.ok, true);
   assert.equal(answer.binding.state, 'verified', 'as stored by probe.js — this file only carries it');
   assert.equal(answer.elements.length, 2, '§7.6: one probe finds every element the field drives');
@@ -289,11 +313,134 @@ test('§12.4 #5 probe_element picks the element in the page, then runs the panel
   assert.deepEqual(script[2], [CONTENT_GLOBALS.element, '', 'On time']);
 });
 
+test('§12.4 #5 the probe waits for the pick to finish, and reports a pick that failed', async () => {
+  // `pickApi.onPicked` returns before it has searched anything (§6.3 reads the store and
+  // every captured body). Starting the probe on that promise asked the worker to probe a
+  // record that was not there yet, and it answered `no-pick` — on a page where the
+  // element had just been found. Only a real browser saw it; every fake was instant.
+  const views = [{ ok: true, phase: PHASE.PICKING }, { ok: true, phase: PHASE.PICKING }, PICKED_VIEW];
+  let read = 0;
+  const { ops, sent } = opsWith({
+    picked: { ok: true, fingerprint: {}, snapshot: {} },
+    table: {
+      [MSG.GET_PICK]: () => views[Math.min(read++, views.length - 1)],
+      [PROBE_MSG.START_PROBE]: { ok: true },
+      [PROBE_MSG.GET_PROBE]: { ok: true, phase: PROBE_PHASE.DONE, binding: null, reload: { index: 1, estimate: 1 } }
+    }
+  });
+  const answer = await ops.probe_element({ tabId: 1, selector: '#p' }, () => {});
+  assert.equal(answer.ok, true);
+  assert.equal(read, 3, 'it looked again instead of giving up on the first unfinished read');
+  assert.equal(sent.filter((message) => message.type === PROBE_MSG.START_PROBE).length, 1);
+  assert.ok(
+    sent.findIndex((message) => message.type === PROBE_MSG.START_PROBE) >
+      sent.map((message) => message.type).lastIndexOf(MSG.GET_PICK) - 1,
+    'the probe starts after the record is filled, not before'
+  );
+
+  // A pick that ENDED badly is its own answer, not a timeout about it.
+  const failed = opsWith({
+    picked: { ok: true, fingerprint: {}, snapshot: {} },
+    table: { [MSG.GET_PICK]: { ok: true, phase: PHASE.IDLE, reason: PROBE_FAIL.NO_CANDIDATES } }
+  });
+  const refused = await failed.ops.probe_element({ tabId: 1, selector: '#p' }, () => {});
+  assert.equal(refused.reason, PROBE_FAIL.NO_CANDIDATES);
+  assert.equal(refused.message, S.pick.noCandidates, '§11\'s own sentence for it');
+  assert.equal(failed.sent.some((message) => message.type === PROBE_MSG.START_PROBE), false, 'and no page was reloaded');
+});
+
+test('§1.6 the two switches §10 puts in front of a person are reachable through the probe', async () => {
+  // §10.1D's "Check all fields (slower)" and §10.5's "Extra-careful checking". Both
+  // change what the probe DOES, so an agent without them cannot reproduce the run a
+  // person just described — which is the parity §1.6 asks for, not a nicety.
+  const table = {
+    [MSG.GET_PICK]: PICKED_VIEW,
+    [MSG.UPDATE_SETTINGS]: { ok: true, settings: { paranoid: true } },
+    [PROBE_MSG.START_PROBE]: { ok: true },
+    [PROBE_MSG.GET_PROBE]: { ok: true, phase: PROBE_PHASE.DONE, binding: null, reload: { index: 2, estimate: 2 } }
+  };
+  const picked = { ok: true, fingerprint: {}, snapshot: {} };
+
+  const plain = opsWith({ picked, table });
+  await plain.ops.probe_element({ tabId: 1, selector: '#p' }, () => {});
+  const start = plain.sent.find((message) => message.type === PROBE_MSG.START_PROBE);
+  assert.deepEqual(start.payload, { tabId: 1, exhaustive: false }, 'the ordinary run says so explicitly');
+  assert.equal(
+    plain.sent.some((message) => message.type === MSG.UPDATE_SETTINGS),
+    false,
+    'a probe that was not asked to change a setting does not touch the user\'s settings'
+  );
+
+  const careful = opsWith({ picked, table });
+  await careful.ops.probe_element({ tabId: 1, selector: '#p', exhaustive: true, paranoid: true }, () => {});
+  assert.deepEqual(
+    careful.sent.find((message) => message.type === MSG.UPDATE_SETTINGS).payload,
+    { patch: { paranoid: true } },
+    '§7.1\'s third cycle is settings.paranoid — the same switch, written the same way'
+  );
+  assert.equal(careful.sent.find((message) => message.type === PROBE_MSG.START_PROBE).payload.exhaustive, true);
+  // Order matters: the probe reads the setting when it starts, so a patch that landed
+  // after START_PROBE would be a careful run that was not careful.
+  assert.ok(
+    careful.sent.findIndex((message) => message.type === MSG.UPDATE_SETTINGS) <
+      careful.sent.findIndex((message) => message.type === PROBE_MSG.START_PROBE),
+    'the setting is written before the probe reads it'
+  );
+
+  const off = opsWith({ picked, table });
+  await off.ops.probe_element({ tabId: 1, selector: '#p', paranoid: false }, () => {});
+  assert.deepEqual(off.sent.find((message) => message.type === MSG.UPDATE_SETTINGS).payload, { patch: { paranoid: false } });
+});
+
+test('§7.1 an abandoned probe is cancelled in the browser, not just dropped here', async () => {
+  // An MCP client that gives up leaves a page reloading in front of whoever is looking
+  // at it, for up to §7.1's three minutes. The signal is MCP's own; what matters is that
+  // it ends in the panel's own Stop, which runs CLEANUP and puts the page back.
+  const cancel = new AbortController();
+  let reads = 0;
+  const { ops, sent } = opsWith({
+    picked: { ok: true, fingerprint: {}, snapshot: {} },
+    table: {
+      [MSG.GET_PICK]: PICKED_VIEW,
+      [PROBE_MSG.START_PROBE]: { ok: true },
+      [PROBE_MSG.CANCEL_PROBE]: { ok: true },
+      [PROBE_MSG.GET_PROBE]: () => {
+        reads += 1;
+        if (reads === 2) cancel.abort();
+        return RUNNING;
+      }
+    }
+  });
+
+  const answer = await ops.probe_element({ tabId: 1, selector: '#p' }, () => {}, cancel.signal);
+  assert.deepEqual(answer, { ok: false, reason: PROBE_FAIL.CANCELLED }, '§11 wrote no sentence for this, so none is invented');
+  assert.equal(
+    sent.filter((message) => message.type === PROBE_MSG.CANCEL_PROBE).length,
+    1,
+    'the run is stopped in the worker exactly once — the panel\'s own CANCEL_PROBE'
+  );
+  assert.ok(reads < 5, `the poll stopped at the cancellation, after ${reads} reads`);
+});
+
+test('§7.1 a probe cancelled before it starts changes nothing to put back', async () => {
+  const cancel = new AbortController();
+  cancel.abort();
+  const { ops, sent, picks } = opsWith({
+    picked: { ok: true, fingerprint: {}, snapshot: {} },
+    table: { [PROBE_MSG.START_PROBE]: { ok: true }, [PROBE_MSG.CANCEL_PROBE]: { ok: true } }
+  });
+  const answer = await ops.probe_element({ tabId: 1, selector: '#p' }, () => {}, cancel.signal);
+  assert.deepEqual(answer, { ok: false, reason: PROBE_FAIL.CANCELLED });
+  assert.deepEqual(sent, [], 'nothing was started, so nothing is cancelled and no page is reloaded');
+  assert.deepEqual(picks, [], 'and nothing was recorded as picked');
+});
+
 test('§12.4 #5 a probe that proves nothing returns §11\'s sentence for the reason', async () => {
   for (const reason of [PROBE_FAIL.TOO_NOISY, PROBE_FAIL.NONE_CONFIRMED, PROBE_FAIL.ELEMENT_LOST, PROBE_FAIL.TIMEOUT]) {
     const { ops } = opsWith({
       picked: { ok: true, fingerprint: {}, snapshot: {} },
       table: {
+        [MSG.GET_PICK]: PICKED_VIEW,
         [PROBE_MSG.START_PROBE]: { ok: true },
         [PROBE_MSG.GET_PROBE]: { ok: true, phase: PROBE_PHASE.FAILED, failure: reason, reload: { index: 4, estimate: 8 } }
       }

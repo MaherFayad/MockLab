@@ -138,7 +138,14 @@ export function createMcpServer(deps) {
 
     let answer;
     try {
-      answer = await hub.request(tool.name, args, { timeoutMs: tool.timeoutMs, onProgress });
+      // `extra.signal` is MCP's own cancellation. Forwarded rather than answered here:
+      // a client that walks away from a probe leaves a page reloading in front of a
+      // person for up to §7.1's three minutes, and only the browser can stop that.
+      answer = await hub.request(tool.name, args, {
+        timeoutMs: tool.timeoutMs,
+        onProgress,
+        signal: extra ? extra.signal : undefined
+      });
     } catch (err) {
       // A hub error is a fact about the connection, and it is already a sentence a
       // person could act on. Anything else is a defect here, and says so rather than

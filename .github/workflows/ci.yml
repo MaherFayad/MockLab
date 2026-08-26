@@ -69,6 +69,16 @@ jobs:
     # was untrue in the file whose comment six lines down explains why a false statement
     # here is worse than no statement.
     #
+    # highlight.browser.test.js is the ninth suite, added in M6's gap-closing IN THE SAME
+    # CHANGE as the file. §10.3's overlays are drawn by a function that runs in the page,
+    # and everything that can be wrong with it is invisible to a unit test: a shadow root
+    # a site's `border:0!important` would otherwise erase, a rect measured through the
+    # entry transform, §6.2's re-resolution against a document that really changed, and a
+    # container that has to be gone four seconds later. Deleting the confidence floor in
+    # `background/highlight.js` makes MockLab draw a SOLID accent outline — the "this is
+    # proved" overlay — around whatever element now sits at a remembered tree position;
+    # subtest 4 of this file is what fails.
+    #
     # This comment deliberately carries no test totals. It used to say "all 142 unit
     # tests"; the suite grew to 146 and the number rotted in place, asserting something
     # false in the file whose whole job is to be trusted. The claim is stronger without
@@ -101,7 +111,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in e2e mcp panel panel.probe panel.scenarios picker pickerdom probe; do
+          for suite in e2e highlight mcp panel panel.probe panel.scenarios picker pickerdom probe; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"

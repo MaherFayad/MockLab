@@ -45,23 +45,38 @@ export const NOT_CONNECTED_MESSAGE =
   'MockLab is not connected — open Chrome with the MockLab extension installed and paired.';
 export const DISCONNECTED_MESSAGE =
   'MockLab disconnected while this call was running — the browser was closed or the extension reloaded.';
+/**
+ * §7.1: "The user can cancel any time (CLEANUP runs; page returns to real state)". An MCP
+ * client that abandons a `probe_element` is doing exactly that, and the browser is told
+ * so — otherwise the page a person is looking at goes on reloading for up to three
+ * minutes for a caller that stopped listening.
+ */
+export const CANCELLED_MESSAGE = 'The call was cancelled, and MockLab was told to stop and put the page back.';
 
 /** Frame kinds (§12.2). */
 export const KIND = Object.freeze({ REQ: 'req', RES: 'res', EVENT: 'event' });
 
 /**
- * Ops the EXTENSION may send to the hub. Everything else in the extension->hub
- * direction is a `res` to something the hub asked for, or is dropped.
+ * The op vocabulary of everything that is not a tool call. All but one travel
+ * extension -> hub; everything else in that direction is a `res` to something the hub
+ * asked for, or is dropped.
  *
  * `PAIR` is the one request an UNAUTHENTICATED socket may make, and the only one
  * (§12.3). `PROGRESS` carries the id of the request it belongs to, which is how §12.4's
  * "send MCP progress notifications at each state change" reaches the MCP client.
+ *
+ * `CANCEL` is the one that goes the other way, hub -> extension, carrying the id of the
+ * call to stop. It is an EVENT and not a `req`: a `req` reusing that id would come back
+ * as a `res` with the same id, which is the frame this file reads as "that call is
+ * finished" — the answer to the cancellation would be mistaken for the answer to the
+ * call. `wsClient.js` mirrors this table and `mcp.test.js` compares the two.
  */
 export const HUB_OP = Object.freeze({
   PAIR: 'pair',
   STORE_CHANGED: 'storeChanged',
   CAPTURED: 'captured',
-  PROGRESS: 'progress'
+  PROGRESS: 'progress',
+  CANCEL: 'cancel'
 });
 
 /** Close codes the extension can act on. 4001-4999 is the application range. */
@@ -193,8 +208,13 @@ export function createHub(options) {
 
   let connections = 0;
 
-  function fail(entry, error) {
+  function settle(entry) {
     clearTimeout(entry.timer);
+    if (entry.detach) entry.detach();
+  }
+
+  function fail(entry, error) {
+    settle(entry);
     entry.reject(error);
   }
 
@@ -250,7 +270,7 @@ export function createHub(options) {
       const entry = pending.get(frame.id);
       if (!entry) return; // a late answer to a call that already timed out
       pending.delete(frame.id);
-      clearTimeout(entry.timer);
+      settle(entry);
       entry.resolve(frame.payload);
       return;
     }
@@ -380,26 +400,48 @@ export function createHub(options) {
     /**
      * One MCP tool call, forwarded to the extension.
      *
+     * `signal` is the MCP client's own cancellation, handed straight through from the
+     * request handler. MCP already has this concept, so a sixteenth tool to express it
+     * would be a second vocabulary for one idea; what the hub adds is the frame that
+     * carries the decision across the socket, so the BROWSER learns about it. Cancelling
+     * only here would leave the call tidy on this side and the page still reloading on
+     * the other, which is the half that costs a person something.
+     *
      * @param {string} op
      * @param {any} payload
-     * @param {{timeoutMs?:number, onProgress?:(p:any)=>void}} [options]
+     * @param {{timeoutMs?:number, onProgress?:(p:any)=>void, signal?:AbortSignal}} [options]
      * @returns {Promise<any>} whatever the extension answered
      */
     request(op, payload, requestOptions = {}) {
+      const signal = requestOptions.signal || null;
+      if (signal && signal.aborted) return Promise.reject(new HubError('cancelled', CANCELLED_MESSAGE));
       if (!live) return Promise.reject(new HubError('not-connected', NOT_CONNECTED_MESSAGE));
       const id = crypto.randomUUID();
       const timeoutMs = Number(requestOptions.timeoutMs) > 0 ? Number(requestOptions.timeoutMs) : REQUEST_TIMEOUT_MS;
       return new Promise((resolve, reject) => {
+        const onAbort = () => {
+          if (!pending.has(id)) return;
+          pending.delete(id);
+          // Best effort, and deliberately not conditional on it: if the socket has gone,
+          // the browser is not running the probe either.
+          if (live) send(live, { id, kind: KIND.EVENT, op: HUB_OP.CANCEL, payload: {} });
+          fail(entry, new HubError('cancelled', CANCELLED_MESSAGE));
+        };
         const entry = {
           op,
           resolve,
           reject,
           onProgress: requestOptions.onProgress || null,
+          // Removed when the call settles, whichever way it settles. A listener left on a
+          // long-lived signal is a leak that grows with every tool call a client makes.
+          detach: signal ? () => signal.removeEventListener('abort', onAbort) : null,
           timer: setTimeout(() => {
             pending.delete(id);
+            if (signal) signal.removeEventListener('abort', onAbort);
             reject(new HubError('timeout', EXTENSION_TIMEOUT_MESSAGE));
           }, timeoutMs)
         };
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
         pending.set(id, entry);
         if (!send(live, { id, kind: KIND.REQ, op, payload })) {
           pending.delete(id);

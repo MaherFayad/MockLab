@@ -34,10 +34,17 @@
  * M5's eight preset/highlight types arrived the same way a third time, staged in
  * `panel/requestedMessages.js`, and are folded in below under `MSG` — values compared
  * byte-for-byte against that file's proposals, so no wire value moved and no panel call
- * site changed. That staging file is NOT deleted here the way M3's and M4's were: it
- * lives under `src/panel/`, which this agent may not write, and its `M5_MSG` now simply
- * forwards what `MSG` defines (`MSG.X || 'msg:…'` resolves to `MSG.X`) while
- * `stillRequested()` returns nothing. Its author deletes it and re-points the imports.
+ * site changed. That staging file was left standing when this paragraph was written,
+ * because it lived under `src/panel/`, which this agent may not write; its author has
+ * since deleted it and re-pointed the imports, and this sentence is corrected rather
+ * than left describing a file that is not there. `panel/scenarios.js` keeps the one part
+ * of it that still earns its place, `missingScenarioContract()`, which asks whether the
+ * types it needs are defined before a control promises anything.
+ *
+ * M6's gap-closing added no type at all. The eight were already here and are now
+ * ANSWERED — `background/presets.js` and `background/highlight.js`, routed through the
+ * set `changesApi.js` exports. That is the whole change: a message type that nothing
+ * handles and a message type that something handles look identical from this file.
  *
  * ── What pins a `msg:` value, now that the eight below make thirty-two ───────────
  * Nothing did, and that was the real gap. A `page:`/`port:` value is pinned because two
@@ -213,7 +220,10 @@ export const PORT_NAME = 'mocklab';
  *
  *   element  `element.js` -> read by `picker.js` (§6.1/§6.2/§7.3 questions about a node)
  *   picker   `picker.js`  -> read by `agent.js`  (§6.1 pick mode)
- *   overlayId  the single `#__mocklab_overlay__` host every overlay lives in (§6.1, §10.3)
+ *   overlayId  the picker's hover overlay host (§6.1), created and removed by
+ *     `picker.js` for the length of one pick
+ *   highlightId  §10.3's highlight host, created and removed by the injected drawer in
+ *     `background/highlight.js` for the four seconds one highlight lives
  *   interceptorInstalled  the MAIN world's re-entrancy flag (§5.1.6) — the one name on
  *     the PAGE's window rather than the extension's isolated global, because that is the
  *     only global the MAIN-world patch has.
@@ -236,8 +246,24 @@ export const CONTENT_GLOBALS = {
   element: '__mocklabElement',
   picker: '__mocklabPicker',
   overlayId: '__mocklab_overlay__',
+  highlightId: '__mocklab_highlight__',
   interceptorInstalled: '__mocklabInterceptorInstalled'
 };
+
+/*
+ * WHY §10.3's overlays are NOT in `#__mocklab_overlay__`, which §10.3 says they are.
+ *
+ * The two hosts are owned by code with unrelated lifecycles. `picker.js` holds a private
+ * reference to its host, creates it when the reference is stale, and REMOVES IT WHOLE
+ * when pick mode exits. A highlight sharing that element would be erased mid-stagger by
+ * a pick the person started afterwards — and, the other way round, the picker's
+ * `ensureOverlay` would append a SECOND element carrying the same id, because its own
+ * reference is null and `getElementById` is not what it consults. Two independent
+ * lifecycles on one element id is how an overlay disappears for no reason a user could
+ * describe. Recorded as a deviation rather than taken quietly; §10.3's real requirement
+ * — one container, `pointer-events:none`, cleaned up, never in `<body>` — is kept by
+ * both.
+ */
 
 /**
  * Frames exchanged between the MAIN world (interceptor.js) and the ISOLATED world
@@ -593,11 +619,18 @@ export const MSG = {
    * Panel -> SW. §10.4's Import (and Duplicate). `{tabId?|origin, preset}`
    *   -> `{ok:true, preset:Preset}`
    *
-   * `preset` is a §4 Preset THE PANEL HAS ALREADY VALIDATED (`panel/scenarioFile.js`),
+   * `preset` is a §4 Preset the panel has already validated (`panel/scenarioFile.js`),
    * because a corrupt file must produce §10.4's friendly error beside the file picker,
    * where the person is, rather than a worker rejection they cannot see. The worker
    * still gives it a fresh `id` and its own `origin`: an imported file must never be
    * able to overwrite a Scenario already on this machine by carrying its id.
+   *
+   * AND THE WORKER VALIDATES IT AGAIN, with that same function rather than a second one
+   * (`background/presets.js`). This sentence used to stop at the line above, which was
+   * true of the panel and false of the socket: an MCP client reaches this type through
+   * the same router with a payload nobody has read. A refusal answers
+   * `{ok:false, reason, message}`, where the message is the sentence the panel would
+   * have shown — including the one that names the site a Scenario was saved on.
    */
   IMPORT_PRESET: 'msg:importPreset',
 
@@ -616,7 +649,10 @@ export const MSG = {
    * `verified` is which overlay §10.3 draws, and it is a claim about PROOF: true only
    * when a Binding for this exact (sigId, path) is `verified`, which only the §7 probe
    * may write (§0.2, §17.4). False means the dashed amber "best guess" outline and
-   * §11's `sources.guessHighlight` tooltip — never the solid accent one.
+   * §11's `sources.guessHighlight` tooltip — never the solid accent one. It describes
+   * what was DRAWN, so a `verified` Binding holding no fingerprints at all reports false:
+   * the highlight falls back to searching the page for the value, and what is on the
+   * screen then is a guess whatever the store says.
    *
    * `elements` is how many overlays were ACTUALLY drawn, not how many were asked for,
    * so the panel can tell "shown" from "there was nothing left to show" — a verified

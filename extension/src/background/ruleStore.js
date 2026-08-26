@@ -71,12 +71,18 @@ async function read(key, fallback) {
 const writeLocks = new Map();
 
 /**
+ * EXPORTED so a module that owns one key family can keep the same discipline without a
+ * second lock map beside this one — `presets.js` does its own read-modify-write on
+ * `presets:<origin>` (§17.10 put the Scenario mutators there; this file was over the
+ * line budget with them in it). Two lock maps would serialize two halves of the same key
+ * against themselves and not against each other, which is the race this exists to stop.
+ *
  * @template T
  * @param {string} key
  * @param {() => Promise<T>} task
  * @returns {Promise<T>}
  */
-function withLock(key, task) {
+export function withLock(key, task) {
   const previous = writeLocks.get(key) || Promise.resolve();
   const next = previous.then(task, task);
   writeLocks.set(
@@ -399,6 +405,13 @@ export async function getPresets(origin) {
 /** @param {string} origin @param {Preset[]} presets */
 export async function setPresets(origin, presets) {
   return write(KEY.presets(origin), presets);
+}
+
+/** @param {string} origin @param {string} presetId @returns {Promise<Preset|null>} */
+export async function getPreset(origin, presetId) {
+  if (!presetId) return null;
+  const list = await getPresets(origin);
+  return list.find((preset) => preset && preset.id === presetId) || null;
 }
 
 /* -------------------------------------------------------------------- settings */

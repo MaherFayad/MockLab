@@ -1,19 +1,21 @@
 /**
- * Companion tests (PLAN.md §12, §14): the demo site, and the hub the extension talks on.
+ * The hub the extension talks on (PLAN.md §12.2, §12.3).
  *
- * OWNER: mcp-engineer. The demo-serving tests are the M0 acceptance harness and must
- * keep passing for the rest of the build; everything from "§12.3 an upgrade" down is
- * M6's, and every one of those drives a REAL socket against a REAL server, because the
- * whole subject of this file is a handshake.
+ * OWNER: mcp-engineer. Every test here drives a REAL socket against a REAL server,
+ * because the whole subject of this file is a handshake — a fake would be asserting
+ * about the fake.
  *
- * Pairing lives in `pairing.test.js`, the MCP surface in `mcp.test.js`.
+ * §14's demo site moved to `demo.test.js` when this file passed §17.10's budget. The
+ * seam was already written in this header: those tests serve static files and open no
+ * socket, these open nothing else. Pairing lives in `pairing.test.js`, the MCP surface
+ * in `mcp.test.js`.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { WebSocket } from 'ws';
 
-import { resolveDemoPath, HOST, HUB_PORT, createServer } from '../src/index.js';
+import { HOST, HUB_PORT } from '../src/index.js';
 import { TOOL_NAMES } from '../src/mcpServer.js';
 import { createPairing } from '../src/pairing.js';
 import {
@@ -28,6 +30,7 @@ import {
   EXTENSION_TIMEOUT_MESSAGE,
   NOT_CONNECTED_MESSAGE,
   DISCONNECTED_MESSAGE,
+  CANCELLED_MESSAGE,
   REQUEST_TIMEOUT_MS
 } from '../src/hub.js';
 
@@ -109,47 +112,9 @@ function answerWith(socket, answer) {
   });
 }
 
-test('demo paths resolve inside the demo directory', () => {
-  assert.match(resolveDemoPath('/demo/')  ?? '', /demo[\\/]index\.html$/);
-  assert.match(resolveDemoPath('/demo')   ?? '', /demo[\\/]index\.html$/);
-  assert.match(resolveDemoPath('/demo/app.js') ?? '', /demo[\\/]app\.js$/);
-  assert.match(resolveDemoPath('/demo/api/trip.json') ?? '', /api[\\/]trip\.json$/);
-});
-
-test('paths outside the demo directory are refused', () => {
-  assert.equal(resolveDemoPath('/'), null);
-  assert.equal(resolveDemoPath('/etc/passwd'), null);
-  assert.equal(resolveDemoPath('/demo/../../package.json'), null);
-  assert.equal(resolveDemoPath('/demo/%2e%2e/%2e%2e/package.json'), null);
-});
-
 test('the companion binds to loopback only (PLAN.md §12.3)', () => {
   assert.equal(HOST, '127.0.0.1');
   assert.equal(HUB_PORT, 8517);
-});
-
-test('the demo site serves the trip card and its two data sources', async () => {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, HOST, resolve));
-  const base = `http://${HOST}:${server.address().port}`;
-  try {
-    const page = await fetch(`${base}/demo/`);
-    assert.equal(page.status, 200);
-    const html = await page.text();
-    assert.match(html, /id="status-pill"/);
-    assert.match(html, /id="alert-banner"/);
-
-    const trip = await (await fetch(`${base}/demo/api/trip.json`)).json();
-    assert.equal(trip.status, 'ON_TIME');
-    assert.equal(trip.price.total, 450);
-
-    const user = await (await fetch(`${base}/demo/api/user.json`)).json();
-    assert.equal(user.user.displayName, 'Nora Al-Amri');
-
-    assert.equal((await fetch(`${base}/nope`)).status, 404);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
 });
 
 test('the 15 MCP tool names in PLAN.md §12.4 are declared', () => {
@@ -440,6 +405,63 @@ test('§12.4 #5 progress events reach the call they belong to, and only it', asy
     const answer = await rig.hub.request('probe_element', { tabId: 1 }, { onProgress: (u) => updates.push(u) });
     assert.deepEqual(answer, { ok: true });
     assert.deepEqual(updates, [{ progress: 1, total: 8 }], 'a progress frame for another id is not this call\'s');
+    socket.close();
+  } finally {
+    await rig.close();
+  }
+});
+
+test('§7.1 a cancelled call tells the BROWSER to stop, and stops waiting itself', async () => {
+  const rig = await startHub();
+  try {
+    const { socket } = await connect(rig.url, { origin: EXTENSION_ORIGIN, token: TOKEN });
+    const asked = [];
+    socket.on('message', (data) => asked.push(JSON.parse(String(data))));   // answers nothing, like a running probe
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const controller = new AbortController();
+    const call = rig.hub.request('probe_element', { tabId: 1 }, { timeoutMs: 30_000, signal: controller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const request = asked.find((frame) => frame.kind === KIND.REQ);
+    assert.ok(request, 'the probe is running in the browser');
+
+    controller.abort();
+    const error = await within(2000, 'the cancelled call to come back', call.then(() => null, (err) => err));
+    assert.equal(error.code, 'cancelled');
+    assert.equal(error.message, CANCELLED_MESSAGE);
+    assert.equal(rig.hub.pendingCount(), 0, 'and it is not left waiting out the 30 seconds');
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const cancellation = asked.find((frame) => frame.op === HUB_OP.CANCEL);
+    assert.ok(cancellation, 'the browser was told — otherwise the page keeps reloading in front of a person');
+    assert.equal(cancellation.kind, KIND.EVENT, 'an event: a req reusing this id would come back as this call\'s answer');
+    assert.equal(cancellation.id, request.id, 'and it names the call to stop, not the socket');
+    socket.close();
+  } finally {
+    await rig.close();
+  }
+});
+
+test('§7.1 a signal that fires after the answer cancels nothing', async () => {
+  const rig = await startHub();
+  try {
+    const { socket } = await connect(rig.url, { origin: EXTENSION_ORIGIN, token: TOKEN });
+    const asked = [];
+    socket.on('message', (data) => asked.push(JSON.parse(String(data))));
+    answerWith(socket, () => ({ ok: true }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const controller = new AbortController();
+    assert.deepEqual(await rig.hub.request('reload', { tabId: 1 }, { signal: controller.signal }), { ok: true });
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(asked.some((frame) => frame.op === HUB_OP.CANCEL), false, 'a finished call is not a running one');
+
+    // Already aborted before the call: the browser is never asked to do the work at all.
+    const before = asked.length;
+    const error = await rig.hub.request('reload', { tabId: 1 }, { signal: controller.signal }).then(() => null, (err) => err);
+    assert.equal(error.code, 'cancelled');
+    assert.equal(asked.length, before, 'nothing went to the browser');
     socket.close();
   } finally {
     await rig.close();

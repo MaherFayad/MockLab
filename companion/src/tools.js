@@ -11,6 +11,18 @@
  * an argument gets told so, rather than having its `valeu` silently ignored and being
  * shown a page that did not change — which is the §1.1 failure in agent form.
  *
+ * That strictness is also why three OPTIONAL arguments were added here after M6 closed,
+ * each closing a case where the panel offered a person something an agent could not
+ * reach at all (§1.6): `set_value.enabled` (§10.2's per-row switch — switching a change
+ * off without deleting it), `probe_element.paranoid` (§10.5's "Extra-careful checking",
+ * which changes how the probe itself behaves) and `probe_element.exhaustive` (§10.1D's
+ * "Check all fields (slower)", offered to a person precisely after an honest
+ * `noneConfirmed`, which is when an agent most needs it). Adding an optional argument is
+ * not the same act as renaming or reordering one: no existing call changes meaning, and
+ * §12.4's fifteen names and their order are untouched — the two remaining gaps
+ * (renaming/importing a Scenario, and "Reset everything") would each need a SIXTEENTH
+ * TOOL, so they stay open and recorded rather than being smuggled in as an argument.
+ *
  * Each tool is a THIN declaration: an op name (identical to the tool name — one
  * vocabulary on the wire, so a frame in a log says which tool sent it), a timeout, and
  * whether it streams progress. The behaviour is in the extension, because the panel and
@@ -118,7 +130,24 @@ export const TOOLS = [
       {
         tabId,
         selector: { type: 'string', description: 'CSS selector for the element. One of selector or text is required.' },
-        text: { type: 'string', description: 'Exact trimmed text of a visible element. One of selector or text is required.' }
+        text: { type: 'string', description: 'Exact trimmed text of a visible element. One of selector or text is required.' },
+        exhaustive: {
+          type: 'boolean',
+          default: false,
+          description:
+            'Check every field of every captured source instead of only the ranked ' +
+            'guesses. Much slower, and it is what to try after a probe honestly reports ' +
+            'that none of the possibilities controlled the element — the same "Check all ' +
+            'fields" a person is offered at that point.'
+        },
+        paranoid: {
+          type: 'boolean',
+          description:
+            "Turn MockLab's extra-careful checking on or off: a second full change-and-" +
+            'revert cycle before anything is called verified, for flaky pages. This is a ' +
+            'SETTING, not a per-call flag — it is the same checkbox a person has, it stays ' +
+            'as you leave it, and the panel shows the value you set.'
+        }
       },
       ['tabId']
     ),
@@ -158,6 +187,15 @@ export const TOOLS = [
         path: { type: 'string', description: 'Field path, e.g. $.status or $.price.total.' },
         value: { description: 'The replacement value: string, number, boolean, null, object or array.' },
         note: { type: 'string', description: 'Optional label a person will see beside the change.' },
+        enabled: {
+          type: 'boolean',
+          default: true,
+          description:
+            'Whether the change is switched on. false stages it, or switches an existing ' +
+            'change at this field off without deleting it — the same on/off switch a person ' +
+            'has on the row. The value is kept either way, so switching it back on is the ' +
+            'same call with enabled:true.'
+        },
         refresh
       },
       ['tabId', 'sigId', 'path', 'value']

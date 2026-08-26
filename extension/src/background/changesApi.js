@@ -19,6 +19,8 @@
  */
 
 import { MSG } from './messages.js';
+import { createPresetsApi, PRESET_MESSAGE_TYPES } from './presets.js';
+import { createHighlightApi, HIGHLIGHT_MESSAGE_TYPES } from './highlight.js';
 import { friendlyName } from './signatures.js';
 import { getByPath } from '../shared/jsonpath.js';
 // §17.6: `sourceName` is read by a human (the source card heading, §10.2) and by an AI
@@ -45,8 +47,24 @@ import {
 
 /** @typedef {import('./messages.js').ChangeSummary} ChangeSummary */
 
-/** Every message type this module answers. background.js routes on this set. */
+/**
+ * Every message type this module answers, and — since M6's gap-closing — every type the
+ * two modules it composes answer: M5's six Scenario types (`presets.js`) and §10.3's
+ * highlight (`highlight.js`).
+ *
+ * They hang off this set rather than off two more `if` clauses in `routeMessage` because
+ * `background.js` belongs to another agent this milestone and the two callers that
+ * matter both go through this set: the panel's `onMessage` listener AND, since M6, the
+ * MCP bridge, which is handed the same router (`wsClient` -> `routeMessage`). One set,
+ * one handler per action, §1.6's parity kept structurally rather than promised.
+ *
+ * The NAME is now narrower than the contents. Renaming it to something like
+ * `WORKER_MESSAGE_TYPES` means editing `background.js`, which is why it has not happened
+ * here; it is owed, and written down rather than left to be noticed.
+ */
 export const CHANGE_MESSAGE_TYPES = new Set([
+  ...PRESET_MESSAGE_TYPES,
+  ...HIGHLIGHT_MESSAGE_TYPES,
   MSG.GET_SITE_STATE,
   MSG.LIST_CHANGES,
   MSG.SET_VALUE,
@@ -123,6 +141,17 @@ export function createChangesApi(deps) {
     const refreshed = await maybeReload(tabId, payload);
     return { ok: true, origin, refreshed, changeCount: await countActiveChanges(origin), ...extra };
   }
+
+  /**
+   * M5's Scenarios (§10.4) and §10.3's highlight, composed here so `background.js` — this
+   * milestone another agent's file — needs no line for either. See CHANGE_MESSAGE_TYPES.
+   *
+   * Both get `target` rather than reimplementing it: the Scenarios tab reads a site the
+   * tab is not on (§10.4), and a highlight is always about the tab in front of the
+   * person, and one function deciding which is which is what keeps them agreeing.
+   */
+  const presetsApi = createPresetsApi({ target, reload: maybeReload, notify: announcePresets });
+  const highlightApi = createHighlightApi({ target, capturedRecord: deps.capturedRecord });
 
   /**
    * @param {{type:string, payload?:any}} message
@@ -263,12 +292,39 @@ export function createChangesApi(deps) {
       case MSG.UPDATE_SETTINGS:
         return { ok: true, settings: await updateSettings(payload.patch || {}) };
 
-      default:
+      default: {
+        if (PRESET_MESSAGE_TYPES.has(message.type)) return presetsApi.handle(message);
+        if (HIGHLIGHT_MESSAGE_TYPES.has(message.type)) return highlightApi.handle(message);
         return undefined;
+      }
     }
   }
 
   return { handle };
+}
+
+/**
+ * "A Scenario was saved, renamed, imported, deleted or applied" — data-free, exactly
+ * like `background.js`'s three other panel broadcasts and for the same reason: the panel
+ * re-reads `LIST_PRESETS`, so the event cannot go stale.
+ *
+ * It reaches for `chrome` directly rather than through an injected dep because the four
+ * deps this module takes are the ones a unit test has to fake to drive BEHAVIOUR, and a
+ * broadcast is not behaviour — nobody listening is the normal case (no panel open), and
+ * `chrome.runtime` is absent entirely under `node --test`. Both are non-events here and
+ * neither may throw into a handler that has already written to storage.
+ *
+ * @param {string} origin
+ */
+function announcePresets(origin) {
+  try {
+    const api = globalThis.chrome;
+    if (!api || !api.runtime || typeof api.runtime.sendMessage !== 'function') return;
+    const sent = api.runtime.sendMessage({ type: MSG.PRESETS_CHANGED, payload: { origin } });
+    if (sent && typeof sent.catch === 'function') sent.catch(() => {});
+  } catch {
+    /* no receiver — expected, not an error */
+  }
 }
 
 function hostnameOf(url) {

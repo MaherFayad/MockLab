@@ -21,7 +21,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createMcpServer, TOOL_NAMES, INSTRUCTIONS } from '../src/mcpServer.js';
 import { TOOLS, validateArguments, PROBE_TIMEOUT_MS } from '../src/tools.js';
-import { HubError, REQUEST_TIMEOUT_MS, EXTENSION_TIMEOUT_MESSAGE } from '../src/hub.js';
+import { HubError, REQUEST_TIMEOUT_MS, EXTENSION_TIMEOUT_MESSAGE, CANCELLED_MESSAGE } from '../src/hub.js';
 import { createMcpHttpServer, refuseMcpHttp, HOST } from '../src/index.js';
 
 /** A hub that answers with whatever `answer(op, payload, options)` returns. */
@@ -185,6 +185,54 @@ test('§12.4 #5 progress notifications arrive at the client while the probe runs
   }
 });
 
+test('§7.1 an MCP client that cancels a probe cancels it in the browser', async () => {
+  // MCP already has cancellation, so MockLab does not invent a sixteenth tool for it —
+  // it forwards the signal it is given. What must be true is that the signal REACHES the
+  // hub: a call cancelled only in this process leaves the page reloading in front of
+  // whoever is watching it, for up to §7.1's three minutes.
+  let handed = null;
+  const hub = {
+    async request(op, payload, options) {
+      handed = options.signal;
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new HubError('cancelled', CANCELLED_MESSAGE)));
+      });
+    }
+  };
+  const rig = await connectClient(hub);
+  try {
+    const controller = new AbortController();
+    const call = rig.client.callTool(
+      { name: 'probe_element', arguments: { tabId: 1, selector: '#status-pill' } },
+      undefined,
+      { signal: controller.signal }
+    );
+    const deadline = Date.now() + 2000;
+    while (!handed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(handed, 'the tool call reached the hub with a signal on it');
+    assert.equal(handed.aborted, false);
+
+    controller.abort();
+    await assert.rejects(call, 'the client\'s own call ends');
+    assert.equal(handed.aborted, true, 'and the browser half is told to stop');
+  } finally {
+    await rig.close();
+  }
+});
+
+test('§7.1 an ordinary tool call is given a signal that nobody aborted', async () => {
+  const hub = fakeHub(() => ({ ok: true }));
+  const rig = await connectClient(hub);
+  try {
+    await rig.client.callTool({ name: 'list_tabs', arguments: {} });
+    const signal = hub.calls[0].options.signal;
+    assert.ok(signal, 'every call carries the client\'s cancellation, not only the long ones');
+    assert.equal(signal.aborted, false);
+  } finally {
+    await rig.close();
+  }
+});
+
 test('§12.4 #5 the probe is given the probe\'s own time budget, not §12.2\'s 30 seconds', async () => {
   const hub = fakeHub(() => ({ ok: true }));
   const rig = await connectClient(hub);
@@ -234,6 +282,41 @@ test('§12.4 #5 needs a selector or text, and says so before touching the browse
     assert.equal(answer.isError, true);
     assert.match(answer.content[0].text, /selector or the exact text/);
     assert.equal(hub.calls.length, 0);
+  } finally {
+    await rig.close();
+  }
+});
+
+test('§1.6 the panel affordances an agent could not reach are reachable now, unchanged', async () => {
+  // Three optional arguments, added after M6 closed. Each one existed on a screen and
+  // nowhere else, and `additionalProperties:false` meant an agent that tried was refused
+  // rather than ignored — so this is the difference between "cannot" and "can".
+  const hub = fakeHub((op, payload) => ({ ok: true, op, payload }));
+  const rig = await connectClient(hub);
+  try {
+    const off = await rig.client.callTool({
+      name: 'set_value',
+      arguments: { tabId: 1, sigId: 's', path: '$.status', value: 'CANCELLED', enabled: false }
+    });
+    assert.equal(off.isError, undefined, off.content[0].text);
+    assert.equal(JSON.parse(off.content[0].text).payload.enabled, false, '§10.2\'s per-row switch');
+
+    const careful = await rig.client.callTool({
+      name: 'probe_element',
+      arguments: { tabId: 1, selector: '#p', exhaustive: true, paranoid: true }
+    });
+    assert.equal(careful.isError, undefined, careful.content[0].text);
+    const sent = JSON.parse(careful.content[0].text).payload;
+    assert.equal(sent.exhaustive, true, '§10.1D\'s "Check all fields (slower)"');
+    assert.equal(sent.paranoid, true, '§10.5\'s "Extra-careful checking"');
+
+    // The names are still exactly §12.4's fifteen: an argument was added, not a tool.
+    assert.equal((await rig.client.listTools()).tools.length, 15);
+    // And the schema is no looser than it was: a neighbouring misspelling is still refused.
+    const typo = await rig.client.callTool({ name: 'probe_element', arguments: { tabId: 1, selector: '#p', paranoyd: true } });
+    assert.equal(typo.isError, true);
+    assert.match(typo.content[0].text, /does not take paranoyd/);
+    assert.equal(hub.calls.length, 2, 'and the refused call never reached the browser');
   } finally {
     await rig.close();
   }
@@ -307,12 +390,16 @@ test('§12.1 the MCP HTTP endpoint answers a real initialize on loopback, and 40
 
 /* ═══════ the two halves of §12.2's wire, written in two workspaces, are one list ═══ */
 
-test('§12.2 both ends of the socket use the same close codes', async () => {
-  const { CLOSE } = await import('../src/hub.js');
+test('§12.2 both ends of the socket use the same close codes, ops and subprotocols', async () => {
+  const { CLOSE, HUB_OP, KIND, SUBPROTOCOL, TOKEN_SUBPROTOCOL_PREFIX } = await import('../src/hub.js');
   const extension = await import('../../extension/src/background/wsClient.js');
   assert.deepEqual(extension.CLOSE, CLOSE, 'a close code the extension reads differently is a close code that does nothing');
-  assert.equal(extension.SUBPROTOCOL, (await import('../src/hub.js')).SUBPROTOCOL);
-  assert.equal(extension.TOKEN_SUBPROTOCOL_PREFIX, (await import('../src/hub.js')).TOKEN_SUBPROTOCOL_PREFIX);
+  // Same for the op vocabulary: `cancel` written here and read as something else there
+  // would be a probe that keeps running with nobody left to answer it.
+  assert.deepEqual(extension.HUB_OP, HUB_OP, 'the non-tool ops are one table written twice');
+  assert.deepEqual(extension.KIND, KIND);
+  assert.equal(extension.SUBPROTOCOL, SUBPROTOCOL);
+  assert.equal(extension.TOKEN_SUBPROTOCOL_PREFIX, TOKEN_SUBPROTOCOL_PREFIX);
 });
 
 test('§1.6 the extension implements exactly the fifteen ops the tools send', async () => {

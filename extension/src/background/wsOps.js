@@ -30,7 +30,7 @@
  * evidence, beside the state rather than inside it.
  */
 
-import { MSG, PROBE_MSG, PROBE_PHASE, PROBE_FAIL, CONTENT_GLOBALS } from './messages.js';
+import { MSG, PHASE, PROBE_MSG, PROBE_PHASE, PROBE_FAIL, CONTENT_GLOBALS } from './messages.js';
 import { getSettings, originOf, countActiveChanges } from './ruleStore.js';
 import { searchValue } from './candidates.js';
 import { overlaysFor } from './effectiveBody.js';
@@ -41,6 +41,20 @@ import { S } from '../panel/strings.js';
 
 /** How often a running probe is re-read for §12.4 #5's progress notifications. */
 export const PROBE_POLL_MS = 400;
+/**
+ * How long `probe_element` waits for the pick record to fill before giving up, and how
+ * often it looks.
+ *
+ * A pick is not finished when `onPicked` returns: it reads the store and searches every
+ * captured body for §6.3's candidates, and `pickApi` deliberately does not make the
+ * caller wait for that — the page agent that calls it on a human click has nothing to do
+ * with the answer. So the agent path has to wait where the panel waits, on the record
+ * itself. Without this, `START_PROBE` reached the worker first and answered `no-pick`:
+ * `probe_element` failed on a page it had just successfully picked an element on, and
+ * every fake `onPicked` in the unit suites was synchronous, so nothing saw it until a
+ * real browser did.
+ */
+export const PICK_WAIT = { EVERY_MS: 50, CAP_MS: 10000 };
 /** §12.4 #3: "Bodies > 200 KB: return {truncated:true, topLevelKeys, hint}". */
 export const BODY_LIMIT_BYTES = 200 * 1024;
 /** §7.3's non-DOM settle conditions, which a worker can observe on its own. */
@@ -125,7 +139,7 @@ export function findTargetInPage(globalName, selector, text) {
  *   onPicked: (tabId:number, picked:any) => Promise<void>|void,
  *   chrome?: any
  * }} deps
- * @returns {Record<string, (payload:any, progress:(update:any)=>void) => Promise<any>>}
+ * @returns {Record<string, (payload:any, progress:(update:any)=>void, signal?:AbortSignal) => Promise<any>>}
  */
 export function createOps(deps) {
   const api = deps.chrome || globalThis.chrome;
@@ -137,11 +151,13 @@ export function createOps(deps) {
   /**
    * A worker answer, or the honest "that half is not built yet".
    *
-   * The router returns `undefined` for a message type nothing handles — which is exactly
-   * what M5's preset and highlight types do today, because their panel half shipped and
-   * their worker half did not. An agent must be told that, in the words the panel uses
-   * for the same situation, rather than being handed an empty result that reads like
-   * "this site has no scenarios" (§1.1).
+   * The router returns `null` for a message type nothing handles. That was the state of
+   * every preset type and HIGHLIGHT for one milestone — panel half shipped, worker half
+   * not — and an agent was told exactly that, in the words the panel uses for the same
+   * situation, rather than being handed an empty result that reads like "this site has no
+   * scenarios" (§1.1). Those handlers exist now; this stays, because the next contract
+   * to land in one half before the other must fail the same honest way rather than
+   * inventing a shape.
    */
   async function relay(type, payload) {
     const answer = await ask(type, payload);
@@ -299,8 +315,30 @@ export function createOps(deps) {
    * The element is found in the page and handed to the SAME `pickApi.onPicked` a human
    * pick lands in, and then the SAME probe runs. Two code paths that both ended in a
    * verified Binding would be two chances to write one wrongly (§17.12); there is one.
+   *
+   * ── `paranoid`, and why it is written to the store rather than passed down ─────────
+   * §7.1's optional third cycle is `settings.paranoid`, a switch §10.5 puts in front of
+   * a person. An agent that could not reach it could not reproduce the probe a person
+   * ran, which is the §1.6 gap; so the argument sets THE SETTING, the same one the
+   * checkbox writes, and it stays set exactly as the checkbox does. A private per-call
+   * copy would be a second answer to "how careful is MockLab being?", and the panel and
+   * the agent would each be able to read a different one.
+   *
+   * ── cancellation (§7.1: "the user can cancel any time") ───────────────────────────
+   * `signal` is MCP's own cancellation, forwarded by the hub. An abandoned probe left
+   * running is not a neutral thing: it goes on reloading a page a person is looking at,
+   * for up to §7.1's three minutes. So it is checked at every poll and answered with
+   * CANCEL_PROBE — the panel's own Stop, which runs CLEANUP and puts the page back.
    */
-  async function probeElement(payload, progress) {
+  async function probeElement(payload, progress, signal) {
+    const cancelled = () => Boolean(signal && signal.aborted);
+    const stop = async () => {
+      await ask(PROBE_MSG.CANCEL_PROBE, { tabId: payload.tabId });
+      // §11 wrote no sentence for a cancellation, and none is invented (§17.6). The
+      // caller that cancelled is not waiting for prose about its own decision.
+      return no(PROBE_FAIL.CANCELLED);
+    };
+
     const [found] = await api.scripting.executeScript({
       target: { tabId: payload.tabId },
       args: [CONTENT_GLOBALS.element, payload.selector || '', payload.text || ''],
@@ -311,9 +349,19 @@ export function createOps(deps) {
       const reason = (picked && picked.reason) || 'element-not-found';
       return no(reason, reason === PROBE_FAIL.NO_CONTENT_SCRIPT ? S.errors.pageBroke : '');
     }
+    // Nothing has been changed on the page yet, so this one needs no CLEANUP.
+    if (cancelled()) return no(PROBE_FAIL.CANCELLED);
 
+    if (payload.paranoid !== undefined) {
+      await ask(MSG.UPDATE_SETTINGS, { patch: { paranoid: payload.paranoid === true } });
+    }
     await deps.onPicked(payload.tabId, picked);
-    const started = await ask(PROBE_MSG.START_PROBE, { tabId: payload.tabId });
+    const pick = await waitForPick(payload.tabId);
+    if (!pick.ok) return pick;
+    const started = await ask(PROBE_MSG.START_PROBE, {
+      tabId: payload.tabId,
+      exhaustive: payload.exhaustive === true
+    });
     if (!started || started.ok !== true) {
       const reason = (started && started.reason) || PROBE_FAIL.INTERNAL;
       return no(reason, probeMessage(reason));
@@ -321,6 +369,7 @@ export function createOps(deps) {
 
     let last = '';
     for (;;) {
+      if (cancelled()) return stop();
       const view = await ask(PROBE_MSG.GET_PROBE, { tabId: payload.tabId });
       if (!view || view.ok !== true) return no(PROBE_FAIL.INTERNAL, S.errors.pageBroke);
       if (view.phase === PROBE_PHASE.RUNNING) {
@@ -352,6 +401,26 @@ export function createOps(deps) {
     }
   }
 
+  /**
+   * Wait for the pick record the probe reads — see PICK_WAIT for why this exists.
+   *
+   * A pick that ENDED badly is reported with its own reason rather than as a timeout:
+   * `pickApi` sets one when the search could not finish, and calling that "MockLab did
+   * not answer in time" would describe the wrong failure (§1.1).
+   */
+  async function waitForPick(tabId) {
+    const deadline = Date.now() + PICK_WAIT.CAP_MS;
+    for (;;) {
+      const view = await ask(MSG.GET_PICK, { tabId });
+      if (view && view.ok === true) {
+        if (view.phase === PHASE.PICKED) return { ok: true };
+        if (view.reason) return no(view.reason, probeMessage(view.reason));
+      }
+      if (Date.now() >= deadline) return no(PROBE_FAIL.NO_PICK, S.errors.pageBroke);
+      await new Promise((resolve) => setTimeout(resolve, PICK_WAIT.EVERY_MS));
+    }
+  }
+
   /** §11's progress line for the state the probe is in — the panel's own sentence. */
   function stepSentence(view) {
     const step = S.probe.step[view.step];
@@ -368,7 +437,7 @@ export function createOps(deps) {
       ok: true,
       candidates: searchValue(payload.needle, await searchableSources(payload.tabId))
     }),
-    probe_element: (payload, progress) => probeElement(payload, progress),
+    probe_element: (payload, progress, signal) => probeElement(payload, progress, signal),
     get_bindings: (payload) => getBindings(payload),
     set_value: (payload) => relay(MSG.SET_VALUE, payload),
     clear_changes: (payload) =>

@@ -23,6 +23,8 @@
  *
  * M4 adds the probe's wiring (probe.js): the panel's START/CANCEL/GET, the snapshot
  * request that goes out the moment a reloaded document says hello, and the answer back.
+ *
+ * M6 adds the companion bridge (wsClient.js): one router, reached by two callers.
  */
 
 import { PORT_NAME, PORT_MSG, MSG } from './messages.js';
@@ -33,6 +35,7 @@ import { createChangesApi, CHANGE_MESSAGE_TYPES } from './changesApi.js';
 import { createPickApi, PICK_MESSAGE_TYPES } from './pickApi.js';
 import { createProbeApi, PROBE_MESSAGE_TYPES, PROBE_MSG, PROBE_PORT_MSG, sweepProbeChanges } from './probe.js';
 import { installBadgeListeners, refreshAllBadges, refreshBadgesForOrigin } from './badge.js';
+import { createWsClient } from './wsClient.js';
 
 /**
  * Toolbar icon opens the side panel (PLAN.md §3).
@@ -493,17 +496,34 @@ const probeApi = createProbeApi({
       .catch(() => {})
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const type = message && message.type;
-  const isSources = type === MSG.LIST_SOURCES || type === MSG.GET_RESPONSE;
-  const isChanges = typeof type === 'string' && CHANGE_MESSAGE_TYPES.has(type);
-  const isPick = typeof type === 'string' && PICK_MESSAGE_TYPES.has(type);
-  const isProbe = typeof type === 'string' && PROBE_MESSAGE_TYPES.has(type);
-  if (!isSources && !isChanges && !isPick && !isProbe) return false;
+/* ═════════════════════════ M6 — the companion (PLAN.md §12.2, §12.3) ═════════════ */
 
-  const answer = isChanges ? changesApi.handle(message)
-    : isPick ? pickApi.handle(message)
-      : isProbe ? probeApi.handle(message) : handleMessage(message);
+/**
+ * The worker's one router. Lifted out of the listener below because a SECOND caller
+ * needs it: a service worker cannot `chrome.runtime.sendMessage` to ITSELF, so the MCP
+ * bridge — which runs inside this worker — can reach these handlers only by being handed
+ * the router. Handing it this one is what makes §1.6's parity structural rather than a
+ * promise: an agent's `set_value` and a person's "Apply & refresh page" are the same
+ * call, so they cannot answer differently.
+ *
+ * `null` for a type nothing routes, which `wsOps.js` reports to an agent as the honest
+ * "that half is not built yet" — a different fact from a call that failed (§1.1).
+ *
+ * @returns {Promise<any>|null}
+ */
+function routeMessage(message) {
+  const type = message && message.type;
+  if (typeof type !== 'string') return null;
+  if (CHANGE_MESSAGE_TYPES.has(type)) return changesApi.handle(message);
+  if (PICK_MESSAGE_TYPES.has(type)) return pickApi.handle(message);
+  if (PROBE_MESSAGE_TYPES.has(type)) return probeApi.handle(message);
+  if (type === MSG.LIST_SOURCES || type === MSG.GET_RESPONSE) return handleMessage(message);
+  return null;
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const answer = routeMessage(message);
+  if (!answer) return false;
   answer
     .then(sendResponse)
     .catch((err) => {
@@ -512,3 +532,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
   return true; // async response
 });
+
+/**
+ * The socket out to the companion (§2: an extension cannot listen, so it connects out).
+ * It stays quiet until this browser has been paired — see `wsClient.js`.
+ *
+ * `onPicked` is the human picker's own entry point, deliberately: `probe_element` fills
+ * the same pick record a click fills and then runs the same probe, so there is ONE path
+ * to a verified Binding rather than two chances to write one wrongly (§17.4, §17.12).
+ */
+const wsClient = createWsClient({
+  ...pageAccess,
+  dispatch: routeMessage,
+  onPicked: (tabId, picked) => pickApi.onPicked(tabId, picked)
+});
+void wsClient.start();

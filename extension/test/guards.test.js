@@ -326,7 +326,16 @@ const PANEL_CSS = path.join(SRC, 'panel', 'panel.css');
  */
 const RECORDED_HEX = {
   'extension/src/content/picker.js': ['#0066FF', '#4A90FF', '#FFFFFF'],
-  'extension/src/background/badge.js': ['#0066FF', '#FFFFFF']
+  'extension/src/background/badge.js': ['#0066FF', '#FFFFFF'],
+  // M6's gap-closing: §10.3's highlight overlays. Same unavoidability as picker.js — the
+  // stylesheet is injected into the user's page, which can never reach panel.css — and
+  // the same discipline: every value is a §9.1 token copied verbatim (accent + its dark
+  // twin, --text-oninverse, and the warning trio the "Possible" chip is made of), so the
+  // page and the panel say the same thing in the same colours.
+  'extension/src/background/highlight.js': [
+    '#0066FF', '#0066FF', '#3A3323', '#4A90FF', '#4A90FF',
+    '#B26A00', '#B26A00', '#B26A00', '#FDD663', '#FDD663', '#FDD663', '#FFF4E0', '#FFFFFF'
+  ]
 };
 
 /** A colour hex: 3, 4, 6 or 8 digits, not part of a longer word (`#__mocklab…`). */

@@ -108,6 +108,19 @@ const MIRRORS = {
     'extension/test/pickerdom.browser.test.js'
   ],
   overlayId: ['extension/src/content/picker.js', 'extension/test/picker.browser.test.js'],
+  /*
+   * EMPTY, and that is the finding rather than a gap in the list.
+   *
+   * `highlightId` is the one CONTENT_GLOBALS entry whose readers can all import
+   * `messages.js`: §10.3's overlay host is created by a function that runs in the page
+   * but is written in `background/highlight.js`, a module, and the browser suite that
+   * reads the host back is a module too. Both name it as `CONTENT_GLOBALS.highlightId`,
+   * so there is no hand-copied literal anywhere to drift — which is what this table
+   * audits. A file that starts spelling it by hand appears here as a failure, which is
+   * the direction that matters: the answer then is to import the constant, not to add a
+   * row.
+   */
+  highlightId: [],
   interceptorInstalled: [
     'extension/src/content/interceptor.js',
     'extension/test/e2e.browser.test.js'

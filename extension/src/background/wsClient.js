@@ -23,24 +23,22 @@
  * handshake, same loopback socket, and not in the URL where it would land in logs.
  * §17.11: prefer the working behaviour and record it. `hub.js` reads both forms.
  *
- * ── WIRING (background.js, ~8 lines — NOT YET PRESENT) ─────────────────────────────
+ * ── WIRING (background.js) ─────────────────────────────────────────────────────────
  * A service worker cannot `chrome.runtime.sendMessage` to itself, so this module cannot
- * reach the panel's handlers on its own. `background.js` owns the router and must hand
- * it over:
+ * reach the panel's handlers on its own. `background.js` hands its router over —
+ * `routeMessage`, the one the `onMessage` listener uses — together with `pickApi`'s own
+ * `onPicked`. Both are deliberate: an agent's call lands in the handler a person's click
+ * lands in (§1.6), and `probe_element` fills the SAME pick record a human pick fills, so
+ * there is one path to a verified Binding rather than two (§17.4, §17.12).
  *
- *     import { createWsClient } from './wsClient.js';
- *     const wsClient = createWsClient({
- *       ...pageAccess,                       // resolveTabId, portsFor, tabRecord
- *       dispatch: (message) => routeMessage(message),   // the same router onMessage uses
- *       onPicked: (tabId, picked) => pickApi.onPicked(tabId, picked)
- *     });
- *     void wsClient.start();
- *
- * `routeMessage` is the `isChanges ? changesApi.handle(…) : …` expression already inside
- * the `onMessage` listener, lifted into a named function so both callers use it. Until
- * that block exists nothing imports this file and the companion has nobody to talk to;
- * it is requested through the orchestrator rather than written here, because
- * `background.js` belongs to another owner.
+ * ── WHEN THIS CONNECTS, AND WHEN IT DOES NOT ───────────────────────────────────────
+ * Only once the browser has been paired (§12.3). Before that there is no token, the hub
+ * would refuse the socket anyway unless a pairing window happens to be open, and a
+ * client that retried a port nobody is listening on every 25 seconds would spend the
+ * rest of the user's browsing session writing connection errors into their console for
+ * a feature they never asked for. `pair()` opens without one — that is what pairing is —
+ * and the moment a token lands in storage the socket goes up, from whichever window did
+ * the pairing.
  */
 
 import { MSG } from './messages.js';
@@ -56,16 +54,24 @@ export const KIND = Object.freeze({ REQ: 'req', RES: 'res', EVENT: 'event' });
  *
  * `CAPTURED` is §12.2's second event and is NOT SENT by this file — stated here rather
  * than left to be discovered from a constant that never appears again. Captures live in
- * the service worker's own per-tab map, which this module cannot observe without the
- * wiring block named at the top; when that lands, the worker's capture path is where the
- * throttled 2/s push belongs. Nothing depends on it today: the hub's cache is the STORE
- * (§12.2's sentence), and every source an agent reads comes from a live `list_sources`.
+ * the service worker's own per-tab map, which this module cannot observe: the wiring
+ * block hands over the ROUTER, not the capture path, and the throttled 2/s push belongs
+ * beside `onCaptured` in the worker rather than behind a poll from here. Nothing depends
+ * on it today: the hub's cache is the STORE (§12.2's sentence), and every source an agent
+ * reads comes from a live `list_sources`.
  */
 export const HUB_OP = Object.freeze({
   PAIR: 'pair',
   STORE_CHANGED: 'storeChanged',
   CAPTURED: 'captured',
-  PROGRESS: 'progress'
+  PROGRESS: 'progress',
+  /**
+   * The one op that travels hub -> extension as an EVENT rather than a `req`: MCP's own
+   * cancellation, carrying the id of the call to stop. It is an event and not a request
+   * on purpose — a `req` reusing that id would be answered with a `res` bearing the same
+   * id, which is exactly the frame the hub reads as "the call finished".
+   */
+  CANCEL: 'cancel'
 });
 /**
  * Close codes the hub uses, which this side must act on differently (`hub.js` names the
@@ -115,6 +121,10 @@ export function createWsClient(deps) {
   let stopped = true;
   let reconnectTimer = null;
   let pairWaiter = null;
+  /** The token the live socket presented, so a token that CHANGES reconnects and one that did not, does not. */
+  let presented = null;
+  /** @type {Map<string, AbortController>} in-flight ops, by the frame id that started them. */
+  const inflight = new Map();
 
   function post(frame) {
     try {
@@ -133,20 +143,32 @@ export function createWsClient(deps) {
    * (§17.12), told to an audience that will repeat it in prose.
    */
   async function handleFrame(frame) {
-    if (!frame || frame.kind !== KIND.REQ) return;
+    if (!frame) return;
+    if (frame.kind === KIND.EVENT && frame.op === HUB_OP.CANCEL) {
+      const running = inflight.get(frame.id);
+      if (running) running.abort();
+      return;
+    }
+    if (frame.kind !== KIND.REQ) return;
     const run = OPS[frame.op];
     if (!run) {
       post({ id: frame.id, kind: KIND.RES, op: frame.op, payload: { ok: false, reason: 'unknown-op' } });
       return;
     }
+    const cancel = new AbortController();
+    inflight.set(frame.id, cancel);
     let payload;
     try {
-      payload = await run(frame.payload || {}, (update) =>
-        post({ id: frame.id, kind: KIND.EVENT, op: HUB_OP.PROGRESS, payload: update })
+      payload = await run(
+        frame.payload || {},
+        (update) => post({ id: frame.id, kind: KIND.EVENT, op: HUB_OP.PROGRESS, payload: update }),
+        cancel.signal
       );
     } catch (err) {
       console.error('[MockLab] companion op failed', frame.op, err);
       payload = INTERNAL_FAILURE;
+    } finally {
+      inflight.delete(frame.id);
     }
     post({ id: frame.id, kind: KIND.RES, op: frame.op, payload });
   }
@@ -172,15 +194,21 @@ export function createWsClient(deps) {
   }
 
   /**
-   * One connection attempt. With a token the socket presents it (§12.3); without one it
-   * connects anyway — that is the pairing socket, and the hub refuses it outright unless
-   * a pairing window is open, which is the whole of the access control.
+   * One connection attempt. With a token the socket presents it (§12.3); a PAIRING
+   * attempt connects without one, which the hub refuses outright unless a pairing window
+   * is open — that refusal is the whole of the access control.
+   *
+   * An unpaired browser with no code to submit opens nothing at all: see the header. The
+   * heartbeat and the reconnect timer both come through here, so that decision is made
+   * once, for every path that can reach a socket.
    */
   async function open(codeToSubmit) {
     if (socket) return;
     const settings = await getSettings();
     const token = settings.companionToken;
+    if (!token && !codeToSubmit) return;
     const protocols = token ? [SUBPROTOCOL, TOKEN_SUBPROTOCOL_PREFIX + token] : [SUBPROTOCOL];
+    presented = token || null;
     let ws;
     try {
       ws = new Socket(url, protocols);
@@ -233,14 +261,46 @@ export function createWsClient(deps) {
     const waiter = pairWaiter;
     pairWaiter = null;
     closeSocket();
+    // The storage write above reaches every context including this one, so the ordinary
+    // token-presenting connection is opened by `watchStore`. Opening it here as well
+    // would be a second path to the same socket, and `open()` already refuses the second.
+    if (ok) {
+      attempts = 0;
+      void open();
+    }
     if (waiter) waiter({ ok });
   }
 
-  /** The extension's half of §12.2's `storeChanged` — what the hub caches per origin. */
+  /**
+   * The extension's half of §12.2's `storeChanged` — what the hub caches per origin —
+   * and the one thing that makes pairing take effect NOW.
+   *
+   * §12.3's flow ends with a token in `chrome.storage.local`, written by whichever
+   * extension page ran the pairing. Every other MockLab context sees that write here, and
+   * the one that owns the socket acts on it: without this, a user who has just typed the
+   * six digits waits out a backoff — up to 30 seconds of a Settings screen that still
+   * says "Not connected" after they did everything right (§1.1's calmer, more honest
+   * option is also the one that is simply true sooner).
+   */
   function watchStore() {
     if (!api.storage || !api.storage.onChanged) return;
     api.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
+      if (changes.settings) {
+        const token = (changes.settings.newValue && changes.settings.newValue.companionToken) || null;
+        // Only a token this socket is not already presenting: an ordinary settings write
+        // (advanced mode, deep mode) must not drop a working connection.
+        //
+        // And never while a pairing is in flight — the write that ends §12.3's handshake
+        // arrives HERE as well, and closing the pairing socket from under `finishPairing`
+        // makes its own `onclose` answer the waiting panel `{ok:false}` about a pairing
+        // that had just succeeded. `finishPairing` opens the token connection itself.
+        if (token && token !== presented && !pairWaiter) {
+          attempts = 0;
+          closeSocket();
+          void open();
+        }
+      }
       const origins = new Set();
       for (const key of Object.keys(changes)) {
         const cut = key.indexOf(':');
@@ -264,9 +324,9 @@ export function createWsClient(deps) {
         origin,
         changes: (changes && changes.changes) || [],
         bindings: (bindings && bindings.bindings) || [],
-        // The preset handler does not exist in the worker yet, so this is [] rather than
-        // absent. An empty list the hub caches is only ever served with `fromCache` on
-        // it, and the tool call itself still says "not built yet" (§1.1).
+        // `[]` rather than absent when a handler is missing: an empty list the hub caches
+        // is only ever served with `fromCache` on it, and the tool call itself answers
+        // out of the live path, where an unrouted type still says so (§1.1).
         presets: (presets && presets.presets) || []
       }
     });

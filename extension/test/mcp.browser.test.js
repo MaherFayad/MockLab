@@ -12,17 +12,27 @@
  * The M6 DoD, asserted here in order:
  *   1. the agent happy path on the demo ends in a screenshot of a page whose pill is red;
  *   2. killing Chrome mid-call gives a clean MCP error, not a hang and not a lie;
- *   3. a wrong pairing code is rejected.
+ *   3. a wrong pairing code is rejected;
  *
- * ── WHAT THIS SUITE CANNOT REACH, STATED RATHER THAN IMPLIED ───────────────────────
- * The service worker cannot `chrome.runtime.sendMessage` to itself, so until
- * `background.js` carries the wiring block named in `wsClient.js`, the client cannot run
- * INSIDE the worker. It runs in the panel page instead — a real extension page, whose
- * `chrome.runtime.sendMessage` reaches the real worker, so every handler in the chain is
- * the shipping one. Two deps the worker would supply are stubbed here, and both are
- * named at the point of use: `portsFor` (worker-private, so `list_tabs`'s filter is not
- * exercised) and `onPicked` (pickApi is worker-private, so `probe_element` cannot
- * complete). The picking half of `probe_element` IS exercised, against the real page.
+ *   4. `probe_element` runs end to end and returns a link nothing but a probe may produce;
+ *   5. an agent that abandons a probe stops it in the browser, and leaves no mock behind.
+ *
+ * ── TWO HUBS, AND WHY ──────────────────────────────────────────────────────────────
+ * Every tool check runs against the extension's OWN socket — the one `background.js`
+ * opens — so `portsFor`, `pickApi` and the router are the shipping ones and nothing here
+ * is stubbed. That client dials `ws://127.0.0.1:8517/ext` and only that, because a
+ * shipped extension has no configuration; so this suite puts a hub on §12.1's real port
+ * for it. If that port is taken (a companion the developer left running), every tool
+ * check SKIPS with that reason rather than failing.
+ *
+ * The pairing checks need a second hub on a random port, because they need a client this
+ * file can drive — `pair(code)` is called from the panel's Settings screen in the
+ * product, and that screen is not built yet. They must not share a hub with the worker's
+ * client either: §12.2 keeps ONE extension connection, so two authenticated clients from
+ * one browser would supersede each other for as long as both lived.
+ *
+ * Nothing plants a token: the pairing checks pair for real, and the worker's own socket
+ * comes up because of it. That is the wiring under test.
  *
  * Skips (never fails) when Playwright or a Chromium build is unavailable, and skips as
  * REPORTED checks: every check contributes exactly one test either way.
@@ -38,7 +48,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { loadChromium, launchExtension, createFixture } from '../testlib/browserFixture.js';
-import { CONTENT_GLOBALS } from '../src/background/messages.js';
+import { CONTENT_GLOBALS, PROBE_MSG, PROBE_PHASE, PROBE_FAIL } from '../src/background/messages.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const listen = (server) =>
@@ -61,6 +71,7 @@ if (!chromium) {
     let panel = null;
     let hubRig = null;
     let demo = { value: null, why: null };
+    let worker = { value: null, why: null };
     let client = null;
     let mcpServer = null;
 
@@ -84,6 +95,23 @@ if (!chromium) {
         return { hub, pairing, server, lines, token, url: `ws://127.0.0.1:${port}${HUB_PATH}` };
       });
 
+      // §12.1's real port, for the socket `background.js` opens on its own. Optional:
+      // a developer with a companion already running should get skips, not failures.
+      worker = await optional("companion hub on §12.1's port", 10000, async () => {
+        const { createHub, HUB_PATH } = await import('../../companion/src/hub.js');
+        const { createPairing, loadOrCreateToken } = await import('../../companion/src/pairing.js');
+        const { token } = loadOrCreateToken();
+        const lines = [];
+        const hub = createHub({ pairing: createPairing({ token }), log: (line) => lines.push(line) });
+        const server = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
+        hub.attach(server);
+        await new Promise((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(8517, '127.0.0.1', resolve);
+        });
+        return { hub, server, lines };
+      });
+
       ctx = await stage('chromium launch + extension load', 60000, () => launchExtension(chromium, profile), {
         absent: 'Chromium could not be launched'
       });
@@ -96,10 +124,12 @@ if (!chromium) {
         return page;
       });
 
-      // The MCP client the checks below drive, over the SDK's own transport pair.
+      // The MCP client the checks below drive, over the SDK's own transport pair. It
+      // talks to the hub the EXTENSION'S OWN client dials, so every answer below comes
+      // back through the shipping wiring.
       const rig = await stage('MCP client', 10000, async () => {
         const { createMcpServer } = await import('../../companion/src/mcpServer.js');
-        const server = createMcpServer({ hub: hubRig.hub });
+        const server = createMcpServer({ hub: (worker.value || hubRig).hub });
         const c = new Client({ name: 'mocklab-browser-suite', version: '1.0.0' });
         const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
         await Promise.all([server.connect(serverSide), c.connect(clientSide)]);
@@ -114,10 +144,52 @@ if (!chromium) {
     }
 
     const demoSite = demo.value;
+    const workerHub = worker.value;
+    /** Why a check that needs the extension's own socket cannot run, or null. */
+    const noWorkerHub = workerHub
+      ? null
+      : `port 8517 could not be taken, so the extension's own client has no hub — ${worker.why}`;
+
+    /** Wait for `condition`, or return false after `ms`. Never a bare sleep on a socket. */
+    const until = async (ms, condition) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        if (await condition()) return true;
+        await sleep(100);
+      }
+      return false;
+    };
 
     /**
-     * Start the wsClient inside the panel page and keep it on `window.mocklabTestClient`.
-     * `portsFor` and `onPicked` are the two worker-private deps — see the header.
+     * §14's trip source, once this page load has captured it.
+     *
+     * Polled, not read once: several checks reload the tab, and captures are per page
+     * load (§4) — a `list_sources` fired at a document that is still loading answers an
+     * empty list, correctly, and a test that read it as "the demo has no data" would be
+     * reporting its own impatience as a defect.
+     */
+    const tripSource = async (tabId) => {
+      let sources = [];
+      await until(15000, async () => {
+        const answer = await callTool('list_sources', { tabId });
+        sources = answer.isError ? [] : answer.json().sources;
+        return sources.some((source) => source.url.includes('trip.json'));
+      });
+      return sources.find((source) => source.url.includes('trip.json')) || null;
+    };
+
+    /** Every Change in the browser's store, mocks and probe scaffolding alike (§17.5). */
+    const storedChanges = () =>
+      panel.evaluate(async () => {
+        const bag = await chrome.storage.local.get(null);
+        return Object.entries(bag).filter(([key]) => key.startsWith('changes:')).flatMap(([, list]) => list);
+      });
+
+    /**
+     * A client in the PANEL page, used for one thing only: §12.3's pairing, which in the
+     * product is driven from a Settings screen that is not built yet. Its deps are stubs
+     * because nothing but `pair()` is asked of it — every tool check below goes through
+     * the worker's own client instead, which has the real ones.
      */
     const startClient = (code) =>
       panel.evaluate(async ([url, pairingCode]) => {
@@ -132,10 +204,8 @@ if (!chromium) {
           url,
           dispatch: (message) => chrome.runtime.sendMessage(message),
           resolveTabId: async (id) => id,
-          // STUB (worker-private): the real one is background.js's live Port set.
           portsFor: () => new Set([{}]),
           tabRecord: () => null,
-          // STUB (worker-private): pickApi lives in the worker's module scope.
           onPicked: () => {},
           chrome: window.chrome
         });
@@ -201,15 +271,32 @@ if (!chromium) {
         assert.equal(stored.settings.companionToken, hubRig.token, 'stored for every later connection');
 
         await startClient();   // ordinary start: presents the token in the handshake
-        await sleep(400);
-        assert.equal(hubRig.hub.isConnected(), true, 'the hub has one authenticated extension');
+        assert.equal(await until(4000, async () => hubRig.hub.isConnected()), true, 'the hub has one authenticated extension');
+      });
+
+      await check("§2 the extension's OWN socket comes up, because pairing happened", async (subtest) => {
+        // Nobody started this one. The service worker did, at load, and it waited for a
+        // token because §12.3 says an unpaired browser has nothing to connect to; the
+        // pairing above is what let it dial. If `background.js` ever loses the wiring
+        // block, this is the check that says so — and every tool check below it, which
+        // has no other socket to travel on, says it again.
+        if (noWorkerHub) {
+          subtest.skip(noWorkerHub);
+          return;
+        }
+        // The panel's client is stopped first: two authenticated clients from one browser
+        // would supersede each other, and one of them would be the one under test.
+        await stopClient();
+        const connected = await until(15000, async () => workerHub.hub.isConnected());
+        assert.equal(connected, true, `the worker never dialled 8517 — hub log: ${JSON.stringify(workerHub.lines)}`);
+        subtest.diagnostic(`the extension connected on its own: ${workerHub.lines.join(' | ')}`);
       });
 
       /* ────────────────── DoD 1: the agent happy path, on the demo site ────────── */
 
       await check('§16 M6 DoD 1: list_tabs -> list_sources -> set_value -> reload -> screenshot', async (subtest) => {
-        if (!demoSite) {
-          subtest.skip(`the demo server did not start — ${demo.why}`);
+        if (noWorkerHub || !demoSite) {
+          subtest.skip(noWorkerHub || `the demo server did not start — ${demo.why}`);
           return;
         }
         demoPage = await ctx.newPage();
@@ -220,7 +307,12 @@ if (!chromium) {
 
         const tabs = await callTool('list_tabs', {});
         assert.equal(tabs.isError, false, tabs.text);
-        assert.ok(tabs.json().tabs.some((tab) => tab.tabId === tabId), 'the demo tab is offered to the agent');
+        const offered = tabs.json().tabs;
+        assert.ok(offered.some((tab) => tab.tabId === tabId), 'the demo tab is offered to the agent');
+        // §12.4 #1: "Only tabs where MockLab has a live content-script connection." The
+        // panel page is open and is not one, which is the filter working — and it is the
+        // worker's own live Port set doing the filtering, which no stub could show.
+        assert.equal(offered.some((tab) => tab.url.startsWith('chrome-extension://')), false);
 
         const sources = await callTool('list_sources', { tabId });
         assert.equal(sources.isError, false, sources.text);
@@ -274,30 +366,73 @@ if (!chromium) {
       });
 
       await check('§1.6 the agent\'s change is in the store the panel reads, and clear_changes puts it back', async (subtest) => {
-        if (!demoSite || !demoPage) {
-          subtest.skip('the happy-path check did not get far enough to leave a change behind');
+        if (noWorkerHub || !demoSite || !demoPage) {
+          subtest.skip(noWorkerHub || 'the happy-path check did not get far enough to leave a change behind');
           return;
         }
         const tabId = await tabIdOf(demoPage);
-        const before = await panel.evaluate(async () => {
-          const bag = await chrome.storage.local.get(null);
-          return Object.entries(bag).filter(([key]) => key.startsWith('changes:')).flatMap(([, list]) => list);
-        });
-        assert.equal(before.length, 1, 'the agent\'s change is in the shared store (§1.6)');
+        assert.equal((await storedChanges()).length, 1, 'the agent\'s change is in the shared store (§1.6)');
 
         const cleared = await callTool('clear_changes', { tabId, refresh: true });
         assert.equal(cleared.isError, false, cleared.text);
-        const after = await panel.evaluate(async () => {
-          const bag = await chrome.storage.local.get(null);
-          return Object.entries(bag).filter(([key]) => key.startsWith('changes:')).flatMap(([, list]) => list);
-        });
-        assert.deepEqual(after, [], '"Reset site" through MCP is the same reset (§1.5)');
+        assert.deepEqual(await storedChanges(), [], '"Reset site" through MCP is the same reset (§1.5)');
       });
 
-      await check('§1.1 a tool whose worker half is not built says so, and does not answer emptily', async () => {
-        const answer = await callTool('list_presets', { tabId: 1 });
-        assert.equal(answer.isError, true, 'M5 shipped the panel half of Scenarios; the worker half is not there');
-        assert.match(answer.text, /still being built/, 'and an agent is told exactly that');
+      await check('§10.4 a Scenario an agent saves is one a person can see, apply and delete', async (subtest) => {
+        if (noWorkerHub || !demoSite || !demoPage) {
+          subtest.skip(noWorkerHub || 'the demo page never loaded');
+          return;
+        }
+        const tabId = await tabIdOf(demoPage);
+        const trip = await tripSource(tabId);
+        assert.ok(trip, 'the demo source is there to build a scenario from');
+        await callTool('set_value', { tabId, sigId: trip.sigId, path: '$.status', value: 'DELAYED', refresh: false });
+
+        const saved = await callTool('save_preset', { tabId, name: 'Flight delayed', emoji: '🎬' });
+        assert.equal(saved.isError, false, saved.text);
+        const presetId = saved.json().preset.id;
+
+        const listed = await callTool('list_presets', { tabId });
+        assert.equal(listed.isError, false, listed.text);
+        assert.equal(listed.json().presets.length, 1, `§10.4's card list, read by an agent: ${listed.text}`);
+        assert.equal(listed.json().presets[0].name, 'Flight delayed');
+
+        await callTool('clear_changes', { tabId, refresh: false });
+        assert.deepEqual(await storedChanges(), [], 'the site is back to real data before applying');
+
+        const applied = await callTool('apply_preset', { tabId, presetId, refresh: true });
+        assert.equal(applied.isError, false, applied.text);
+        assert.equal(applied.json().applied, 1, `§1.1: applied and unapplied are counted apart — ${applied.text}`);
+        const back = await storedChanges();
+        assert.equal(back.length, 1, 'the scenario put its change back');
+        assert.equal(back[0].value, 'DELAYED');
+
+        const deleted = await callTool('delete_preset', { presetId, tabId });
+        assert.equal(deleted.isError, false, deleted.text);
+        assert.equal((await callTool('list_presets', { tabId })).json().presets.length, 0);
+        assert.equal((await storedChanges()).length, 1, 'deleting the bundle does not switch its change off');
+        await callTool('clear_changes', { tabId, refresh: true });
+        subtest.diagnostic('save -> list -> apply -> delete, all four over MCP');
+      });
+
+      await check('§10.3 highlight reports what it drew, and whether it was proved', async (subtest) => {
+        if (noWorkerHub || !demoSite || !demoPage) {
+          subtest.skip(noWorkerHub || 'the demo page never loaded');
+          return;
+        }
+        await demoPage.waitForSelector('#status-pill');
+        const tabId = await tabIdOf(demoPage);
+        const trip = await tripSource(tabId);
+        assert.ok(trip, 'the demo source is loaded');
+        // A field whose value the page actually PRINTS: the soft-highlight is a text
+        // search (§10.2), and asking it to find "ON_TIME" — which the demo renders as
+        // "On time" — would be asserting that a guess fails, not that highlight works.
+        const drawn = await callTool('highlight', { tabId, sigId: trip.sigId, path: '$.flight.number' });
+        assert.equal(drawn.isError, false, drawn.text);
+        // Nothing has been probed on this page load, so §10.3's honest answer is a GUESS
+        // — drawn dashed for a person, and labelled `verified:false` for an agent.
+        assert.equal(drawn.json().verified, false, `§0.2: a value match is not a proof — ${drawn.text}`);
+        assert.ok(drawn.json().elements >= 1, `the flight number was outlined: ${drawn.text}`);
       });
 
       /* ─────────────── the picking half of probe_element, against the real page ── */
@@ -356,10 +491,108 @@ if (!chromium) {
         assert.deepEqual(missing, { ok: false, reason: 'element-not-found' }, 'and an absent element is said to be absent');
       });
 
+      /* ─────────── §12.4 #5: the whole probe, over MCP, through the real worker ── */
+
+      await check('§16 M4+M6: probe_element proves the demo pill, and only a probe may', async (subtest) => {
+        if (noWorkerHub || !demoSite || !demoPage) {
+          subtest.skip(noWorkerHub || 'the demo page never loaded');
+          return;
+        }
+        await demoPage.waitForFunction(
+          () => {
+            const node = document.querySelector('#status-pill');
+            return Boolean(node && node.textContent.trim().length > 0);
+          },
+          null,
+          { timeout: 10000 }
+        );
+        const tabId = await tabIdOf(demoPage);
+        const notes = [];
+        const started = Date.now();
+        const answer = await client.callTool(
+          { name: 'probe_element', arguments: { tabId, selector: '#status-pill' } },
+          undefined,
+          { timeout: 210000, onprogress: (note) => notes.push(note) }
+        );
+        const text = answer.content.find((part) => part.type === 'text').text;
+        assert.equal(Boolean(answer.isError), false, text);
+        const result = JSON.parse(text);
+        subtest.diagnostic(`probe took ${Math.round((Date.now() - started) / 1000)}s and ${result.reloads} reloads`);
+
+        assert.equal(result.binding.state, 'verified', '§17.4: written by probe.js and by nothing else');
+        assert.equal(result.binding.path, '$.status', `§16's M4 DoD, reached over MCP: ${text}`);
+        // §7.6: one probe finds every element the field drives — the pill AND the banner.
+        const css = result.elements.map((element) => element.css).join(' ');
+        assert.ok(result.elements.length >= 2, `the banner was found too: ${css}`);
+        assert.ok(/alert-banner/.test(css), `§14's second element is in the binding: ${css}`);
+        assert.ok(result.observedValues.includes('ON_TIME'), `the real values seen: ${JSON.stringify(result.observedValues)}`);
+
+        // §12.4 #5's progress notifications, delivered by a real MCP client.
+        assert.ok(notes.length >= 2, `expected a notification at each state change, got ${notes.length}`);
+        assert.ok(notes.some((note) => /refresh|Learning|Testing|Double/i.test(String(note.message))),
+          `§11 writes the words an agent sees: ${JSON.stringify(notes.map((note) => note.message))}`);
+
+        // §7.1's CLEANUP: the experiment leaves nothing of itself behind (§17.5).
+        assert.deepEqual(await storedChanges(), [], 'no probe scaffolding survived the run');
+        const bindings = await callTool('get_bindings', { tabId });
+        assert.equal(bindings.json().bindings.some((binding) => binding.state === 'verified'), true,
+          'and the panel reads the same proved link out of the same store (§1.6)');
+      });
+
+      await check('§7.1 an agent that abandons a probe stops it in the browser', async (subtest) => {
+        if (noWorkerHub || !demoSite || !demoPage) {
+          subtest.skip(noWorkerHub || 'the demo page never loaded');
+          return;
+        }
+        const tabId = await tabIdOf(demoPage);
+        const controller = new AbortController();
+        const call = client.callTool(
+          { name: 'probe_element', arguments: { tabId, selector: '#status-pill' } },
+          undefined,
+          { timeout: 210000, signal: controller.signal }
+        );
+        call.catch(() => {});   // the cancellation is the point; the rejection is expected
+
+        // Wait until the run is really under way — cancelling before it starts would
+        // prove only that an unstarted probe stops.
+        const running = await until(20000, async () =>
+          (await storedChanges()).some((change) => change && change.probe === true)
+        );
+        assert.equal(running, true, 'the probe put its own scaffolding on the site');
+
+        controller.abort();
+        await assert.rejects(call, 'the agent\'s call ends at once');
+
+        // WHAT THIS HAS TO SEPARATE: the demo probes in about five seconds, so "the site
+        // came back" is true a moment later whether the run was stopped or simply
+        // finished. The evidence that it was STOPPED is how the run ended — the panel's
+        // own view of it, which is where a person watching would read the same thing.
+        let ended = null;
+        const finished = await until(25000, async () => {
+          ended = await panel.evaluate(
+            ([type, id]) => chrome.runtime.sendMessage({ type, payload: { tabId: id } }),
+            [PROBE_MSG.GET_PROBE, tabId]
+          );
+          return ended && ended.phase !== PROBE_PHASE.RUNNING;
+        });
+        assert.equal(finished, true, `the run never ended: ${JSON.stringify(ended)}`);
+        assert.equal(ended.failure, PROBE_FAIL.CANCELLED, `it was stopped, not merely finished: ${JSON.stringify(ended)}`);
+        assert.equal(ended.binding, null, '§17.4: a cancelled run proves nothing');
+
+        const cleaned = await until(20000, async () => (await storedChanges()).length === 0);
+        assert.equal(cleaned, true,
+          `§17.5: every probe:true Change is deleted in CLEANUP — left over: ${JSON.stringify(await storedChanges())}`);
+        subtest.diagnostic('cancelled over MCP; the run ended as cancelled and the site was put back');
+      });
+
       /* ──────────────────── DoD 2: kill Chrome in the middle of a call ─────────── */
 
       await check('§16 M6 DoD 2: killing Chrome mid-call gives a clean error, not a hang', async (subtest) => {
-        assert.equal(hubRig.hub.isConnected(), true, 'there is a browser to kill');
+        if (noWorkerHub) {
+          subtest.skip(noWorkerHub);
+          return;
+        }
+        assert.equal(workerHub.hub.isConnected(), true, 'there is a browser to kill');
         const started = Date.now();
         // A tool the extension will be answering when the browser goes away.
         const call = callTool('reload', { tabId: 1 });
@@ -373,7 +606,7 @@ if (!chromium) {
         assert.equal(answer.isError, true, 'an error, not a made-up success');
         assert.match(answer.text, /disconnected|not connected|not responding/i, 'and it says what happened');
         assert.ok(waited < 20000, `${waited} ms — not the 30 s timeout, and not a hang`);
-        assert.equal(hubRig.hub.pendingCount(), 0, 'nothing is left waiting for a browser that is gone');
+        assert.equal(workerHub.hub.pendingCount(), 0, 'nothing is left waiting for a browser that is gone');
       });
     } finally {
       try { if (client) await client.close(); } catch { /* already closed */ }
@@ -382,6 +615,10 @@ if (!chromium) {
       if (hubRig) {
         hubRig.hub.close();
         await new Promise((resolve) => hubRig.server.close(resolve));
+      }
+      if (workerHub) {
+        workerHub.hub.close();
+        await new Promise((resolve) => workerHub.server.close(resolve));
       }
       if (demoSite) await new Promise((resolve) => demoSite.server.close(resolve));
       fs.rmSync(profile, { recursive: true, force: true });
