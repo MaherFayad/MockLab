@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readFlight, flightSplices } from '../src/background/flightData.js';
+import { readFlight, flightSplices, readsBack } from '../src/background/flightData.js';
 import { readEmbedded, applyToDocument, planDocument, documentSigId } from '../src/background/documentData.js';
 import { flightPage as page, flightLiteral as literal } from '../testlib/flightPage.js';
 
@@ -27,6 +27,43 @@ const SIG = 'abc123def456';
 const TRIP = ['$', '$L3', null, { trip: { status: 'ON_TIME', price: { total: 450 } } }];
 const TRIP_STREAM = '2:I[4707,[],""]\n0:' + JSON.stringify(TRIP) + '\n';
 const STATUS = '$["0"][3].trip.status';
+
+/** Two rows in two pushes — the smallest stream a rewrite can misplace a piece of. */
+const ROW_0 = '0:{"trip":{"status":"ON_TIME"}}\n';
+const ROW_1 = '1:{"other":true}\n';
+const STATUS_0 = '$["0"].trip.status';
+const CANCEL = new Map([['__next_f', [{ path: STATUS_0, value: 'CANCELLED' }]]]);
+
+/** Run `fn` with `console.error` collected — the read-back says so where a person looks. */
+function quietly(fn) {
+  const said = [];
+  const real = console.error;
+  console.error = (...args) => said.push(args.join(' '));
+  try {
+    return { value: fn(), said };
+  } finally {
+    console.error = real;
+  }
+}
+
+/**
+ * The document `applyToDocument` WOULD serve if it did not read back what it wrote.
+ *
+ * The splices are `flightSplices`'s own and the right-to-left loop is the one in
+ * `applyToDocument`, so this is that function with only its last step removed. Each case
+ * below uses it to show WHICH of the read-back's three questions its defect answers
+ * wrongly — which is the thing no assertion about the returned HTML can show, because
+ * every one of them returns the same untouched document.
+ */
+function wouldServe(html, block, body) {
+  const splices = flightSplices(block, body).sort((a, b) => b.from - a.from);
+  let out = html;
+  for (const splice of splices) out = out.slice(0, splice.from) + splice.text + out.slice(splice.to);
+  return out;
+}
+
+/** `block` with different bookkeeping about where its pushes sit in the document. */
+const withPushes = (block, pushes) => ({ ...block, flight: { ...block.flight, pushes } });
 
 /* ══════════════════ §1.1 — found, unrewritable, and visible as such ══════════════ */
 
@@ -54,26 +91,164 @@ test('15b the read-back is what stands between a wrong splice and a page that wi
   // about the splices could catch, because the splices are internally consistent and
   // land in the wrong place. Produced here by moving the document out from under a block
   // that was read from it; produced in the field by any defect in the offsets.
+  //
+  // This fixture answers SEVERAL of the read-back's questions wrongly at once, which is
+  // why it cannot be the only test of it — see 15c–15f, one clause each.
   const html = page(TRIP_STREAM, [12, TRIP_STREAM.length]);
   const block = readEmbedded(html)[0];
-  const moved = { ...block, flight: { ...block.flight, pushes: block.flight.pushes.map((push) => ({
+  const moved = withPushes(block, block.flight.pushes.map((push) => ({
     ...push, from: push.from - 3, to: push.to - 3
-  })) } };
+  })));
 
-  const said = [];
-  const real = console.error;
-  console.error = (...args) => said.push(args.join(' '));
-  let out;
-  try {
-    out = applyToDocument(html, [moved], new Map([['__next_f', [{ path: STATUS, value: 'CANCELLED' }]]]));
-  } finally {
-    console.error = real;
-  }
+  const { value: out, said } = quietly(() =>
+    applyToDocument(html, [moved], new Map([['__next_f', [{ path: STATUS, value: 'CANCELLED' }]]])));
 
   assert.equal(out.html, html, 'the site is served its own document, byte for byte');
   assert.equal(out.applied, 0, 'and MockLab does not claim the change happened');
   assert.deepEqual(out.missed, ['__next_f["0"][3].trip.status']);
   assert.equal(said.length, 1, 'and it says so where a person can find it');
+});
+
+/* ═══════════ the read-back's own truth table, one clause at a time ════════════════
+ *
+ * `readsBack` asks three things of every block the rewrite meant to change — is it still
+ * THERE, did it come back READABLE, and is it holding WHAT WAS MEANT — and asks them of
+ * ALL of them. Until the four tests below, the three questions were held up by 15b alone
+ * — whose fixture, every push offset moved by 3, answers more than one of them wrongly at
+ * once — and the quantifier by nothing whatsoever. So each was individually redundant:
+ * deleting the `editable` clause, or the body comparison, or turning `.every` into
+ * `.some`, left this file and every other suite in the repo green.
+ *
+ * The body comparison is the one that mattered most and was covered least. Nothing in the
+ * repo produced the case it exists for — a document that comes back PRESENT, PARSEABLE,
+ * EDITABLE and holding the WRONG DATA — which is exactly the shape of a subtle escaping
+ * or splice defect, and the only shape in which MockLab would serve a page that looks
+ * fine and says something the person never asked for.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+
+test('15c the read-back fails on each of the three things that can be wrong, one at a time', () => {
+  const meant = [{ key: '__next_f', body: { 0: { status: 'CANCELLED' } } }];
+  const back = { key: '__next_f', body: { 0: { status: 'CANCELLED' } }, editable: true };
+
+  assert.equal(readsBack([back], meant), true, 'what a rewrite that worked comes back as');
+  assert.equal(
+    readsBack([{ ...back, key: '__NEXT_DATA__' }], meant),
+    false,
+    'the block the rewrite changed is not in the finished document at all'
+  );
+  assert.equal(readsBack([{ ...back, editable: false }], meant), false, 'it came back unreadable');
+  assert.equal(
+    readsBack([{ ...back, body: { 0: { status: 'ON_TIME' } } }], meant),
+    false,
+    'present, readable, editable — and still holding the value the person replaced'
+  );
+  assert.equal(
+    readsBack([{ ...back, body: { 0: { status: 'CANCELLED' }, 1: { stray: true } } }], meant),
+    false,
+    'or holding that plus something the rewrite never meant to leave in it'
+  );
+  // `editable` is optional on a block (see the typedef), and a block that does not carry
+  // the property is editable — so the question is `!== false`, not `=== true`.
+  assert.equal(readsBack([{ key: '__next_f', body: { 0: { status: 'CANCELLED' } } }], meant), true);
+
+  // The quantifier. `applyToDocument` builds `intended` out of flight blocks and one
+  // document yields at most one of those today, so no fixture that goes through the
+  // product can hold this up — `.some` in place of `.every` passes every other test in
+  // this repo. It is asked directly instead, because the day a second read-back-checked
+  // block exists, `.some` serves a document with one of the two rewritten wrongly.
+  const two = [
+    { key: '__next_f', body: { 0: 'right' } },
+    { key: '__NEXT_DATA__', body: { a: 'right' } }
+  ];
+  const first = { key: '__next_f', body: { 0: 'right' }, editable: true };
+  assert.equal(
+    readsBack([first, { key: '__NEXT_DATA__', body: { a: 'WRONG' }, editable: true }], two),
+    false,
+    'one of the two came back wrong, so the whole rewrite is thrown away'
+  );
+  assert.equal(
+    readsBack([first, { key: '__NEXT_DATA__', body: { a: 'right' }, editable: true }], two),
+    true,
+    'and both of them right is the only way through'
+  );
+});
+
+test('15d a splice that lands in the wrong literal comes back present, editable, and WRONG', () => {
+  // Two rows, one push each, and bookkeeping that has the two pushes' document offsets
+  // swapped — the shape of any defect that pairs a rewritten chunk with the wrong
+  // literal. What comes out is NOT a broken document: both literals are still literals,
+  // the stream still scans, the block still reads as editable. It simply says something
+  // else than the rewrite meant, which no arithmetic about the splices could notice
+  // (they are internally consistent) and no reader of the returned HTML could either.
+  const stream = ROW_0 + ROW_1;
+  const html = page(stream, [ROW_0.length, stream.length]);
+  const block = readEmbedded(html)[0];
+  const [one, other] = block.flight.pushes;
+  const crossed = withPushes(block, [
+    { ...one, from: other.from, to: other.to },
+    { ...other, from: one.from, to: one.to }
+  ]);
+
+  const meant = structuredClone(crossed.body);
+  meant['0'].trip.status = 'CANCELLED';
+  const served = readEmbedded(wouldServe(html, crossed, meant));
+  assert.equal(served.length, 1, 'the block is still there, so the first question passes');
+  assert.equal(served[0].editable, true, 'and still readable, so the second one passes too');
+  assert.equal(served[0].body['0'].trip.status, 'CANCELLED', 'and the field the person changed is even right');
+  assert.equal(served[0].body['1'], undefined, 'while a whole row of the site\'s data has silently gone');
+
+  const { value: out, said } = quietly(() => applyToDocument(html, [crossed], CANCEL));
+  assert.equal(out.html, html, 'so the site is served its own document, byte for byte');
+  assert.equal(out.applied, 0, 'and MockLab does not claim the change happened');
+  assert.deepEqual(out.missed, ['__next_f["0"].trip.status']);
+  assert.equal(said.length, 1);
+});
+
+test('15e a splice that stops one character short comes back with the RIGHT body', () => {
+  // One character of bookkeeping — the literal's end, off by one — so the last character
+  // of the OLD escaped chunk survives after the new one, and the stream gains an `n`
+  // after its final row. Every value the rewrite meant is in the document, spelled
+  // exactly as meant: the body comparison passes and the readable check is the only
+  // thing standing between the person and a page whose stream React would choke on.
+  const html = page(ROW_0);
+  const block = readEmbedded(html)[0];
+  const [push] = block.flight.pushes;
+  const short = withPushes(block, [{ ...push, to: push.to - 1 }]);
+
+  const meant = structuredClone(short.body);
+  meant['0'].trip.status = 'CANCELLED';
+  const served = readEmbedded(wouldServe(html, short, meant));
+  assert.equal(served.length, 1, 'the block is there');
+  assert.deepEqual(served[0].body, meant, 'and holds exactly what the rewrite meant it to');
+  assert.equal(served[0].editable, false, 'and the stream around it no longer makes sense');
+
+  const { value: out, said } = quietly(() => applyToDocument(html, [short], CANCEL));
+  assert.equal(out.html, html);
+  assert.equal(out.applied, 0);
+  assert.deepEqual(out.missed, ['__next_f["0"].trip.status']);
+  assert.equal(said.length, 1);
+});
+
+test('15f a splice that runs past the literal leaves no block at all', () => {
+  // Three characters the other way: the replacement eats the literal's closing quote and
+  // the `])` after it, so what is left is not a push call this reader will claim to
+  // understand, and the document yields no stream block whatsoever. "Is it still there"
+  // is the only question that can be asked about a block that is gone — and the only one
+  // that can be asked FIRST, because the other two would be asked of nothing.
+  const html = page(ROW_0);
+  const block = readEmbedded(html)[0];
+  const [push] = block.flight.pushes;
+  const wide = withPushes(block, [{ ...push, to: push.to + 3 }]);
+
+  const meant = structuredClone(wide.body);
+  meant['0'].trip.status = 'CANCELLED';
+  assert.deepEqual(readEmbedded(wouldServe(html, wide, meant)), [], 'the source is simply gone');
+
+  const { value: out, said } = quietly(() => applyToDocument(html, [wide], CANCEL));
+  assert.equal(out.html, html, 'and the document that WAS served is the site\'s own');
+  assert.equal(out.applied, 0);
+  assert.deepEqual(out.missed, ['__next_f["0"].trip.status']);
+  assert.equal(said.length, 1);
 });
 
 test('16 a stream with nothing editable in it is not offered as a source at all', () => {

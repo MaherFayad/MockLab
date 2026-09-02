@@ -36,6 +36,7 @@ import {
   isHtmlDocument,
   isStreamedComponent
 } from '../src/background/deepFetch.js';
+import { flightPage } from '../testlib/flightPage.js';
 
 /** A page shaped like Next.js output: server-rendered text AND the props beside it. */
 const nextPage = (props) =>
@@ -390,4 +391,91 @@ test('27 the demo\'s SSR page fetches nothing, which is the whole reason it exis
   assert.doesNotMatch(html, /XMLHttpRequest/);
   assert.doesNotMatch(html, /<script[^>]+\bsrc=/, 'and no external file either — every request delays §7.3 settle');
   assert.doesNotMatch(html, /<link[^>]+\bhref=/);
+});
+
+/* ═════════ what reading a document may COST, inside a paused navigation ═══════════
+ *
+ * §8's engine runs while a navigation is PAUSED. `deepFetch.js` gives one document
+ * `PAUSE_BUDGET_MS` — 2 s — to be read, changed and put back; past that the request is
+ * released untouched, the site renders its own data, and the person's Change silently
+ * does not happen. So the cost of reading a document is not tidiness here. It is the
+ * difference between deep mode working and deep mode doing nothing on exactly the pages
+ * it was built for: an App Router page is a document of 1–3 MB carrying a thousand or
+ * more inline scripts, and §16 M8's whole subject.
+ *
+ * `scriptElements` lowercases the document ONCE, outside its loop, because `</script` is
+ * the only thing that ends a script element and the tag may be written in any case. The
+ * hoist is the entire difference between a linear read and an O(scripts × document) one.
+ * Measured on the machine this was written on, over a 1.66 MB document of 1199 inline
+ * scripts: 440 ms hoisted, 2150 ms with the same call moved inside the loop — a fifth of
+ * the budget against past all of it, with the apply half doubling both figures.
+ *
+ * WHY THIS IS COUNTED AND NOT TIMED. A stopwatch is the wrong instrument for that claim.
+ * The two figures are 4.5x apart and the failing one is only 8 % past the budget, so a
+ * ceiling stable enough for a loaded shared machine sits above the defect, and one tight
+ * enough to catch the defect fails an honest slow run — a guard that is either blind or
+ * flaky, and this build has already shipped one guard that could not fail. What is
+ * actually being claimed has no units: THE WHOLE DOCUMENT IS LOWERCASED ONCE PER READ,
+ * however many scripts it holds. That is exact, identical on every machine, and it is
+ * what is asserted — by counting the calls, and ignoring the short receivers, which are
+ * the attribute names `attributesOf` lowercases one at a time.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/** Longer than any attribute name and far shorter than any document. */
+const WHOLE_DOCUMENT = 1024;
+
+/** How many times `run` lowercases a whole document. */
+function documentLowercases(run) {
+  const real = String.prototype.toLowerCase;
+  let calls = 0;
+  String.prototype.toLowerCase = function counted() {
+    if (this.length >= WHOLE_DOCUMENT) calls += 1;
+    return real.call(this);
+  };
+  try {
+    run();
+  } finally {
+    String.prototype.toLowerCase = real;
+  }
+  return calls;
+}
+
+/** A document shaped like an App Router page: one row of data, cut across N pushes. */
+function manyScripts(scripts) {
+  const row = `0:${JSON.stringify({ trip: { status: 'ON_TIME' }, filler: 'x'.repeat(scripts * 40) })}\n`;
+  const cuts = [];
+  for (let i = 1; i <= scripts; i += 1) cuts.push(Math.round((row.length * i) / scripts));
+  return flightPage(row, cuts);
+}
+
+test('28 a document is lowercased once per read, however many scripts it holds', () => {
+  const few = manyScripts(40);
+  const many = manyScripts(400);
+  assert.equal(readEmbedded(many).length, 1, 'the fixture is a document this engine really reads');
+  assert.ok(many.split('<script').length - 1 > 400, 'and it really does carry a script per push');
+
+  assert.equal(documentLowercases(() => readEmbedded(few)), 1, 'one pass over the document');
+  assert.equal(
+    documentLowercases(() => readEmbedded(many)),
+    1,
+    'ten times the script elements, the same one pass — a call moved inside that loop is ' +
+      '400 passes over a document, which is Deviation 101\'s defect and costs the person their Change'
+  );
+
+  // The other half of the same figure: a rewrite reads the document, and reads the
+  // finished bytes back (`readsBack` — 15c in flightDocument.test.js). Two passes for a
+  // whole applied Change, not two per script element.
+  const overlays = new Map([[documentSigId(SIG, '__next_f'), [{ path: '$["0"].trip.status', value: 'CANCELLED' }]]]);
+  let plan;
+  assert.equal(documentLowercases(() => { plan = planDocument(many, SIG, overlays); }), 2);
+  assert.equal(plan.applied, 1, 'and the Change really did go in, so the read-back really did run');
+});
+
+test('29 a closing tag is found whatever case it is written in', () => {
+  // Which is what the lowercased copy is FOR — the reason it may be hoisted but not
+  // deleted. `<SCRIPT>` and `</SCRIPT>` are the same element to the HTML parser.
+  assert.deepEqual(
+    readEmbedded('<script id="__D__" type="application/json">{"a":1}</SCRIPT>').map((b) => b.key),
+    ['__D__']
+  );
 });

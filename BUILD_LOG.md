@@ -1138,3 +1138,153 @@ and must be looked at there.
 **Deviations:** 72–97 — see README "Deviations".
 
 **QA verdict:** _pending qa-verifier_
+
+---
+
+## M8 — The two roads to a Next.js App Router page
+
+**Commits `f2cfc48`, `28494bd`, `488a817`, `c6bd103`, `c67db9b`, and this one.** Owners:
+interceptor-engineer (road B), probe-engineer (road A), with `messages.js`, `background.js`
+and the record mine.
+
+### Why this milestone exists at all
+
+It is not in PLAN.md. A user loaded the M7 build against a real OTA — almosafer — and
+reported that MockLab changed nothing: not the hotel listing, not flights, not an inch.
+
+That was not a bug. §15 listed React Server Components as a known limitation in a single
+line, and the line was accurate and useless: nobody reads "modern streamed pages are listed
+as sources but can't be edited" and concludes "the entire visible content of most current
+Next.js sites is invisible to this tool". Three independent facts made it so, all confirmed
+in the code rather than guessed:
+
+- `interceptor.js`'s `isStreamingType()` listed `text/x-component` — App Router's flight
+  data — so those bodies were captured metadata-only and never read.
+- Deep mode's `readEmbedded()` recognised a JSON island (`__NEXT_DATA__`, the **Pages
+  Router** shape) and `window|self|globalThis.__SHOUTING__ = {…}`.
+- App Router emits neither. It emits `self.__next_f.push([1,"…"])`, which fails all three
+  of those tests: `__next_f` does not end in `__`, it is a `.push()` rather than an
+  assignment, and the payload is a JS string literal holding flight-protocol text rather
+  than JSON. `__next_f` appeared zero times in this repository.
+
+What the user actually saw was the honest and useless case: a Sources list full of the
+site's other JSON calls — availability, pricing, autocomplete, config — every one real and
+editable, none of them the thing that painted the screen. Changes applied correctly and the
+page did not move.
+
+### Road B — the stream (`28494bd`)
+
+`text/x-component` is transformed rather than refused. The refusal's reasoning survives
+intact and is why this is a transform and not a deletion: reading a live stream to
+completion never completes, so awaiting the body hangs the page with zero Changes
+configured. A matching Change pipes the body through a `TransformStream` that rewrites rows
+as they pass and never awaits the end; no matching Change hands back the **original
+`Response` object**. The row machine works in bytes — length-framed rows are skipped by
+their byte count, not by newline — and an untouched row is handed over as its original
+bytes rather than re-serialised.
+
+**A mutation survived, for this build's signature reason.** Re-serialising untouched rows
+instead of passing their bytes produced identical output, because every row in the fixture
+happened to round-trip through `JSON.parse`/`stringify`. Killed by adding a row that does
+not: `1.50`, `1e3`, `\u003c`, `\u00e9`. The escaped `<` is the one that matters — React
+escapes it so an inlined payload cannot close a `<script>` tag.
+
+**And a comment was false.** The agent had written that deleting the RSC branch would fall
+back safely to the refusal; when it measured, deleting the branch sent flight responses into
+the *buffering* path instead — the exact hang the refusal prevents — because the routing was
+one condition with a hole punched in it. Restructured and re-measured: only removing both
+resurrects the stall (3006 ms, timed). One mutation is **not independently killable** and is
+documented as load-bearing only in combination rather than counted as covered.
+
+### Road A — the document (`488a817`)
+
+`flightData.js` reads the `self.__next_f.push` runs: decode each JS string literal,
+concatenate the chunk texts *before* parsing anything, split into `<hex id>:<payload>` rows,
+keep the JSON rows keyed by row id. Rewriting recuts at the original push boundaries. The
+block key and path shape did not have to change.
+
+**A quadratic had been silently eating the whole feature.** `scriptElements()` called
+`html.toLowerCase()` once per `<script>` element: 3.2 s for a 2.5 MB document with 1200
+inline scripts, past `PAUSE_BUDGET_MS`, so the paused response is released untouched and the
+person's Change does not happen, with nothing logged anywhere. Latent since M7 because §8's
+two shapes live on pages with a handful of scripts; an App Router page has hundreds, so
+building road A is what made it reachable.
+
+**A guard was deleted rather than fixed, by its author hunting for it.** `readFlight`
+asserted `decodeStringLiteral(escapeFlight(t)) === t` — no input can fail that, because the
+two functions cannot disagree. Replaced by `readsBack`.
+
+### The verification pass, and what it failed
+
+An adversarial pass over M7 and M8 together returned **FAIL** with five findings. Every DoD
+item was reproduced and passed; nothing a user would touch was broken. What failed was this
+build's own standard — three properties presented as guarded were not, and two records were
+wrong.
+
+**The worst of them was mine.** README Deviation 103 — the row *about* a guard that only
+looked like one — said its replacement "has failing inputs, a direct test and two
+mutations". `grep -rn readsBack test/` returned nothing. Worse, each of the check's three
+clauses could be deleted alone with all 583 unit tests and both browser suites still green,
+because the single fixture exercising it tripped two clauses at once. I wrote that sentence
+into the table from an agent's report without running the one-line check that would have
+disproved it. **That is the fourth claim on this build that was false in the commit that
+wrote it, and the first where checking would have cost nothing.**
+
+The other four: the quadratic fix had no guard, so the defect the commit was named after was
+one careless edit from returning; §17.5's startup sweep call site had no guard, so removing
+it left everything green while a crash mid-probe would leave a user's site silently mocked
+for ever; Deviation 14 had been made false by M8 and still cited the content type that
+falsified it; and `highlight.js`'s 13 hex literals were recorded only in a test whose failure
+message named two README rows that do not cover it.
+
+### How they were closed
+
+`readsBack` now has a direct truth table plus three **document-level** inputs that isolate
+one clause each — a rewrite with two push offsets swapped, so the document is sound and a row
+of the site's data has silently vanished; a splice one character short, so the body reads
+back exactly right and only the stream around it stops making sense; and one three characters
+long, which eats the literal's closing quote. Five mutations, each killed. Verified as a
+diagonal rather than asserted, and reproduced here independently.
+
+The quadratic's guard is **deliberately not a stopwatch**. It patches
+`String.prototype.toLowerCase` and counts calls on receivers over 1024 characters: one per
+read, whatever the script count. A duration ceiling was measured and rejected — hoisted vs
+reverted is 4.5× apart, but the failing figure sits only 8% past the budget, so any ceiling
+stable on a loaded machine would be above the defect and any ceiling tight enough would fail
+an honest slow run. That is a guard that is either blind or flaky, and this build has already
+shipped one that could not fail.
+
+§17.8's literal audit now classifies by whether a file **can** import `messages.js`, derived
+from `manifest.json` rather than a hardcoded list, and throws on an empty list because the
+exemption is the whole guard. And a test named "stops the parser *rather than guessing*"
+turned out not to test the guessing half — the lenient `parseInt(hex, 16) || 0` survived it,
+because with the old poison both readings produced identical bytes.
+
+### Evidence
+
+Unit: extension **591/591**, companion **57/57**, 0 skipped. Thirteen browser suites against
+the real unpacked extension, each run individually the way CI's loop runs them — deep 8,
+e2e 16, highlight 10, mcp 14, panel 23, panel.a11y 12, panel.probe 17, panel.scenarios 13,
+panel.settings 12, picker 8, pickerdom 6, probe 7, rsc 8 = **154 checks, 0 failures, 0
+skipped**. `state: 'verified'` remains one assignment, `probe.js:327`.
+
+### What none of this shows, stated because green suites imply otherwise
+
+**Nothing in this repository has ever run against a real Next.js site.** Both flight parsers
+are reconstructions from the protocol. Their *grammar* is faithful; their *content* — row
+ids, module ids, the tag set, the build id — is hand-written, because every outbound host is
+refused in this sandbox (CONNECT tunnel 403 for almosafer.com, www. and global.). The least
+certain claim is the `T` row's hex length, read as UTF-8 bytes: it is trusted nowhere, and a
+`T` row is accepted only when its byte count lands exactly on a newline, so a wrong reading
+makes the parser refuse rather than corrupt. Deep mode has never attached to anything but a
+localhost fixture, so Chrome's debugging banner, the DevTools-conflict detach and a service
+worker evicted while attached remain unproven.
+
+The green suites here say the parsers handle **this format**. They cannot say the format is
+right.
+
+**Deviations:** 98–104 — see README "Deviations".
+
+**QA verdict:** FAIL at `488a817` (five findings, no functional defect); all five closed in
+`c6bd103`, `c67db9b` and this commit. Not re-verified by an independent pass — that is the
+next thing owed.
