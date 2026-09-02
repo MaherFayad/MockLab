@@ -15,6 +15,12 @@
  *   2. `window.__INITIAL_STATE__ = {…}` / `window.__NUXT__ = {…}` and their relatives —
  *      "regex-extract balanced JSON via a small scanner".
  *
+ * Both of those are the Next.js PAGES Router and its generation of frameworks. The APP
+ * Router — most of what is built today — emits neither, and `flightData.js` is the third
+ * shape: a stream of text in JavaScript string literals, cut across many `<script>`
+ * elements. `readEmbedded` returns its block alongside these two and `applyToDocument`
+ * rewrites it through the same door, so nothing downstream has to know the difference.
+ *
  * `scanJsonValue` is that scanner. A regex cannot do it: `{"a":"}"}` closes on the brace
  * inside the string, and `[^}]*}` stops at the first nested object. The scanner tracks
  * string state and escapes, and is deliberately NOT a JSON validator — it finds where
@@ -43,6 +49,7 @@
  */
 
 import { setByPath } from '../shared/jsonpath.js';
+import { readFlight, flightSplices, readsBack } from './flightData.js';
 
 /**
  * The sigId namespace §8 reserves for document-embedded data. A source id is
@@ -155,9 +162,13 @@ function attributesOf(tag) {
 function scriptElements(html) {
   const found = [];
   const open = /<script\b([^>]*)>/gi;
+  // Lowercased ONCE. Inside the loop this is a full pass per script element: measured at
+  // 3.2 s on an App Router page of 1200 inline scripts, past `deepFetch.js`'s 2 s budget,
+  // so the document is released untouched and the Change silently does not happen.
+  const lower = html.toLowerCase();
   for (const match of html.matchAll(open)) {
     const from = match.index + match[0].length;
-    const close = html.toLowerCase().indexOf('</script', from);
+    const close = lower.indexOf('</script', from);
     if (close === -1) continue;
     found.push({ attrs: attributesOf(match[1]), from, to: close });
   }
@@ -182,10 +193,14 @@ const ASSIGNMENT = /(?:window|self|globalThis)\s*\.\s*(__[A-Za-z0-9_]+__)\s*=\s*
 /**
  * @typedef {Object} EmbeddedBlock
  * @property {string} key    the block's name: `__NEXT_DATA__`, `__INITIAL_STATE__`, …
- * @property {"script"|"assignment"} kind
+ * @property {"script"|"assignment"|"flight"} kind
  * @property {number} from   index of the first character of the JSON text
  * @property {number} to     index one past its last character
  * @property {any}    body   the parsed value
+ * @property {boolean} editable  false when the block was found but cannot be safely put
+ *   back — §1.1: a source that cannot be edited, never silently absent or broken
+ * @property {string} [preview]  the head of an unreadable block's text, for that source
+ * @property {any} [flight]      `flightData.js`'s own bookkeeping, for the rewrite
  */
 
 /**
@@ -222,10 +237,11 @@ export function readEmbedded(html) {
     if (Array.isArray(body) ? body.length === 0 : Object.keys(body).length === 0) return;
     const count = (seen.get(key) || 0) + 1;
     seen.set(key, count);
-    blocks.push({ key: count === 1 ? key : `${key}#${count}`, kind, from, to, body });
+    blocks.push({ key: count === 1 ? key : `${key}#${count}`, kind, from, to, body, editable: true });
   };
 
-  for (const script of scriptElements(html)) {
+  const scripts = scriptElements(html);
+  for (const script of scripts) {
     const id = script.attrs.id || '';
     const type = script.attrs.type || '';
     // An id is what makes a JSON island addressable; a type of `application/json` is what
@@ -247,6 +263,14 @@ export function readEmbedded(html) {
     const to = scanJsonValue(html, from);
     if (to === -1) continue;
     add(match[1], 'assignment', from, to);
+  }
+
+  // §8's two shapes are the PAGES Router's; App Router emits neither (`flightData.js`).
+  const flight = readFlight(html, scripts);
+  if (flight) {
+    const count = (seen.get(flight.key) || 0) + 1;
+    seen.set(flight.key, count);
+    blocks.push(count === 1 ? flight : { ...flight, key: `${flight.key}#${count}` });
   }
 
   return blocks.sort((a, b) => a.from - b.from);
@@ -299,6 +323,10 @@ export function serializeEmbedded(value) {
  * mutating the parsed body in place would make MockLab's own record of what the server
  * sent say what MockLab did to it, which is the one thing a capture may never say.
  *
+ * A block with `editable:false` is one MockLab found and cannot put back (today: an App
+ * Router stream it could not fully read). Every overlay aimed at it is counted in
+ * `missed` and NOTHING is spliced — §1.1, visible and uneditable rather than broken.
+ *
  * @param {string} html
  * @param {EmbeddedBlock[]} blocks
  * @param {Map<string, {path:string, value:any}[]>} byKey  overlays per block key
@@ -308,11 +336,20 @@ export function applyToDocument(html, blocks, byKey) {
   /** @type {{from:number, to:number, text:string}[]} */
   const splices = [];
   const missed = [];
+  /** Flight blocks that were spliced, and the body each one was MEANT to end up with. */
+  const intended = [];
   let applied = 0;
+
+  const miss = (block, overlay) =>
+    missed.push(`${block.key}${overlay.path.startsWith('$') ? overlay.path.slice(1) : overlay.path}`);
 
   for (const block of blocks) {
     const overlays = byKey.get(block.key);
     if (!overlays || !overlays.length) continue;
+    if (block.editable === false) {
+      for (const overlay of overlays) miss(block, overlay);
+      continue;
+    }
     let touched = 0;
     const body = structuredClone(block.body);
     for (const overlay of overlays) {
@@ -320,10 +357,19 @@ export function applyToDocument(html, blocks, byKey) {
         touched += 1;
         applied += 1;
       } else {
-        missed.push(`${block.key}${overlay.path.startsWith('$') ? overlay.path.slice(1) : overlay.path}`);
+        miss(block, overlay);
       }
     }
-    if (touched) splices.push({ from: block.from, to: block.to, text: serializeEmbedded(body) });
+    if (!touched) continue;
+    if (block.kind === 'flight') {
+      // Not one span of the document, so the splices come from the file that knows
+      // where its pieces are — and none is a row that re-serialized to what is there.
+      const pieces = flightSplices(block, body);
+      if (pieces.length) intended.push({ key: block.key, body, overlays });
+      splices.push(...pieces);
+    } else {
+      splices.push({ from: block.from, to: block.to, text: serializeEmbedded(body) });
+    }
   }
 
   if (!splices.length) return { html, applied: 0, missed };
@@ -331,6 +377,17 @@ export function applyToDocument(html, blocks, byKey) {
   splices.sort((a, b) => b.from - a.from);
   let out = html;
   for (const splice of splices) out = out.slice(0, splice.from) + splice.text + out.slice(splice.to);
+
+  // Read back what was just written: a flight block's rewrite is splices into several
+  // string literals, so the finished bytes are the only place it can honestly be checked
+  // (`readsBack` carries the fuller note). Nothing is applied partially — serving half a
+  // rewrite would be a guess about which half was safe, and a wrong guess is a dead page.
+  if (intended.length && !readsBack(readEmbedded(out), intended)) {
+    console.error('[MockLab] a document rewrite did not read back correctly; serving the original');
+    missed.length = 0;
+    for (const block of blocks) for (const overlay of byKey.get(block.key) || []) miss(block, overlay);
+    return { html, applied: 0, missed };
+  }
   return { html: out, applied, missed };
 }
 
@@ -349,7 +406,8 @@ export function applyToDocument(html, blocks, byKey) {
  * @param {string} html
  * @param {string} sigHex           12 hex chars from `signatures.js` — §17.3 keeps sigIds there
  * @param {Map<string, {path:string,value:any}[]>} overlays  by sigId (see `effectiveBody.js`)
- * @returns {{sources:{sigId:string,key:string,body:any,bodyBytes:number,mocked:boolean}[],
+ * @returns {{sources:{sigId:string,key:string,body:any,bodyBytes:number,editable:boolean,
+ *                      preview:string,mocked:boolean}[],
  *            html:string, applied:number, missed:string[]}}
  */
 export function planDocument(html, sigHex, overlays) {
@@ -369,97 +427,11 @@ export function planDocument(html, sigHex, overlays) {
     key: block.key,
     body: block.body,
     bodyBytes: block.to - block.from,
-    mocked: byKey.has(block.key) && result.applied > 0
+    // §1.1: a block that cannot be put back is a source nobody can edit, and `preview`
+    // is what the panel shows instead of fields it would be lying to offer.
+    editable: block.editable !== false,
+    preview: block.preview || '',
+    mocked: byKey.has(block.key) && block.editable !== false && result.applied > 0
   }));
   return { sources, html: result.html, applied: result.applied, missed: result.missed };
 }
-
-/* --------------------------------------------------------------- the CDP wire form */
-
-/**
- * CDP carries a body as base64 of BYTES, and a document is text — so both directions go
- * through TextEncoder/TextDecoder rather than through `btoa` on a JS string, which throws
- * on any character above U+00FF. A page with an Arabic title is not an edge case (§9.2
- * has this product RTL-ready) and `btoa(html)` throws on the first one.
- *
- * The chunking is not tidiness either: `String.fromCharCode(...bytes)` spreads one
- * argument per byte and blows the call stack somewhere around a hundred thousand of
- * them, which a real document reaches.
- */
-const CHUNK = 0x8000;
-
-/** @param {string} text @returns {string} */
-export function toBase64(text) {
-  const bytes = new TextEncoder().encode(text);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-/** @param {string} base64 @returns {string} */
-export function fromBase64(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder('utf-8').decode(bytes);
-}
-
-/* -------------------------------------------------------------------- the headers */
-
-/**
- * Headers that describe the ENCODING or LENGTH of the body we just replaced, and are
- * therefore lies about the body we are about to send.
- *
- * `content-length` is §8's own instruction. `content-encoding` is the one §8 does not
- * mention and the one that breaks the page hardest: CDP's `Fetch.getResponseBody` hands
- * back the DECODED body, so a document served gzipped comes back as text — fulfil it
- * with `content-encoding: gzip` still on the response and the browser tries to inflate
- * plain HTML and renders nothing at all. `transfer-encoding` and `content-md5` are the
- * same class of claim.
- *
- * CSP is deliberately NOT stripped: MockLab changes the site's data and must not quietly
- * weaken the site's security posture while doing it.
- */
-const REWRITTEN_AWAY = new Set(['content-length', 'content-encoding', 'transfer-encoding', 'content-md5']);
-
-/**
- * The response headers to fulfil with: the original ones, minus the ones the rewrite
- * invalidated.
- *
- * @param {{name:string, value:string}[]|undefined} headers  CDP's `responseHeaders`
- * @returns {{name:string, value:string}[]}
- */
-export function rewriteHeaders(headers) {
-  if (!Array.isArray(headers)) return [];
-  return headers.filter((header) => header && !REWRITTEN_AWAY.has(String(header.name).toLowerCase()));
-}
-
-/**
- * One header's value, case-insensitively, or ''. CDP does not normalize header case and
- * HTTP/2 lowercases while HTTP/1.1 does not, so every read of one goes through here.
- *
- * @param {{name:string, value:string}[]|undefined} headers
- * @param {string} name
- */
-export function headerValue(headers, name) {
-  if (!Array.isArray(headers)) return '';
-  const wanted = name.toLowerCase();
-  for (const header of headers) {
-    if (header && String(header.name).toLowerCase() === wanted) return String(header.value || '');
-  }
-  return '';
-}
-
-/**
- * PLAN.md §8, last bullet: React Server Component payloads are OUT OF SCOPE for v1 and
- * are to be DETECTED rather than attempted. Detection is by content type, which is the
- * only thing that is true of every one of them.
- *
- * @param {string} contentType
- */
-export const isStreamedComponent = (contentType) => /text\/x-component/i.test(String(contentType || ''));
-
-/** Only an HTML document is scanned; anything else is continued untouched. */
-export const isHtmlDocument = (contentType) => /text\/html|application\/xhtml\+xml/i.test(String(contentType || ''));

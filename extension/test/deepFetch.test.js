@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import {
   world, store, deepOn, flush, pausedEvent, page, ORIGIN, URL, TAB
 } from '../testlib/deepWorld.js';
+import { flightPage } from '../testlib/flightPage.js';
 
 const { LET_GO } = await import('../src/background/debuggerEngine.js');
 const { PAUSE_BUDGET_MS } = await import('../src/background/deepFetch.js');
@@ -154,6 +155,67 @@ test('17 a base64 body from CDP is decoded, changed, and re-encoded', async () =
 
   const html = Buffer.from(w.of('Fetch.fulfillRequest')[0].args[1].body, 'base64').toString('utf8');
   assert.match(html, /"status":"DELAYED"/);
+  await clearChanges(ORIGIN);
+});
+
+/* ═══════════════ the shape §8 does not mention: an App Router document ═════════════ */
+
+/**
+ * `flightPage` in `testlib/` builds a document that carries its data the way an App
+ * Router page does, with Next's own chunk escaping and a cut wherever a test asks for
+ * one. `flightData.test.js` holds the text handling; these two tests are about what
+ * THIS file does with the block it is handed, which is a different question with its own
+ * ways of being wrong.
+ */
+const TRIP = '0:{"trip":{"status":"ON_TIME"}}\n';
+
+test('23 an App Router document is read, changed and served — the case M8 exists for', async () => {
+  await deepOn(ORIGIN);
+  const sigId = documentSigId((await normalize('GET', URL)).sigId, '__next_f');
+  await addChange({ origin: ORIGIN, sigId, path: '$["0"].trip.status', value: 'CANCELLED' });
+
+  const w = world();
+  // Cut mid-value, which is where a real server flushes and where a per-push reader
+  // sees `"status":"ON_T` and finds nothing.
+  w.api.__body = { body: flightPage(TRIP, [TRIP.indexOf('ON_T') + 4]), base64Encoded: false };
+  await w.engine.start();
+  await w.pause();
+
+  const fulfil = w.of('Fetch.fulfillRequest');
+  assert.equal(fulfil.length, 1, 'the document was rewritten in flight');
+  const html = Buffer.from(fulfil[0].args[1].body, 'base64').toString('utf8');
+  assert.match(html, /CANCELLED/);
+  assert.doesNotMatch(html, /ON_T/, 'and the old value is gone from every chunk it was split across');
+
+  assert.equal(w.captured.length, 1);
+  assert.equal(w.captured[0].via, 'document');
+  assert.equal(w.captured[0].sigId, sigId, '§8\'s namespace, App Router\'s block');
+  assert.equal(w.captured[0].mocked, true);
+  assert.equal(w.captured[0].body['0'].trip.status, 'ON_TIME', '§5.1.2: the capture is the REAL one');
+  await clearChanges(ORIGIN);
+});
+
+test('24 a stream MockLab cannot put back is a source it says it cannot edit', async () => {
+  await deepOn(ORIGIN);
+  const sigId = documentSigId((await normalize('GET', URL)).sigId, '__next_f');
+  await addChange({ origin: ORIGIN, sigId, path: '$["0"].trip.status', value: 'CANCELLED' });
+
+  const w = world();
+  w.api.__body = { body: flightPage(TRIP + '5:Tzz,text\n'), base64Encoded: false };
+  await w.engine.start();
+  const { said } = await quiet(() => w.pause());
+
+  assert.deepEqual(w.of('Fetch.fulfillRequest'), [], 'a document it cannot put back is one it does not touch');
+  assert.equal(w.of('Fetch.continueResponse').length, 1, 'the page still loads, unchanged');
+  assert.equal(said.length, 1, 'and the field that did not apply is said out loud');
+
+  // §1.1: found, and visible as something that cannot be edited. §4's unparsed shape is
+  // what the panel already draws `sources.streamedUnsupported` from, so this needs no
+  // new message type — and it is TRUE of this source, which is the whole point.
+  assert.equal(w.captured.length, 1, 'not silently absent');
+  assert.equal(w.captured[0].body.__unparsed, true, 'not silently editable either');
+  assert.ok(w.captured[0].body.preview.includes('trip'), 'with something of itself to show');
+  assert.equal(w.captured[0].mocked, false);
   await clearChanges(ORIGIN);
 });
 

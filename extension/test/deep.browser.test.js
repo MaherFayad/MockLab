@@ -230,6 +230,91 @@ if (!chromium) {
         await page.close();
       });
 
+      /* ═══════ 3b — the shape §8 does not mention: a Next.js App Router document ═════ */
+
+      /**
+       * `ssr.html` above is the PAGES Router: one JSON island, and MockLab could always
+       * read it. `approuter.html` is the same trip card as the APP ROUTER writes it —
+       * the flight stream, in string literals, cut across pushes — which is what almost
+       * every Next.js site built today serves, and what MockLab could not see one field
+       * of before this. The unit suite (`flightData.test.js`) proves the text handling;
+       * only a browser can prove the claim this exists to make: THE PAGE STILL PARSES
+       * AND RENDERS THE NEW VALUE. A document rewritten into something Chrome cannot
+       * parse is not a missed change — it is a dead page, and the person came here to
+       * look at their site.
+       */
+      await check('§8 an App Router document becomes a source, and a Change reaches the pill', async (tt) => {
+        if (!site) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }
+        const page = await ctx.newPage();
+        // Whatever the PAGE logs. Playwright raises no console event for a service
+        // worker in this Chromium (see testlib/browserFixture.js) but does for an
+        // ordinary page — and the demo's reader logs an error when it cannot read the
+        // stream, which is exactly what a corrupted rewrite produces.
+        const said = [];
+        page.on('console', (message) => { if (message.type() === 'error') said.push(message.text()); });
+        page.on('pageerror', (error) => said.push(`pageerror: ${error.message}`));
+
+        await page.goto(site.origin + '/demo/approuter.html', { waitUntil: 'load' });
+        const tabId = await tabIdOf(page);
+
+        // Deep mode is already on for this origin from the check above; interception
+        // starts at the tab's NEXT load either way (see the last check in this file).
+        await page.reload({ waitUntil: 'load' });
+
+        const sources = await sourcesFor(tabId, { want: 1 });
+        assert.equal(sources.length, 1, 'one document, one stream');
+        const source = sources[0];
+        assert.equal(source.via, 'document', '§10.2 draws "Page\'s built-in data" from this');
+        assert.match(source.sigId, /^__document__:[0-9a-f]{12}:__next_f$/, '§8\'s namespace, App Router\'s block');
+        assert.equal(source.unparsed, false, 'this stream was fully read, so its fields are editable');
+        assert.ok(source.fields > 10, `the whole model tree is addressable (${source.fields} fields)`);
+
+        const path = '$["0"][3].children[3].children[1][3].trip.status';
+        const body = await send(MSG.GET_RESPONSE, { tabId, sigId: source.sigId, path });
+        assert.equal(body.body, 'ON_TIME', 'the REAL value, §5.1.2 — read out of a JS string literal');
+
+        /* --- the claim: the SITE renders the new state, from a stream cut in half --- */
+        assert.equal((await send(MSG.SET_VALUE, {
+          tabId, sigId: source.sigId, path, value: 'CANCELLED', refresh: true
+        })).ok, true);
+        await page.waitForLoadState('load');
+        await sleep(400);
+
+        assert.deepEqual(await card(page), {
+          pill: 'Cancelled',
+          pillClass: 'is-cancelled',
+          banner: 'Your flight was cancelled',
+          // Server-printed text, re-rendered by nothing — the honest limit of a data
+          // rewrite, the same one `ssr.html` draws.
+          printed: 'Printed at booking · Gate A17 · On time'
+        }, 'the page\'s own code did this, from the flight stream: MockLab never touches the DOM (§1.3)');
+
+        // The rest of the stream survived the splice. `gate-note` is rendered from a `T`
+        // row — the one row measured in bytes rather than terminated by a newline — so
+        // it is the reading that would be silently wrong if the row scan had desynced.
+        assert.equal(
+          await page.evaluate(() => document.getElementById('gate-note').textContent.trim()),
+          'Gate A17 · boarding from 12:10',
+          'the text chunk beside the rewritten row is intact'
+        );
+        assert.deepEqual(said, [], 'and the document Chrome parsed had nothing wrong with it');
+
+        const after = (await sourcesFor(tabId, { want: 1 })).find((s) => s.sigId === source.sigId);
+        assert.equal(after.mocked, true);
+        assert.equal(after.changeDropped, false);
+        assert.equal(
+          (await send(MSG.GET_RESPONSE, { tabId, sigId: source.sigId, path })).body,
+          'ON_TIME',
+          '§5.1.2: the capture is still the real one'
+        );
+
+        await send(MSG.RESET_SITE, { tabId, refresh: true });
+        await page.waitForLoadState('load');
+        await sleep(300);
+        assert.equal((await card(page)).pill, 'On time', 'and §1.5 puts it back');
+        await page.close();
+      });
+
       /* ═══════════════ 4 — DEVIATION 1: the in-page patch is untouched ═════════════ */
       await check('the fetch-based demo still works on an origin deep mode is ON for', async (tt) => {
         if (!site) { tt.skip(`the companion demo site is not available: ${demo.why}`); return; }

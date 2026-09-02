@@ -24,16 +24,18 @@ import {
   serializeEmbedded,
   applyToDocument,
   planDocument,
+  documentSigId,
+  isDocumentSigId,
+  MAX_DOCUMENT_CHARS
+} from '../src/background/documentData.js';
+import {
   rewriteHeaders,
   headerValue,
   toBase64,
   fromBase64,
-  documentSigId,
-  isDocumentSigId,
   isHtmlDocument,
-  isStreamedComponent,
-  MAX_DOCUMENT_CHARS
-} from '../src/background/documentData.js';
+  isStreamedComponent
+} from '../src/background/deepFetch.js';
 
 /** A page shaped like Next.js output: server-rendered text AND the props beside it. */
 const nextPage = (props) =>

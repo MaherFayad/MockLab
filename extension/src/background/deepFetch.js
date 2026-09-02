@@ -25,16 +25,7 @@
 import { originOf } from './ruleStore.js';
 import { overlaysFor } from './effectiveBody.js';
 import { normalize } from './signatures.js';
-import {
-  planDocument,
-  rewriteHeaders,
-  headerValue,
-  toBase64,
-  fromBase64,
-  isHtmlDocument,
-  isStreamedComponent,
-  MAX_DOCUMENT_CHARS
-} from './documentData.js';
+import { planDocument, MAX_DOCUMENT_CHARS } from './documentData.js';
 
 /**
  * How long this code may take to decide about ONE paused navigation before it gives up
@@ -109,7 +100,12 @@ export function createInterceptor(deps) {
           url,
           status: httpStatus,
           contentType,
-          body: source.body,
+          // §1.1, and the one place deep mode can say it: a block MockLab FOUND and
+          // cannot put back byte-correctly is reported in §4's unparsed shape, which is
+          // what makes the panel draw it as a source with §11's `sources.streamedUnsupported`
+          // beside it and no editable field inside. Absent would be a lie by omission;
+          // editable would be a lie about what a Change on it would do.
+          body: source.editable ? source.body : { __unparsed: true, preview: source.preview },
           bodyBytes: source.bodyBytes,
           ts: Date.now(),
           via: 'document',
@@ -189,3 +185,100 @@ export function createInterceptor(deps) {
     }
   };
 }
+
+/* ══════════════════════════ the wire, and what may be said on it ══════════════════
+ *
+ * Everything below was in `documentData.js` until App Router support pushed that file
+ * onto §17.10's line budget, and this is where it always belonged: none of it is about
+ * what a document MEANS, which is that file's whole subject. It is about the transport —
+ * how CDP carries bytes, which headers a rewrite invalidates, and which content types
+ * this engine will look at at all. `deepFetch.js` is the only caller of any of it.
+ */
+
+/**
+ * CDP carries a body as base64 of BYTES, and a document is text — so both directions go
+ * through TextEncoder/TextDecoder rather than through `btoa` on a JS string, which throws
+ * on any character above U+00FF. A page with an Arabic title is not an edge case (§9.2
+ * has this product RTL-ready) and `btoa(html)` throws on the first one.
+ *
+ * The chunking is not tidiness either: `String.fromCharCode(...bytes)` spreads one
+ * argument per byte and blows the call stack somewhere around a hundred thousand of
+ * them, which a real document reaches.
+ */
+const CHUNK = 0x8000;
+
+/** @param {string} text @returns {string} */
+export function toBase64(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/** @param {string} base64 @returns {string} */
+export function fromBase64(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+/* -------------------------------------------------------------------- the headers */
+
+/**
+ * Headers that describe the ENCODING or LENGTH of the body we just replaced, and are
+ * therefore lies about the body we are about to send.
+ *
+ * `content-length` is §8's own instruction. `content-encoding` is the one §8 does not
+ * mention and the one that breaks the page hardest: CDP's `Fetch.getResponseBody` hands
+ * back the DECODED body, so a document served gzipped comes back as text — fulfil it
+ * with `content-encoding: gzip` still on the response and the browser tries to inflate
+ * plain HTML and renders nothing at all. `transfer-encoding` and `content-md5` are the
+ * same class of claim.
+ *
+ * CSP is deliberately NOT stripped: MockLab changes the site's data and must not quietly
+ * weaken the site's security posture while doing it.
+ */
+const REWRITTEN_AWAY = new Set(['content-length', 'content-encoding', 'transfer-encoding', 'content-md5']);
+
+/**
+ * The response headers to fulfil with: the original ones, minus the ones the rewrite
+ * invalidated.
+ *
+ * @param {{name:string, value:string}[]|undefined} headers  CDP's `responseHeaders`
+ * @returns {{name:string, value:string}[]}
+ */
+export function rewriteHeaders(headers) {
+  if (!Array.isArray(headers)) return [];
+  return headers.filter((header) => header && !REWRITTEN_AWAY.has(String(header.name).toLowerCase()));
+}
+
+/**
+ * One header's value, case-insensitively, or ''. CDP does not normalize header case and
+ * HTTP/2 lowercases while HTTP/1.1 does not, so every read of one goes through here.
+ *
+ * @param {{name:string, value:string}[]|undefined} headers
+ * @param {string} name
+ */
+export function headerValue(headers, name) {
+  if (!Array.isArray(headers)) return '';
+  const wanted = name.toLowerCase();
+  for (const header of headers) {
+    if (header && String(header.name).toLowerCase() === wanted) return String(header.value || '');
+  }
+  return '';
+}
+
+/**
+ * PLAN.md §8, last bullet: React Server Component payloads are OUT OF SCOPE for v1 and
+ * are to be DETECTED rather than attempted. Detection is by content type, which is the
+ * only thing that is true of every one of them.
+ *
+ * @param {string} contentType
+ */
+export const isStreamedComponent = (contentType) => /text\/x-component/i.test(String(contentType || ''));
+
+/** Only an HTML document is scanned; anything else is continued untouched. */
+export const isHtmlDocument = (contentType) => /text\/html|application\/xhtml\+xml/i.test(String(contentType || ''));

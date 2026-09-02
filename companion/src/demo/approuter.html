@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyline — Your trip (App Router)</title>
+<!--
+  PLAN.md §8 asks deep mode to read "a site that already shows data the moment it opens".
+  `ssr.html` beside this file is that page as the PAGES Router writes it: one JSON island
+  in a script element typed `application/json`. THIS page is the same trip card as the APP
+  ROUTER writes it, and the two documents have almost nothing in common.
+
+  An App Router page carries its data as React's flight stream, pushed into a global in
+  a run of inline scripts, each one carrying a call like this:
+
+      self.__next_f.push([1,"3:[\"$\",\"div\",null,{…}]\n"])   — one of many, inline
+
+  Three things about that shape defeat a reader written for the other one, and this page
+  exists to hold all three at once:
+
+    1. the payload is TEXT INSIDE A JAVASCRIPT STRING LITERAL, so every quote in the data
+       arrives as `\"` and every row terminator as `\n` — two characters, not one;
+    2. the stream is a sequence of `<id>:<payload>` rows and NOT every row is JSON: `HL`
+       is a preload hint, `I` a client-module reference, `T` a raw text chunk whose
+       header carries a byte length and whose body may contain real newlines;
+    3. ONE row is routinely cut across SEVERAL pushes, wherever the server flushed. Row 0
+       below spans three of them, and one boundary falls inside the word `ON_TIME` that
+       the status pill is rendered from. A reader that treats a push as a unit sees
+       `"status":"ON_T` and finds nothing.
+
+  ── WHAT IS FAITHFUL HERE AND WHAT IS RECONSTRUCTED ───────────────────────────────────
+  FAITHFUL (measured against real App Router output): the `self.__next_f` global and the
+  `(self.__next_f=self.__next_f||[]).push([0])` bootstrap before the data chunks; the
+  `[1, "…"]` chunk shape; `JSON.stringify` escaping with `<`, `>` and `&` written as
+  `\u003c`, `\u003e`, `\u0026`; `<id>:<payload>\n` rows with lowercase hex ids; `$`/`$L`
+  element and reference markers inside the model; and rows split at arbitrary offsets.
+
+  RECONSTRUCTED — plausible, and not lifted from a real build: the particular row ids and
+  their order; the module ids inside the `I` rows; the exact set of row tags a real page
+  would emit (a real one has more, and a dev build has `D` rows this has none of); and
+  the `T` row's length semantics, which are read here as a hex count of UTF-8 BYTES. If
+  that last one is wrong about real Next.js, this page is wrong the same way the
+  extension is — which is why `flightData.js` refuses to rewrite any document whose `T`
+  count does not land exactly on a newline, and reports it as a source that cannot be
+  edited rather than guessing.
+
+  WHAT THIS PAGE SHOWS THAT `ssr.html` CANNOT: the card is rendered from the concatenated
+  stream, so changing `trip.status` inside a string literal that was cut in half turns
+  the pill red THROUGH THE SITE'S OWN CODE (§1.3). `#printed-note` is server text that
+  nothing re-renders and keeps saying what the server said — the honest limit of a data
+  rewrite, on screen, exactly as in `ssr.html`.
+
+  It fetches nothing and loads no external file, for the same reason `ssr.html` does not:
+  with deep mode OFF, MockLab captures no source here at all, which is the honest failure
+  §11's `pick.noCandidates` describes.
+-->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #F5F6F8; --card: #FFFFFF; --text: #1E1F24; --muted: #6B6F76;
+    --line: #E3E5E8; --accent: #0066FF;
+    --ok-fg: #1E8E3E; --ok-bg: #E6F4EA;
+    --warn-fg: #B26A00; --warn-bg: #FFF4E0;
+    --bad-fg: #D93025; --bad-bg: #FDECEA; --bad-line: #F5B7B1;
+  }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-block-size: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 2rem 1rem;
+  }
+  .card {
+    inline-size: 100%; max-inline-size: 34rem; background: var(--card);
+    border: 1px solid var(--line); border-radius: 1rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08); overflow: hidden;
+  }
+  .card__head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: 1.25rem 1.5rem; border-block-end: 1px solid var(--line);
+  }
+  .brand { font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; }
+  .brand span { color: var(--accent); }
+  #passenger-chip {
+    font-size: 0.75rem; font-weight: 600; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 999px; padding: 0.25rem 0.75rem;
+  }
+  #alert-banner {
+    display: none; padding: 0.875rem 1.5rem; font-size: 0.875rem; font-weight: 600;
+    color: var(--bad-fg); background: var(--bad-bg);
+    border-block-end: 1px solid var(--bad-line);
+  }
+  #alert-banner.is-visible { display: block; }
+  .card__body { padding: 1.5rem; }
+  .row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1rem; margin-block-end: 1.5rem;
+  }
+  .flight-no { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  .flight-meta { font-size: 0.8125rem; color: var(--muted); margin-block-start: 0.25rem; }
+  #status-pill {
+    flex: none; border-radius: 999px; padding: 0.3125rem 0.875rem;
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.01em;
+    color: var(--ok-fg); background: var(--ok-bg);
+  }
+  #status-pill.is-delayed { color: var(--warn-fg); background: var(--warn-bg); }
+  #status-pill.is-cancelled { color: var(--bad-fg); background: var(--bad-bg); }
+  #status-dot {
+    flex: none; align-self: center; inline-size: 0.5rem; block-size: 0.5rem;
+    border-radius: 999px; background: var(--ok-fg);
+    margin-inline-start: auto; margin-inline-end: 0.5rem;
+  }
+  #status-dot.is-delayed { background: var(--warn-fg); }
+  #status-dot.is-cancelled { background: var(--bad-fg); }
+  .legs { display: flex; align-items: center; gap: 1rem; margin-block-end: 1.5rem; }
+  .leg { flex: 1; }
+  .leg__time { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .leg__code { font-size: 0.875rem; font-weight: 600; color: var(--muted); margin-block-start: 0.125rem; }
+  .leg__city { font-size: 0.75rem; color: var(--muted); }
+  .leg--in { text-align: end; }
+  .legs__line { flex: none; inline-size: 3rem; block-size: 1px; background: var(--line); }
+  .prices { border-block-start: 1px solid var(--line); padding-block-start: 1rem; }
+  .price-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 0.875rem; color: var(--muted); margin-block-end: 0.375rem;
+  }
+  .price-row--total { font-size: 1.125rem; font-weight: 700; color: var(--text); margin-block-end: 0; }
+  .price-row span:last-child { font-variant-numeric: tabular-nums; }
+  #printed-note, #gate-note {
+    margin: 0 1.5rem 1.5rem; padding: 0.875rem 1rem;
+    background: var(--bg); border: 1px dashed var(--line); border-radius: 0.625rem;
+    font-size: 0.8125rem; color: var(--muted);
+  }
+  #printed-note b, #gate-note b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <header class="card__head">
+      <div class="brand">Sky<span>line</span></div>
+      <div id="passenger-chip">Nora Al-Amri</div>
+    </header>
+
+    <div id="alert-banner" role="alert"></div>
+
+    <div class="card__body">
+      <div class="row">
+        <div>
+          <div class="flight-no" id="flight-number">SV 1042</div>
+          <div class="flight-meta" id="flight-ref">Skyline · Booking MKL8842</div>
+        </div>
+        <span id="status-dot" aria-hidden="true"></span>
+        <div id="status-pill">On time</div>
+      </div>
+
+      <div class="legs">
+        <div class="leg leg--out">
+          <div class="leg__time" id="departs-at">12:40</div>
+          <div class="leg__code" id="origin-code">RUH</div>
+          <div class="leg__city" id="origin-city">Riyadh</div>
+        </div>
+        <div class="legs__line" aria-hidden="true"></div>
+        <div class="leg leg--in">
+          <div class="leg__time" id="arrives-at">14:25</div>
+          <div class="leg__code" id="destination-code">JED</div>
+          <div class="leg__city" id="destination-city">Jeddah</div>
+        </div>
+      </div>
+
+      <div class="prices">
+        <div class="price-row"><span>Fare</span><span id="price-base">SAR 391.30</span></div>
+        <div class="price-row"><span>Taxes &amp; fees</span><span id="price-taxes">SAR 58.70</span></div>
+        <div class="price-row price-row--total"><span>Total</span><span id="price-total">SAR 450.00</span></div>
+      </div>
+    </div>
+
+    <div id="gate-note">Gate A17 · boarding from 12:10</div>
+    <div id="printed-note"><b>Printed at booking</b> · Gate A17 · On time</div>
+  </main>
+
+  <script>(self.__next_f=self.__next_f||[]).push([0])</script>
+  <script>self.__next_f.push([1,"1:HL[\"/_next/static/css/app/trip/layout.css\",\"style\"]\n"])</script>
+  <script>self.__next_f.push([1,"2:I[4707,[],\"\"]\n3:I[36423,[\"684\",\"static/chunks/app/trip/%5Breference%5D/page-8a41c7.js\"],\"TripCard\"]\n5:T53,Gate A17 · boarding from 12:10\nSkyline counters close 45 minutes before departure.\n"])</script>
+  <script>self.__next_f.push([1,"0:[\"$\",\"$L2\",null,{\"buildId\":\"mocklab-demo\",\"assetPrefix\":\"\",\"children\":[\"$\",\"main\",null,{\"className\":\"card\",\"children\":[[\"$\",\"header\",null,{\"className\":\"card__head\",\"children\":[[\"$\",\"div\",null,{\"className\":\"brand\",\"children\":[\"Sky\",[\"$\",\"span\",null,{\"children"])</script>
+  <script>self.__next_f.push([1,"\":\"line\"}]]}],[\"$\",\"div\",null,{\"id\":\"passenger-chip\",\"children\":\"Nora Al-Amri\"}]]}],[\"$\",\"$L3\",null,{\"trip\":{\"booking\":{\"reference\":\"MKL8842\",\"status\":\"CONFIRMED\"},\"flight\":{\"number\":\"SV 1042\",\"carrier\":\"Skyline\",\"origin\":{\"code\":\"RUH\",\"city\":\"Riyadh\"},\"destination\":{\"code\":\"JED\",\"city\":\"Jeddah\"},\"departsAt\":\"2026-09-04T12:40:00Z\",\"arrivesAt\":\"2026-09-04T14:25:00Z\",\"gate\":\"A17\"},\"status\":\"ON_T"])</script>
+  <script>self.__next_f.push([1,"IME\",\"note\":\"$5\",\"price\":{\"currency\":\"SAR\",\"total\":450,\"taxRate\":0.15}},\"user\":{\"id\":\"u-77120\",\"displayName\":\"Nora Al-Amri\",\"tier\":\"GOLD\",\"status\":\"ACTIVE\"}}]]}]}]\n6:{\"page\":\"/trip/[reference]\",\"query\":{\"reference\":\"MKL8842\"}}\n"])</script>
+
+  <script>
+  /*
+   * The hydration step, and the only part of this page that is not a reconstruction of
+   * server output: it stands in for `react-server-dom-webpack`'s client runtime, which
+   * is far too large to inline and whose job here is exactly three things —
+   *
+   *   1. read every chunk already in `self.__next_f` AND every one pushed after it, by
+   *      replacing `push` the way the real runtime does;
+   *   2. CONCATENATE the chunk strings before parsing anything, because a row is cut
+   *      wherever the server flushed and no chunk is a unit of meaning;
+   *   3. split the stream into `<id>:<payload>\n` rows, resolve a `"$<id>"` reference to
+   *      another row, and render the props of the client component `$L3`.
+   *
+   * `T` rows carry raw text with a byte length in their header, so they are the one row
+   * whose end is not the next newline. The reader consumes them by UTF-8 byte count —
+   * the same reading `extension/src/background/flightData.js` uses, and the same
+   * reconstruction. If that reading is wrong about real Next.js output, this page and
+   * that file are wrong together, which is why the extension checks the count lands on a
+   * newline and refuses to rewrite a document where it does not.
+   *
+   * What this page proves that `ssr.html` cannot: the card below is rendered from the
+   * FLIGHT STREAM, so a value MockLab changed inside a JS string literal — one that was
+   * cut in half across two `push` calls — is a value the site's own code renders.
+   */
+  (function () {
+    'use strict';
+
+    var STATUS_PRESENTATION = {
+      ON_TIME:   { label: 'On time',   cls: '',             banner: null },
+      DELAYED:   { label: 'Delayed',   cls: 'is-delayed',   banner: 'Your flight is delayed. Check back for a new departure time.' },
+      CANCELLED: { label: 'Cancelled', cls: 'is-cancelled', banner: 'Your flight was cancelled' },
+      BOARDING:  { label: 'Boarding',  cls: '',             banner: null },
+      LANDED:    { label: 'Landed',    cls: '',             banner: null }
+    };
+
+    function $(id) { return document.getElementById(id); }
+    function setText(id, value) { var el = $(id); if (el) el.textContent = value; }
+
+    function utf8Length(text) {
+      return typeof TextEncoder === 'function'
+        ? new TextEncoder().encode(text).length
+        : unescape(encodeURIComponent(text)).length;
+    }
+
+    /** How many CHARACTERS of `text` from `at` make up `bytes` UTF-8 bytes, or -1. */
+    function advanceBytes(text, at, bytes) {
+      var left = bytes;
+      var i = at;
+      while (left > 0 && i < text.length) {
+        var code = text.codePointAt(i);
+        var width = code > 0xffff ? 2 : 1;
+        left -= utf8Length(text.substr(i, width));
+        i += width;
+      }
+      return left === 0 ? i : -1;
+    }
+
+    /** `{id: value}` for every row of the stream this reader understands. */
+    function readRows(stream) {
+      var rows = {};
+      var at = 0;
+      while (at < stream.length) {
+        var header = /^([0-9a-f]{1,8}):/.exec(stream.slice(at, at + 10));
+        if (!header) break;
+        var start = at + header[0].length;
+        if (stream.charAt(start) === 'T') {
+          var comma = stream.indexOf(',', start + 1);
+          if (comma === -1) break;
+          var end = advanceBytes(stream, comma + 1, parseInt(stream.slice(start + 1, comma), 16));
+          if (end === -1 || stream.charAt(end) !== '\n') break;
+          rows[header[1]] = stream.slice(comma + 1, end);
+          at = end + 1;
+          continue;
+        }
+        var newline = stream.indexOf('\n', start);
+        if (newline === -1) break;
+        var payload = stream.slice(start, newline);
+        if (payload.charAt(0) === '[' || payload.charAt(0) === '{') {
+          try { rows[header[1]] = JSON.parse(payload); } catch (err) { /* not a model row */ }
+        }
+        at = newline + 1;
+      }
+      return rows;
+    }
+
+    /** The props of the first `["$","$L<id>",…,props]` node in the tree. */
+    function findClientProps(node) {
+      if (!node || typeof node !== 'object') return null;
+      if (Object.prototype.toString.call(node) === '[object Array]') {
+        if (node[0] === '$' && typeof node[1] === 'string' && node[1].indexOf('$L') === 0 && node[3] && node[3].trip) {
+          return node[3];
+        }
+        for (var i = 0; i < node.length; i += 1) {
+          var found = findClientProps(node[i]);
+          if (found) return found;
+        }
+        return null;
+      }
+      for (var key in node) {
+        if (Object.prototype.hasOwnProperty.call(node, key)) {
+          var hit = findClientProps(node[key]);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    }
+
+    /** `"$5"` is the value of row 5; `"$$x"` is the literal string `$x`. */
+    function resolve(value, rows) {
+      if (typeof value !== 'string' || value.charAt(0) !== '$') return value;
+      if (value.charAt(1) === '$') return value.slice(1);
+      var row = rows[value.slice(1)];
+      return row === undefined ? value : row;
+    }
+
+    function formatTime(iso) {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '--:--';
+      return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+    }
+
+    function formatMoney(amount, currency) {
+      var n = Number(amount);
+      return isNaN(n) ? String(amount) : currency + ' ' + n.toFixed(2);
+    }
+
+    function renderStatus(status) {
+      var view = STATUS_PRESENTATION[status] || { label: String(status), cls: '', banner: null };
+      var pill = $('status-pill');
+      var dot = $('status-dot');
+      var banner = $('alert-banner');
+      pill.textContent = view.label;
+      pill.className = view.cls;
+      dot.className = view.cls;
+      if (view.banner) {
+        banner.textContent = view.banner;
+        banner.classList.add('is-visible');
+      } else {
+        banner.textContent = '';
+        banner.classList.remove('is-visible');
+      }
+    }
+
+    function render(props, rows) {
+      var trip = props.trip || {};
+      var flight = trip.flight || {};
+      var origin = flight.origin || {};
+      var destination = flight.destination || {};
+      var price = trip.price || {};
+      var currency = price.currency || 'SAR';
+      var total = Number(price.total || 0);
+      var taxes = total * Number(price.taxRate || 0) / (1 + Number(price.taxRate || 0));
+
+      setText('passenger-chip', (props.user && props.user.displayName) || '');
+      setText('flight-number', flight.number || '');
+      setText('flight-ref', (flight.carrier || '') + ' · Booking ' + ((trip.booking && trip.booking.reference) || ''));
+      renderStatus(trip.status);
+      setText('departs-at', formatTime(flight.departsAt));
+      setText('arrives-at', formatTime(flight.arrivesAt));
+      setText('origin-code', origin.code || '');
+      setText('origin-city', origin.city || '');
+      setText('destination-code', destination.code || '');
+      setText('destination-city', destination.city || '');
+      setText('price-base', formatMoney(total - taxes, currency));
+      setText('price-taxes', formatMoney(taxes, currency));
+      setText('price-total', formatMoney(total, currency));
+      setText('gate-note', String(resolve(trip.note, rows)).split('\n')[0]);
+      // #printed-note is deliberately NOT re-rendered: it is what the server printed,
+      // and nothing re-renders it. See the header comment.
+    }
+
+    function hydrate() {
+      var chunks = self.__next_f || [];
+      var stream = '';
+      for (var i = 0; i < chunks.length; i += 1) {
+        if (chunks[i] && chunks[i][0] === 1 && typeof chunks[i][1] === 'string') stream += chunks[i][1];
+      }
+      var rows = readRows(stream);
+      var props = findClientProps(rows['0']);
+      if (!props) throw new Error('no client component in the stream');
+      render(props, rows);
+    }
+
+    try {
+      hydrate();
+      // The real runtime replaces `push` so that chunks flushed after it starts are fed
+      // straight into the parser. This page has none, and does it anyway: a reader that
+      // only ever saw the array as it stood is a reader that would not notice.
+      var array = self.__next_f;
+      var push = array.push.bind(array);
+      array.push = function (chunk) { var n = push(chunk); try { hydrate(); } catch (e) {} return n; };
+    } catch (err) {
+      console.error('[demo] the page\'s streamed data could not be read', err);
+      var banner = document.getElementById('alert-banner');
+      banner.textContent = 'Could not read your trip. Refresh the page to try again.';
+      banner.classList.add('is-visible');
+    }
+  })();
+  </script>
+</body>
+</html>
