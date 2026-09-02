@@ -100,44 +100,107 @@ test('a text row split across the boundary keeps its length and its bytes', T, a
 
 /* ════════════════════ what it refuses to touch, and keeps whole ═══════════════════ */
 
+/**
+ * Give up partway through a response, and then keep sending it.
+ *
+ * WHY THE SHAPE IS THE TEST. Giving up means "from here, every byte is forwarded
+ * untouched" — and "from here" outlives the chunk that triggered it. These four cases
+ * used to deliver the whole body in ONE chunk, which proved only that the bytes still
+ * held at the moment of the give-up were flushed. Deleting the forwarding of every LATER
+ * chunk (`if (machine.passthrough) { emit(chunk); return; }` in `push`) passed all of
+ * them, and a real response — which arrives in whatever pieces the network felt like —
+ * would have been truncated at the give-up: the page loses the rest of its content and
+ * nothing says so. So each case below gives up while the poison is arriving — inside the
+ * first chunk, or inside the second when the poison's own framing straddles them — and
+ * then continues over three more chunks, and the bytes out are compared to the bytes in.
+ *
+ * `changes` deliberately names rows AFTER the poison as well as the one before it. Their
+ * staying untouched is what makes "the parser gave up here" a measurement: if it had
+ * carried on parsing, those rows would have been rewritten and the byte comparison would
+ * fail, so one assertion covers both halves of the promise.
+ *
+ * @param {{head:Buffer, edited:Buffer, poison:Buffer, tail:Buffer[], changes:object[]}} plan
+ */
+async function givesUpAndKeepsSending(plan) {
+  const { head, edited, poison, tail, changes } = plan;
+  assert.ok(tail.length >= 2, 'the give-up must be followed by at least two more chunks');
+  const split = Math.max(1, poison.length >> 1);
+  const chunks = [Buffer.concat([head, poison.subarray(0, split)]), poison.subarray(split), ...tail];
+  const sent = Buffer.concat(chunks);
+  const { bytes } = await through(chunks, changes);
+
+  assert.equal(bytes.subarray(0, edited.length).toString('utf8'), edited.toString('utf8'),
+    'the row before the give-up was edited');
+  assert.equal(bytes.length, edited.length + (sent.length - head.length),
+    `bytes out (${bytes.length}) is not the ${sent.length} bytes in with the one edited row ` +
+    'counted at its new length — something after the give-up was dropped');
+  assert.equal(bytes.subarray(edited.length).equals(sent.subarray(head.length)), true,
+    'from the give-up on, every byte is the server\'s own — editing stops, mangling does not start');
+  return bytes;
+}
+
 test('an unknown row tag stops the parser and keeps every byte after it', T, async () => {
-  const body = Buffer.concat([
-    enc('0:{"status":"ON_TIME"}\n'),
-    enc('1:Zsomething this parser has never seen\n'),
-    enc('2:{"status":"ON_TIME"}\n')
-  ]);
-  const { bytes } = await through([body], [
-    { path: '$["0"].status', value: 'CANCELLED' },
-    { path: '$["2"].status', value: 'CANCELLED' }
-  ]);
-  assert.equal(readFlight(bytes)[0].value.status, 'CANCELLED', 'the row before it was edited');
-  assert.equal(
-    bytes.subarray(enc('0:{"status":"CANCELLED"}\n').length).equals(body.subarray(enc('0:{"status":"ON_TIME"}\n').length)),
-    true,
-    'from the unknown tag on, the bytes are the server\'s own — editing stops, mangling does not start'
-  );
+  const bytes = await givesUpAndKeepsSending({
+    head: enc('0:{"status":"ON_TIME"}\n'),
+    edited: enc('0:{"status":"CANCELLED"}\n'),
+    poison: enc('1:Zsomething this parser has never seen\n'),
+    tail: [enc('2:{"status":"ON_TIME"}\n'), enc('3:{"status":"ON_TIME"}\n'), enc('4:{"status":"ON_TIME"}\n')],
+    changes: [
+      { path: '$["0"].status', value: 'CANCELLED' },
+      { path: '$["2"].status', value: 'CANCELLED' },
+      { path: '$["4"].status', value: 'CANCELLED' }
+    ]
+  });
+  assert.equal(readFlight(bytes)[0].value.status, 'CANCELLED', 'and the framing before it still reads');
 });
 
 test('a row header that is not lowercase hex stops the parser', T, async () => {
-  const body = Buffer.concat([enc('0:{"a":1}\n'), enc('BAD:{"a":1}\n'), enc('2:{"a":1}\n')]);
-  const { bytes } = await through([body], [
-    { path: '$["0"].a', value: 9 },
-    { path: '$["2"].a', value: 9 }
-  ]);
-  assert.equal(bytes.toString('utf8').startsWith('0:{"a":9}\n'), true, 'the valid row before it');
-  assert.equal(bytes.toString('utf8').endsWith('BAD:{"a":1}\n2:{"a":1}\n'), true, 'and nothing after it moved');
+  await givesUpAndKeepsSending({
+    head: enc('0:{"a":1}\n'),
+    edited: enc('0:{"a":9}\n'),
+    poison: enc('BAD:{"a":1}\n'),
+    tail: [enc('2:{"a":1}\n'), enc('3:{"a":1}\n'), enc('4:{"a":1}\n')],
+    changes: [
+      { path: '$["0"].a', value: 9 },
+      { path: '$["2"].a', value: 9 },
+      { path: '$["4"].a', value: 9 }
+    ]
+  });
 });
 
 test('a length row with a bad hex count stops the parser rather than guessing', T, async () => {
-  const body = Buffer.concat([enc('0:{"a":1}\n'), enc('1:Tzz,hello'), enc('2:{"a":1}\n')]);
-  const { bytes } = await through([body], [{ path: '$["2"].a', value: 9 }]);
-  assert.equal(bytes.toString('utf8').endsWith('1:Tzz,hello2:{"a":1}\n'), true, 'everything after it is verbatim');
+  // "Rather than guessing" is the half a byte count alone cannot see, so the poison
+  // carries something that LOOKS like an editable row inside it. Reading `zz` as zero —
+  // `parseInt(hex, 16) || 0`, the obvious lenient version — resumes parsing right on top
+  // of that text and rewrites it, which is the corruption; giving up leaves it alone.
+  await givesUpAndKeepsSending({
+    head: enc('0:{"a":1}\n'),
+    edited: enc('0:{"a":9}\n'),
+    poison: enc('1:Tzz,2:{"a":1}\n'),
+    tail: [enc('3:{"a":1}\n'), enc('4:{"a":1}\n'), enc('5:{"a":1}\n')],
+    changes: [
+      { path: '$["0"].a', value: 9 },
+      { path: '$["2"].a', value: 9 },
+      { path: '$["3"].a', value: 9 },
+      { path: '$["5"].a', value: 9 }
+    ]
+  });
 });
 
 test('a model row that is not valid JSON passes through verbatim', T, async () => {
-  const body = enc('0:{"a":1,,}\n1:{"a":1}\n');
-  const { bytes, world } = await through([body], [{ path: '$["1"].a', value: 9 }]);
-  assert.equal(bytes.toString('utf8'), '0:{"a":1,,}\n1:{"a":9}\n', 'the broken row is left exactly as it came');
+  // NOT a give-up: an unparseable model row is SKIPPED, so the rows after it keep being
+  // edited. Split across four chunks for the same reason as the three above — the broken
+  // row must survive arriving in pieces, and the machine must still be running after it.
+  const broken = enc('0:{"a":1,,}\n');
+  const rest = enc('1:{"a":1}\n2:{"a":1}\n');
+  const chunks = [broken.subarray(0, 6), Buffer.concat([broken.subarray(6), rest.subarray(0, 4)]),
+    rest.subarray(4, 12), rest.subarray(12)];
+  const { bytes, world } = await through(chunks, [
+    { path: '$["1"].a', value: 9 },
+    { path: '$["2"].a', value: 9 }
+  ]);
+  assert.equal(bytes.toString('utf8'), '0:{"a":1,,}\n1:{"a":9}\n2:{"a":9}\n',
+    'the broken row is left exactly as it came, and both rows after it still edit');
   const capture = await waitForCapture(world, (c) => !c.body.__unparsed);
   assert.equal('0' in capture.body, false, 'and it is not offered as a field either (§1.1)');
 });

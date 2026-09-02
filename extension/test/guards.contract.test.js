@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
-import { SRC, EXTENSION_FILES, SOURCE_FILES, jsFiles, read, rel, stripComments } from '../testlib/audit.js';
+import { EXTENSION, SRC, EXTENSION_FILES, SOURCE_FILES, jsFiles, read, rel, stripComments } from '../testlib/audit.js';
 
 /* ═════════ §17.8's other half: the contract the content scripts share ══════════════
  *
@@ -47,6 +47,40 @@ import { SRC, EXTENSION_FILES, SOURCE_FILES, jsFiles, read, rel, stripComments }
  */
 const MESSAGES_JS = path.join(SRC, 'background', 'messages.js');
 const CONTENT_SCOPE = EXTENSION_FILES.filter((file) => file !== MESSAGES_JS);
+
+/** The two files whose every mirrored literal the first test checks, one by one. */
+const INTERCEPTOR_JS = path.join(SRC, 'content', 'interceptor.js');
+const AGENT_JS = path.join(SRC, 'content', 'agent.js');
+const MIRROR_AUDITED = new Set([INTERCEPTOR_JS, AGENT_JS]);
+
+/**
+ * The extension files that CANNOT import `messages.js`: the scripts the manifest injects
+ * into a page. The MAIN-world patch is a classic IIFE with no module graph at all (§5,
+ * §17.2) and the ISOLATED-world scripts are classic scripts too, so all of them mirror
+ * their message types by hand.
+ *
+ * Read out of `manifest.json` rather than listed here, for the reason every file set in
+ * `testlib/audit.js` is derived: a script added to the manifest tomorrow is exempt on the
+ * day it is declared instead of the day someone remembers this line — and, more
+ * importantly, a file REMOVED from the manifest stops being exempt the same day. An empty
+ * list is refused loudly, because the exemption it grants is the whole of §17.8.
+ */
+const CONTENT_SCRIPT_FILES = (() => {
+  const manifest = JSON.parse(read(path.join(EXTENSION, 'manifest.json')));
+  const declared = (manifest.content_scripts || []).flatMap((entry) => entry.js || []);
+  if (!declared.length) {
+    throw new Error('manifest.json declares no content scripts; §17.8 cannot tell a mirror from a magic string');
+  }
+  return new Set(declared.map((file) => path.join(EXTENSION, file)));
+})();
+
+/**
+ * Which side of §17.8 a file is on. Everything in the extension's own source can import
+ * `messages.js` — the service worker is a module, the panel is a module graph — except
+ * the content scripts above. The companion is a separate package with no dependency on
+ * the extension, so it cannot import them either.
+ */
+const canImportMessages = (file) => file.startsWith(SRC + path.sep) && !CONTENT_SCRIPT_FILES.has(file);
 
 /**
  * `value` as a WHOLE name, so that a rename by suffix cannot satisfy the mirror check by
@@ -134,8 +168,8 @@ test('§17.2 vs §17.8 the content scripts mirror messages.js exactly', async ()
   // MAIN-world patch while the page keeps working, so nothing else would fail loudly.
   const messages = await import('../src/background/messages.js');
   const { MOCKLAB_TAG, TOKEN_ATTRIBUTE, PORT_NAME, CONTENT_GLOBALS } = messages;
-  const interceptor = fs.readFileSync(path.join(SRC, 'content/interceptor.js'), 'utf8');
-  const agent = fs.readFileSync(path.join(SRC, 'content/agent.js'), 'utf8');
+  const interceptor = fs.readFileSync(INTERCEPTOR_JS, 'utf8');
+  const agent = fs.readFileSync(AGENT_JS, 'utf8');
 
   const literal = (value) => new RegExp(`(['"])${value.replace(/[$]/g, '\\$&')}\\1`);
 
@@ -335,34 +369,145 @@ function wireLiterals(code) {
   return [...code.matchAll(pattern)].map((match) => match[2]);
 }
 
-test('§17.8 every wire literal in shipping code is one messages.js exports', async () => {
+/**
+ * Sort every wire literal in `sources` into the three ways it can be wrong and the one
+ * way it can be right. `sources` is `[{file, code}]` so the fixtures below can put
+ * invented code at a REAL path and get the real classification.
+ *
+ *   invented  — a value `messages.js` does not export. Wrong wherever it appears.
+ *   magic     — a value it does export, hand-written in a file that could have imported
+ *               the constant. §17.8's actual subject.
+ *   unchecked — a mirror in a file that cannot import, but that the mirror audit at the
+ *               top of this file does not read literal by literal. Nothing would notice
+ *               it drifting, which is the same hole in a different room.
+ *   mirror    — a mirror in a file that cannot import AND is checked up there.
+ */
+function auditWireLiterals(sources, known) {
+  const found = { invented: [], magic: [], unchecked: [], mirrors: new Map() };
+  for (const { file, code } of sources) {
+    const values = wireLiterals(stripComments(code));
+    if (!values.length) continue;
+    const at = (value) => `${rel(file)}: ${JSON.stringify(value)}`;
+    for (const value of values) {
+      if (!known.has(value)) found.invented.push(at(value));
+      else if (canImportMessages(file)) found.magic.push(at(value));
+      else if (!MIRROR_AUDITED.has(file)) found.unchecked.push(at(value));
+      else found.mirrors.set(rel(file), (found.mirrors.get(rel(file)) || 0) + 1);
+    }
+  }
+  return found;
+}
+
+test('§17.8 a file that can import messages.js uses the constant, and only mirrors are literals', async () => {
   const messages = await import('../src/background/messages.js');
   const known = new Set(wireEntries(messages).map(([, , value]) => value));
 
   // Shipping source in BOTH workspaces, minus the file that declares them. `test/` is
   // excluded on purpose: the fixtures above deliberately invent `port:invented` to prove
   // the collector reads tables it has never heard of, and a fixture is not a magic string.
-  const invented = [];
-  const mirrors = new Map();
-  for (const file of SOURCE_FILES) {
-    if (file === MESSAGES_JS) continue;
-    for (const value of wireLiterals(stripComments(read(file)))) {
-      if (known.has(value)) mirrors.set(rel(file), (mirrors.get(rel(file)) || 0) + 1);
-      else invented.push(`${rel(file)}: ${JSON.stringify(value)}`);
-    }
-  }
+  const scope = SOURCE_FILES.filter((file) => file !== MESSAGES_JS);
+  const found = auditWireLiterals(scope.map((file) => ({ file, code: read(file) })), known);
+
   assert.deepEqual(
-    invented,
+    found.invented,
     [],
     'a wire value written by hand that messages.js does not export. Either import the ' +
       'constant (§17.8), or — if this file cannot import, like the content scripts — add ' +
       'the value to messages.js so the mirror audit above starts checking it.'
   );
 
-  // And the audit must be LOOKING at something: the two content scripts mirror by
-  // necessity, and `panel/requestedMessages.js` mirrors M5's eight as dead fallbacks
-  // until its author deletes it. Zero here means the scan stopped reading files.
-  assert.ok(mirrors.size >= 2, `only ${mirrors.size} files mirror a wire value — the scan found nothing to check`);
+  // The half this audit was missing until now. A literal that MATCHES an export used to
+  // be waved through as an intentional mirror wherever it appeared, so replacing
+  // `MSG.UPDATE_SETTINGS` with 'msg:updateSettings' in `panel/settings.js` changed
+  // nothing anywhere. The panel and the service worker are module graphs: for them the
+  // constant is available, so a literal is a magic string that drifts the day the
+  // constant is renamed — and §17.8 says the constants ARE the protocol.
+  assert.deepEqual(
+    found.magic,
+    [],
+    'this file can import messages.js, so a hand-written wire value here is a magic ' +
+      'string (§17.8) even though it currently spells the right thing. Import the constant.'
+  );
+
+  // And a mirror is only allowed where something checks it. The manifest's other two
+  // content scripts carry none today; if one starts to, the answer is to widen the
+  // mirror audit at the top of this file, not to widen this exemption.
+  assert.deepEqual(
+    found.unchecked,
+    [],
+    'this file cannot import messages.js, so the literal is a necessary mirror — but the ' +
+      'mirror audit at the top of this file does not read this file, so nothing would ' +
+      'notice it drifting. Add the file there.'
+  );
+
+  // Floors, so neither half can pass by looking at nothing: the two content scripts
+  // mirror by necessity, and the workspace they are exempt from is most of the extension.
+  assert.deepEqual(
+    [...found.mirrors.keys()].sort(),
+    [rel(AGENT_JS), rel(INTERCEPTOR_JS)].sort(),
+    'the files that mirror a wire value — zero here means the scan stopped reading files'
+  );
+  const held = scope.filter(canImportMessages);
+  assert.ok(held.length >= 30, `only ${held.length} files are held to §17.8 — the classifier has stopped seeing the workspace`);
+  assert.ok(
+    held.some((file) => rel(file).startsWith('extension/src/panel/')),
+    'the panel is held to §17.8 — it is the side of the wire this audit could not see'
+  );
+});
+
+test('§17.8 the literal audit tells a panel magic string from a content-script mirror', async () => {
+  // Both directions, through the same classifier the audit above uses, at real paths.
+  const messages = await import('../src/background/messages.js');
+  const known = new Set(wireEntries(messages).map(([, , value]) => value));
+  const exported = [...known].sort()[0];
+  assert.equal(typeof exported, 'string', 'messages.js exports a wire value to forge with');
+
+  // The classification first: it is derived from the manifest and from paths, so both
+  // have to be proved against the disk or a fixture could be classifying a file that is
+  // not there. Every declared content script exists and is exempt; the two importers
+  // below exist and are held.
+  for (const file of CONTENT_SCRIPT_FILES) {
+    assert.equal(fs.existsSync(file), true, `${rel(file)} is declared in manifest.json but is not on disk`);
+    assert.equal(canImportMessages(file), false, `${rel(file)} is injected into a page; it cannot import`);
+  }
+  assert.ok(CONTENT_SCRIPT_FILES.size >= 2, 'the MAIN-world patch and the ISOLATED-world agent, at least');
+  const settings = path.join(SRC, 'panel', 'settings.js');
+  const background = path.join(SRC, 'background', 'background.js');
+  for (const file of [settings, background]) {
+    assert.equal(fs.existsSync(file), true, `${rel(file)} moved; this fixture is pointing at nothing`);
+    assert.equal(canImportMessages(file), true, `${rel(file)} is a module graph — it can import messages.js`);
+  }
+
+  // Direction 1 — the verifier's actual mutation: a wire literal hand-written into a
+  // panel file. It spells a real exported value, which is exactly why it used to pass.
+  // Synthetic code at the real path, so this fixture measures the CLASSIFICATION and
+  // cannot be moved by whatever settings.js happens to contain today.
+  const forged = auditWireLiterals(
+    [{ file: settings, code: `const res = await ctx.send(${JSON.stringify(exported)}, { patch });` }],
+    known
+  );
+  assert.deepEqual(forged.magic, [`extension/src/panel/settings.js: ${JSON.stringify(exported)}`]);
+  assert.deepEqual([...forged.mirrors.keys()], [], 'and it is not excused as a mirror');
+
+  // Direction 2 — the same literal in the MAIN-world patch, which has no way to import
+  // it. That is a mirror, it stays legal, and it stays counted.
+  const mirrored = auditWireLiterals([{ file: INTERCEPTOR_JS, code: `const t = ${JSON.stringify(exported)};` }], known);
+  assert.deepEqual(mirrored.magic, [], 'a file that cannot import may mirror the value');
+  assert.deepEqual([...mirrored.mirrors.entries()], [['extension/src/content/interceptor.js', 1]]);
+
+  // Direction 3 — a mirror in a content script the mirror audit does not read is neither
+  // a magic string nor silently fine.
+  const other = [...CONTENT_SCRIPT_FILES].find((file) => !MIRROR_AUDITED.has(file));
+  assert.ok(other, 'the manifest declares a content script beyond the two audited above');
+  const quiet = auditWireLiterals([{ file: other, code: `const t = ${JSON.stringify(exported)};` }], known);
+  assert.deepEqual(quiet.unchecked, [`${rel(other)}: ${JSON.stringify(exported)}`]);
+
+  // And an invented value is wrong on both sides of the line.
+  for (const file of [settings, INTERCEPTOR_JS]) {
+    const made = auditWireLiterals([{ file, code: "const t = 'msg:neverExported';" }], known);
+    assert.deepEqual(made.invented, [`${rel(file)}: "msg:neverExported"`]);
+    assert.deepEqual(made.magic, []);
+  }
 });
 
 test('§17.8 the value pin can tell a conforming table from a mutated one', async () => {
