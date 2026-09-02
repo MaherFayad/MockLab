@@ -115,6 +115,16 @@ jobs:
     # the HELLO for that same document then cleared it — Sources stayed empty on the one
     # page deep mode is for. Nothing without a browser could have seen it.
     #
+    # rsc.browser.test.js was added at M8 IN THE SAME CHANGE as the file. It is the only
+    # place the M8 road-B claim is performed end to end: a `text/x-component` response,
+    # streamed in three chunks with two payloads straddling a chunk boundary, rewritten in
+    # flight so that a CLIENT NAVIGATION — not a reload — renders the changed state. It
+    # also holds the property that fix had to keep: with the transform installed, the page
+    # still receives data before the server has sent its last chunk. Replace the
+    # TransformStream in `interceptor.js` with a buffer-then-rewrite and subtest 4 of this
+    # file is what fails; delete the RSC branch entirely and subtests 1 and 2 fail while
+    # nothing hangs, because `isStreamingType` is still the net under it.
+    #
     # This comment deliberately carries no test totals. It used to say "all 142 unit
     # tests"; the suite grew to 146 and the number rotted in place, asserting something
     # false in the file whose whole job is to be trusted. The claim is stronger without
@@ -147,7 +157,7 @@ jobs:
         working-directory: extension
         run: |
           set -euo pipefail
-          for suite in deep e2e highlight mcp panel panel.a11y panel.probe panel.scenarios panel.settings picker pickerdom probe; do
+          for suite in deep e2e highlight mcp panel panel.a11y panel.probe panel.scenarios panel.settings picker pickerdom probe rsc; do
             echo "::group::$suite.browser.test.js"
             out=$(node --test "test/$suite.browser.test.js" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"
