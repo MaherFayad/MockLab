@@ -84,11 +84,21 @@ page's own code reacted to the new data.
 Being honest about the edges matters more than sounding capable:
 
 - **Content inside frames.** Only the main page is covered in version 1.
-- **Live-updating data** (WebSockets, live event streams) and **modern streamed pages**
-  (React Server Components) are listed as sources but can't be edited. MockLab passes
-  them through untouched and never reads them, so live tickers, chat views and
-  streaming pages keep working normally with MockLab installed — they just show up
-  greyed out rather than editable.
+- **Live-updating data** (WebSockets, live event streams) is listed as a source but
+  can't be edited. MockLab passes it through untouched and never reads it, so live
+  tickers and chat views keep working normally with MockLab installed — they just show
+  up greyed out rather than editable.
+- **Modern Next.js sites (App Router), and React Server Components generally.** This
+  one deserves more than a line, because it is bigger than it sounds. On a site built
+  this way the content you can see — a hotel list, a search result, a product grid —
+  usually never arrives as editable JSON at all. It comes as React "flight" data, either
+  streamed as `text/x-component` or embedded in the page as `self.__next_f.push(…)`
+  chunks, and MockLab reads neither. What you WILL see on such a site is a Sources list
+  full of the site's other JSON calls — availability, pricing, autocomplete, config —
+  every one of them real and editable, and none of them the thing that painted the
+  screen. So changes apply correctly and the page does not move. If that is what you are
+  seeing, MockLab is not broken and it is not lying to you; it simply cannot reach that
+  data yet. Support for it is being built.
 - **Sites that load data only once per visit.** Your change applies the next time the
   site asks for that data, not on a plain refresh.
 - **Chromium browsers only** — Chrome, Edge, Brave, Arc. Not Firefox or Safari.
