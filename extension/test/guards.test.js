@@ -267,7 +267,7 @@ test('§17.1 no response body is ever modified through webRequest or DNR', () =>
  *
  * It holds today: `panel.css` carries every colour inside a `:root` block, and the only
  * hex outside one is the five literals in `content/picker.js` and `background/badge.js`,
- * both recorded (README Deviations 21 and 35) and both structurally unavoidable — a
+ * both recorded (README Deviations 21, 35 and 104) and both structurally unavoidable — a
  * content script cannot reach the panel's stylesheet, and Chrome's badge API takes a
  * literal, not a CSS variable. Nothing stopped a sixth.
  *
@@ -418,7 +418,7 @@ test('§17.7 no source file outside panel.css hardcodes a colour', () => {
     offenders,
     RECORDED_HEX,
     'these are the only files §17.7 is knowingly broken in, and these the only values ' +
-      'they may carry (README Deviations 21 and 35). A new hex belongs in panel.css\'s ' +
+      'they may carry (README Deviations 21, 35 and 104). A new hex belongs in panel.css\'s ' +
       ':root as a token — unless it truly cannot reach a stylesheet, in which case record ' +
       'the deviation and add it above.'
   );
@@ -461,4 +461,51 @@ test('§17.7 the :root parse is a range, not a line — both line-based readings
   // silently produce ranges that permit the wrong half of the file.
   assert.throws(() => rootRanges(':root { --a: #fff;'), /braces must balance/);
   assert.throws(() => rootRanges('}'), /unbalanced/);
+});
+
+/**
+ * §17.5 — the CLEANUP is only half the rule; the other half is being WIRED.
+ *
+ * `probeChanges.js` holds `sweepProbeChanges()` and `probe.failures.test.js` proves the
+ * function does its job. Nothing proved that `background.js` ever CALLS it at module top
+ * level, and an adversarial pass measured the gap: replacing the call with `void 0;`
+ * leaves all 583 unit tests and `probe.browser.test.js` green, while a crash mid-probe
+ * would leave the user's site silently mocked for ever — §17.5's exact failure.
+ *
+ * The call has to be at top level and not inside a listener, which is the whole point of
+ * the comment above it: `onStartup` does not fire after a crash, and a crash is the case
+ * this exists for. So the assertion is about INDENTATION as well as presence — a call
+ * that has drifted inside a function or a listener body is indented, and is not the thing
+ * §17.5 needs. This is a wiring check, and wiring is a textual property; it does not and
+ * cannot claim the sweep works, which is `probe.failures.test.js`'s job.
+ */
+test('§17.5 background.js calls the probe sweep at module top level, not only from listeners', () => {
+  const source = stripComments(read(path.join(SRC, 'background', 'background.js')));
+  const lines = source.split('\n');
+
+  const topLevel = lines.filter((line) => /^(?:void\s+)?sweepProbeChanges\s*\(\s*\)\s*;?\s*$/.test(line));
+  assert.equal(
+    topLevel.length,
+    1,
+    'background.js must call sweepProbeChanges() once at module top level (column 0). ' +
+      'chrome.runtime.onStartup does not fire after a crash, and a crash is the case ' +
+      '§17.5 exists for, so a listener registration is not a substitute for the bare call.'
+  );
+
+  // The listeners are the OTHER half and must not quietly disappear either — losing them
+  // would mean a normal browser start no longer sweeps, which is the common case.
+  const listeners = lines.filter((line) => /addListener\(\s*sweepProbeChanges\s*\)/.test(line));
+  assert.equal(listeners.length, 2, 'onStartup and onInstalled must both still sweep');
+
+  // And the self-check, in the shape §17.10's audit uses: the matcher must be capable of
+  // rejecting. An indented call is exactly the drift this guard exists to notice, and a
+  // reader that accepts one is a reader that would accept the call moving into a listener.
+  const indented = ['  void sweepProbeChanges();', '\tsweepProbeChanges();'];
+  for (const line of indented) {
+    assert.equal(
+      /^(?:void\s+)?sweepProbeChanges\s*\(\s*\)\s*;?\s*$/.test(line),
+      false,
+      'the top-level matcher must reject an indented call, or it proves nothing about placement'
+    );
+  }
 });
